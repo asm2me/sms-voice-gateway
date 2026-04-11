@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,12 @@ def run(cmd: list[str]) -> None:
     subprocess.check_call(cmd)
 
 
+def venv_python(venv_dir: Path) -> Path:
+    if os.name == "nt":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a virtualenv, install deps, and optionally run the app.")
     parser.add_argument("--setup-only", action="store_true", help="Only create the virtualenv and install dependencies.")
@@ -18,14 +25,13 @@ def main() -> int:
 
     root = Path(__file__).resolve().parents[1]
     venv_dir = root / ".venv"
-    py = venv_dir / "Scripts" / "python.exe"
-    pip = venv_dir / "Scripts" / "pip.exe"
+    py = venv_python(venv_dir)
 
-    if not venv_dir.exists():
+    if not py.exists():
         run([sys.executable, "-m", "venv", str(venv_dir)])
 
     run([str(py), "-m", "pip", "install", "--upgrade", "pip"])
-    run([str(pip), "install", "-r", str(root / "requirements.txt")])
+    run([str(py), "-m", "pip", "install", "-r", str(root / "requirements.txt")])
 
     if args.setup_only:
         print("Setup complete.")
