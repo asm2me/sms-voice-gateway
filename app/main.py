@@ -19,10 +19,13 @@ import hmac
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from .cache import AudioCache, RateLimiter, get_redis
@@ -34,6 +37,11 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(name)s – %(message)s",
 )
 log = logging.getLogger(__name__)
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+TEMPLATES_DIR = BASE_DIR / "templates"
+STATIC_DIR = BASE_DIR / "static"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -56,6 +64,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dependency helpers
@@ -67,6 +78,59 @@ def dep_settings() -> Settings:
 
 def dep_gateway(settings: Annotated[Settings, Depends(dep_settings)]) -> SMSGateway:
     return SMSGateway(settings)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin portal
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/admin", response_class=HTMLResponse)
+@app.get("/admin/config", response_class=HTMLResponse)
+@app.get("/admin/reports", response_class=HTMLResponse)
+async def admin_portal(request: Request, settings: Settings = Depends(dep_settings)):
+    section = "overview"
+    if request.url.path.endswith("/config"):
+        section = "config"
+    elif request.url.path.endswith("/reports"):
+        section = "reports"
+
+    config_items = [
+        {"label": "TTS Provider", "display_value": settings.tts_provider, "visibility": "public"},
+        {"label": "TTS Language", "display_value": settings.tts_language, "visibility": "public"},
+        {"label": "TTS Voice", "display_value": settings.tts_voice, "visibility": "public"},
+        {"label": "Speaking Rate", "display_value": str(settings.tts_speaking_rate), "visibility": "public"},
+        {"label": "Audio Encoding", "display_value": settings.tts_audio_encoding, "visibility": "public"},
+        {"label": "AMI Host", "display_value": settings.ami_host, "visibility": "public"},
+        {"label": "AMI Port", "display_value": str(settings.ami_port), "visibility": "public"},
+        {"label": "SIP Channel Prefix", "display_value": settings.sip_channel_prefix, "visibility": "public"},
+        {"label": "Outbound Caller ID", "display_value": settings.outbound_caller_id, "visibility": "public"},
+        {"label": "Redis URL", "display_value": settings.redis_url, "visibility": "public"},
+        {"label": "Audio Cache Directory", "display_value": settings.audio_cache_dir, "visibility": "public"},
+        {"label": "Asterisk Sounds Directory", "display_value": settings.asterisk_sounds_dir, "visibility": "public"},
+        {"label": "Webhook Secret", "display_value": "configured" if settings.webhook_secret else "not configured", "visibility": "protected"},
+    ]
+
+    report_summary = {
+        "total": 0,
+        "status_counts": [
+            {"status": "success", "count": 0},
+            {"status": "error", "count": 0},
+            {"status": "pending", "count": 0},
+            {"status": "unknown", "count": 0},
+        ],
+    }
+    recent_reports = []
+
+    return templates.TemplateResponse(
+        "admin.html",
+        {
+            "request": request,
+            "active_section": section,
+            "config_snapshot": {"source": "runtime settings", "items": config_items},
+            "report_summary": report_summary,
+            "recent_reports": recent_reports,
+        },
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

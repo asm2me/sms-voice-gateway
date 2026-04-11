@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Admin Portal{% endblock %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <p class="eyebrow">Administration</p>
+    <h1>SMS Voice Gateway Admin Portal</h1>
+    <p class="muted">Review runtime configuration and delivery report activity.</p>
+  </div>
+  <div class="page-actions">
+    <a class="button button-secondary" href="/health">Health</a>
+    <a class="button button-secondary" href="/docs">API Docs</a>
+  </div>
+</section>
+
+<nav class="subnav" aria-label="Admin navigation">
+  <a href="/admin" class="{% if active_section == 'overview' %}active{% endif %}">Overview</a>
+  <a href="/admin/config" class="{% if active_section == 'config' %}active{% endif %}">Configuration</a>
+  <a href="/admin/reports" class="{% if active_section == 'reports' %}active{% endif %}">Delivery Reports</a>
+</nav>
+
+<div class="admin-grid">
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <p class="eyebrow">Configuration</p>
+        <h2>Settings snapshot</h2>
+      </div>
+      <span class="pill">{{ config_snapshot.source }}</span>
+    </div>
+
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Field</th>
+          <th>Value</th>
+          <th>Visibility</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in config_snapshot.items %}
+        <tr>
+          <td>{{ item.label }}</td>
+          <td class="mono">{{ item.display_value }}</td>
+          <td>{{ item.visibility }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <p class="eyebrow">Delivery Reports</p>
+        <h2>Recent status summary</h2>
+      </div>
+      <span class="pill">{{ report_summary.total }} total</span>
+    </div>
+
+    <div class="status-grid">
+      {% for stat in report_summary.status_counts %}
+      <div class="stat-card">
+        <span class="stat-label">{{ stat.status }}</span>
+        <strong>{{ stat.count }}</strong>
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if recent_reports %}
+    <table class="data-table report-table">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Phone</th>
+          <th>Status</th>
+          <th>Destination</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for report in recent_reports %}
+        <tr>
+          <td>{{ report.timestamp }}</td>
+          <td class="mono">{{ report.phone_number }}</td>
+          <td>
+            <span class="status-badge status-{{ report.status_class }}">{{ report.status }}</span>
+          </td>
+          <td class="mono">{{ report.destination }}</td>
+          <td>{{ report.message_excerpt }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">
+      <h3>No delivery reports yet</h3>
+      <p>Reports will appear here once SMS messages are processed and calls are initiated.</p>
+    </div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

@@ -9,6 +9,10 @@ A FastAPI-based SMS-to-voice gateway that receives incoming SMS webhooks, conver
   - Vonage/Nexmo (`POST /sms/vonage`)
   - Generic JSON (`POST /sms/generic`)
 - Health and debug endpoints
+- Admin JSON endpoints for configuration snapshots and delivery reports
+>>>>>>> REPLACE
+
+
 - TTS provider support for:
   - Google Cloud Text-to-Speech
   - AWS Polly
@@ -149,6 +153,9 @@ docker run --rm -p 8000:8000 --env-file .env sms-voice-gateway
 - `GET /cache/stats` - audio cache statistics
 - `POST /cache/evict` - evict expired cached audio
 - `POST /debug/call` - manually trigger a test call
+- `GET /admin/config` - admin-friendly configuration snapshot
+- `GET /admin/reports` - delivery report summary and recent records
+- `GET /admin/reports/{report_id}` - fetch a specific report by AMI action ID or timestamp
 - `POST /sms/twilio` - Twilio webhook
 - `POST /sms/vonage` - Vonage/Nexmo webhook
 - `POST /sms/generic` - generic SMS webhook
