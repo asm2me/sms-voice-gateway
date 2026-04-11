@@ -6,12 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
-except ModuleNotFoundError:  # pragma: no cover - optional dependency
-    def load_dotenv(*args, **kwargs):
-        return False
-
 
 def run(cmd: list[str]) -> None:
     print("+ " + " ".join(cmd))
@@ -24,13 +18,26 @@ def venv_python(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "python"
 
 
+def load_env_file(env_path: Path) -> None:
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Create a virtualenv, install deps, and optionally run the app.")
     parser.add_argument("--setup-only", action="store_true", help="Only create the virtualenv and install dependencies.")
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
-    load_dotenv(root / ".env")
+    load_env_file(root / ".env")
 
     host = os.getenv("HOST", "127.0.0.1")
     port = os.getenv("PORT", "8000")
