@@ -23,3 +23,4 @@ requests>=2.31.0   # used by ElevenLabs backend (already a transitive dep)
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 python-multipart>=0.0.9   # required for FastAPI Form() / file uploads
+jinja2>=3.1.0   # required for FastAPI Jinja2Templates

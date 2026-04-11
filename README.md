@@ -113,20 +113,32 @@ For the service to work end-to-end, make sure these are reachable:
 
 A `Dockerfile` and `docker-compose.yml` are provided.
 
-### Build and run with Docker Compose
+### Run with Docker Compose
 
-```bash
-docker compose up --build
-```
+1. Create your `.env` file from `.env.example`.
+2. Start the stack:
+   ```bash
+   docker compose up --build
+   ```
 
 This starts:
 
 - `redis` on `127.0.0.1:6379`
 - `gateway` on `http://localhost:8000`
 
-The compose file sets `REDIS_URL=redis://redis:6379/0` for the gateway container.
+The compose file sets `REDIS_URL=redis://redis:6379/0` for the gateway container, so the app talks to Redis by service name.
+
+Useful commands:
+
+```bash
+docker compose logs -f gateway
+docker compose ps
+docker compose down
+```
 
 ### Standalone Docker image
+
+If you already have Redis and Asterisk available outside Docker, you can run only the gateway container:
 
 ```bash
 docker build -t sms-voice-gateway .
