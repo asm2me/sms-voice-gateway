@@ -1,0 +1,25 @@
+# ── Core framework ────────────────────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# ── Cache ─────────────────────────────────────────────────────────────────────
+redis>=5.0.0
+
+# ── TTS providers (install the ones you actually use) ─────────────────────────
+
+# Google Cloud TTS
+google-cloud-texttospeech>=2.16.0
+
+# AWS Polly
+boto3>=1.34.0
+
+# OpenAI TTS
+openai>=1.30.0
+
+# ElevenLabs
+requests>=2.31.0   # used by ElevenLabs backend (already a transitive dep)
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-multipart>=0.0.9   # required for FastAPI Form() / file uploads
