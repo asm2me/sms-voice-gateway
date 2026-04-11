@@ -20,7 +20,7 @@ A FastAPI-based SMS-to-voice gateway that receives incoming SMS webhooks, conver
 
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.11+
 - Redis
 - Asterisk with AMI enabled
 - A SIP trunk / channel configured in Asterisk
@@ -69,7 +69,7 @@ WEBHOOK_SECRET=change-me
 
 ### Windows
 
-1. Install Python 3.12+.
+1. Install Python 3.11+.
 2. Install and start Redis, or use Docker Compose.
 3. Create and activate a virtual environment:
    ```powershell
@@ -84,7 +84,7 @@ WEBHOOK_SECRET=change-me
 
 ### Linux/macOS
 
-1. Install Python 3.12+.
+1. Install Python 3.11+.
 2. Install and start Redis, or use Docker Compose.
 3. Create and activate a virtual environment:
    ```bash
