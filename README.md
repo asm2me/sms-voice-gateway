@@ -71,35 +71,21 @@ WEBHOOK_SECRET=change-me
 
 ## Installation
 
-### Windows
+### Simplified setup
 
 1. Install Python 3.11+.
 2. Install and start Redis, or use Docker Compose.
-3. Create and activate a virtual environment:
-   ```powershell
-   python -m venv .venv
-   .venv\Scripts\Activate.ps1
-   ```
-4. Install dependencies:
-   ```powershell
-   pip install -r requirements.txt
-   ```
-5. Copy `.env.example` to `.env` and edit values.
-
-### Linux/macOS
-
-1. Install Python 3.11+.
-2. Install and start Redis, or use Docker Compose.
-3. Create and activate a virtual environment:
+3. Run the setup script:
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
+   python scripts/dev.py --setup-only
    ```
-4. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-5. Copy `.env.example` to `.env` and edit values.
+4. Copy `.env.example` to `.env` and edit values.
+
+To create the virtualenv, install dependencies, and start the app in one step:
+
+```bash
+python scripts/dev.py
+```
 
 ## Running locally
 
