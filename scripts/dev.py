@@ -6,7 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    def load_dotenv(*args, **kwargs):
+        return False
 
 
 def run(cmd: list[str]) -> None:
