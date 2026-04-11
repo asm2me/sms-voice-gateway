@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 
 def run(cmd: list[str]) -> None:
     print("+ " + " ".join(cmd))
@@ -24,6 +26,11 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
+    load_dotenv(root / ".env")
+
+    host = os.getenv("HOST", "127.0.0.1")
+    port = os.getenv("PORT", "8000")
+
     venv_dir = root / ".venv"
     py = venv_python(venv_dir)
 
@@ -37,7 +44,7 @@ def main() -> int:
         print("Setup complete.")
         return 0
 
-    run([str(py), "-m", "uvicorn", "app.main:app", "--reload"])
+    run([str(py), "-m", "uvicorn", "app.main:app", "--host", host, "--port", port, "--reload"])
     return 0
 
 
