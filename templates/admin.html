@@ -803,14 +803,24 @@
         </div>
 
         <section class="settings-group">
+          {% set google_credentials = (provider_settings | selectattr('name', 'equalto', 'google_credentials_json') | list | first) %}
+          {% set aws_access_key = (provider_settings | selectattr('name', 'equalto', 'aws_access_key_id') | list | first) %}
+          {% set aws_secret_key = (provider_settings | selectattr('name', 'equalto', 'aws_secret_access_key') | list | first) %}
+          {% set aws_region = (provider_settings | selectattr('name', 'equalto', 'aws_region') | list | first) %}
+          {% set aws_voice = (provider_settings | selectattr('name', 'equalto', 'aws_polly_voice_id') | list | first) %}
+          {% set aws_engine = (provider_settings | selectattr('name', 'equalto', 'aws_polly_engine') | list | first) %}
+          {% set openai_api_key = (provider_settings | selectattr('name', 'equalto', 'openai_api_key') | list | first) %}
+          {% set openai_model = (provider_settings | selectattr('name', 'equalto', 'openai_tts_model') | list | first) %}
+          {% set openai_voice = (provider_settings | selectattr('name', 'equalto', 'openai_tts_voice') | list | first) %}
+          {% set elevenlabs_api_key = (provider_settings | selectattr('name', 'equalto', 'elevenlabs_api_key') | list | first) %}
+          {% set elevenlabs_voice = (provider_settings | selectattr('name', 'equalto', 'elevenlabs_voice_id') | list | first) %}
           <div class="card-header compact-header">
             <div>
               <p class="eyebrow">Providers and Engines</p>
               <h3 class="settings-group-title">Voice providers and engines</h3>
             </div>
             <div class="page-actions">
-              <span class="pill">{{ provider_settings|length }} configured fields</span>
-              <a class="button" href="#voice-provider-modal">Configure Voice Providers</a>
+              <span class="pill">4 providers</span>
             </div>
           </div>
 
@@ -818,56 +828,223 @@
             <table class="data-table account-table">
               <thead>
                 <tr>
-                  <th>Setting</th>
-                  <th>Current Value</th>
-                  <th>Visibility</th>
+                  <th>Provider</th>
+                  <th>Status</th>
+                  <th>Primary Configuration</th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {% for field in provider_settings %}
                 <tr>
                   <td>
-                    <strong>{{ field.label }}</strong>
-                    <div class="muted account-subtext mono">{{ field.name }}</div>
+                    <strong>Google Cloud TTS</strong>
+                    <div class="muted account-subtext mono">google_credentials_json</div>
                   </td>
-                  <td class="mono">{% if field.is_secret %}{% if field.value %}configured{% else %}not set{% endif %}{% else %}{{ field.raw_value or '—' }}{% endif %}</td>
-                  <td>{% if field.is_secret %}secret{% else %}visible{% endif %}</td>
+                  <td>
+                    <span class="status-badge status-{% if google_credentials and google_credentials.value %}success{% else %}unknown{% endif %}">
+                      {% if google_credentials and google_credentials.value %}configured{% else %}not set{% endif %}
+                    </span>
+                  </td>
+                  <td class="mono">{% if google_credentials and google_credentials.value %}Service account configured{% else %}No credentials saved{% endif %}</td>
                   <td>
                     <div class="table-actions">
-                      <a class="button button-secondary button-small" href="#voice-provider-modal">Edit</a>
+                      <a class="button button-secondary button-small" href="#voice-provider-google-modal">Edit</a>
                     </div>
                   </td>
                 </tr>
-                {% endfor %}
+                <tr>
+                  <td>
+                    <strong>AWS Polly</strong>
+                    <div class="muted account-subtext mono">aws_access_key_id / aws_region / aws_polly_voice_id</div>
+                  </td>
+                  <td>
+                    <span class="status-badge status-{% if aws_access_key and aws_access_key.value and aws_secret_key and aws_secret_key.value %}success{% else %}unknown{% endif %}">
+                      {% if aws_access_key and aws_access_key.value and aws_secret_key and aws_secret_key.value %}configured{% else %}partial{% endif %}
+                    </span>
+                  </td>
+                  <td class="mono">{{ aws_region.raw_value or '—' }} / {{ aws_voice.raw_value or '—' }} / {{ aws_engine.raw_value or 'standard' }}</td>
+                  <td>
+                    <div class="table-actions">
+                      <a class="button button-secondary button-small" href="#voice-provider-aws-modal">Edit</a>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    <strong>OpenAI TTS</strong>
+                    <div class="muted account-subtext mono">openai_api_key / openai_tts_model / openai_tts_voice</div>
+                  </td>
+                  <td>
+                    <span class="status-badge status-{% if openai_api_key and openai_api_key.value %}success{% else %}unknown{% endif %}">
+                      {% if openai_api_key and openai_api_key.value %}configured{% else %}not set{% endif %}
+                    </span>
+                  </td>
+                  <td class="mono">{{ openai_model.raw_value or '—' }} / {{ openai_voice.raw_value or '—' }}</td>
+                  <td>
+                    <div class="table-actions">
+                      <a class="button button-secondary button-small" href="#voice-provider-openai-modal">Edit</a>
+                    </div>
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    <strong>ElevenLabs</strong>
+                    <div class="muted account-subtext mono">elevenlabs_api_key / elevenlabs_voice_id</div>
+                  </td>
+                  <td>
+                    <span class="status-badge status-{% if elevenlabs_api_key and elevenlabs_api_key.value %}success{% else %}unknown{% endif %}">
+                      {% if elevenlabs_api_key and elevenlabs_api_key.value %}configured{% else %}not set{% endif %}
+                    </span>
+                  </td>
+                  <td class="mono">{{ elevenlabs_voice.raw_value or '—' }}</td>
+                  <td>
+                    <div class="table-actions">
+                      <a class="button button-secondary button-small" href="#voice-provider-elevenlabs-modal">Edit</a>
+                    </div>
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
 
-          <div id="voice-provider-modal" class="modal-shell">
-            <a href="#" class="modal-backdrop" aria-label="Close voice provider dialog"></a>
+          <div id="voice-provider-google-modal" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close Google provider dialog"></a>
             <section class="modal-card">
               <div class="card-header compact-header">
                 <div>
                   <p class="eyebrow">VOICE</p>
-                  <h3 class="settings-group-title">Configure providers and engines</h3>
+                  <h3 class="settings-group-title">Google Cloud TTS</h3>
                 </div>
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
               <form method="post" action="/admin/config/advanced" class="admin-form">
                 <div class="form-grid">
-                  {% for field in provider_settings %}
-                  <label class="field-group {% if field.name in ['google_credentials_json', 'openai_api_key', 'elevenlabs_api_key', 'aws_secret_access_key'] %}field-span-2{% endif %}">
-                    <span class="field-label">{{ field.label }}</span>
-                    {{ render_input(field) }}
-                    <small class="muted">{{ field.name }}</small>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">{{ google_credentials.label }}</span>
+                    {{ render_input(google_credentials) }}
+                    <small class="muted">{{ google_credentials.name }}</small>
                   </label>
-                  {% endfor %}
                 </div>
                 <div class="form-actions">
                   <a href="#" class="button button-secondary">Cancel</a>
-                  <button type="submit" class="button">Save Voice Providers</button>
+                  <button type="submit" class="button">Save Google Provider</button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <div id="voice-provider-aws-modal" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close AWS provider dialog"></a>
+            <section class="modal-card">
+              <div class="card-header compact-header">
+                <div>
+                  <p class="eyebrow">VOICE</p>
+                  <h3 class="settings-group-title">AWS Polly</h3>
+                </div>
+                <a href="#" class="button button-secondary button-small">Close</a>
+              </div>
+
+              <form method="post" action="/admin/config/advanced" class="admin-form">
+                <div class="form-grid">
+                  <label class="field-group">
+                    <span class="field-label">{{ aws_access_key.label }}</span>
+                    {{ render_input(aws_access_key) }}
+                    <small class="muted">{{ aws_access_key.name }}</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">{{ aws_secret_key.label }}</span>
+                    {{ render_input(aws_secret_key) }}
+                    <small class="muted">{{ aws_secret_key.name }}</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">{{ aws_region.label }}</span>
+                    {{ render_input(aws_region) }}
+                    <small class="muted">{{ aws_region.name }}</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">{{ aws_voice.label }}</span>
+                    {{ render_input(aws_voice) }}
+                    <small class="muted">{{ aws_voice.name }}</small>
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">{{ aws_engine.label }}</span>
+                    {{ render_input(aws_engine) }}
+                    <small class="muted">{{ aws_engine.name }}</small>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <a href="#" class="button button-secondary">Cancel</a>
+                  <button type="submit" class="button">Save AWS Provider</button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <div id="voice-provider-openai-modal" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close OpenAI provider dialog"></a>
+            <section class="modal-card">
+              <div class="card-header compact-header">
+                <div>
+                  <p class="eyebrow">VOICE</p>
+                  <h3 class="settings-group-title">OpenAI TTS</h3>
+                </div>
+                <a href="#" class="button button-secondary button-small">Close</a>
+              </div>
+
+              <form method="post" action="/admin/config/advanced" class="admin-form">
+                <div class="form-grid">
+                  <label class="field-group field-span-2">
+                    <span class="field-label">{{ openai_api_key.label }}</span>
+                    {{ render_input(openai_api_key) }}
+                    <small class="muted">{{ openai_api_key.name }}</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">{{ openai_model.label }}</span>
+                    {{ render_input(openai_model) }}
+                    <small class="muted">{{ openai_model.name }}</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">{{ openai_voice.label }}</span>
+                    {{ render_input(openai_voice) }}
+                    <small class="muted">{{ openai_voice.name }}</small>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <a href="#" class="button button-secondary">Cancel</a>
+                  <button type="submit" class="button">Save OpenAI Provider</button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <div id="voice-provider-elevenlabs-modal" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close ElevenLabs provider dialog"></a>
+            <section class="modal-card">
+              <div class="card-header compact-header">
+                <div>
+                  <p class="eyebrow">VOICE</p>
+                  <h3 class="settings-group-title">ElevenLabs</h3>
+                </div>
+                <a href="#" class="button button-secondary button-small">Close</a>
+              </div>
+
+              <form method="post" action="/admin/config/advanced" class="admin-form">
+                <div class="form-grid">
+                  <label class="field-group field-span-2">
+                    <span class="field-label">{{ elevenlabs_api_key.label }}</span>
+                    {{ render_input(elevenlabs_api_key) }}
+                    <small class="muted">{{ elevenlabs_api_key.name }}</small>
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">{{ elevenlabs_voice.label }}</span>
+                    {{ render_input(elevenlabs_voice) }}
+                    <small class="muted">{{ elevenlabs_voice.name }}</small>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <a href="#" class="button button-secondary">Cancel</a>
+                  <button type="submit" class="button">Save ElevenLabs Provider</button>
                 </div>
               </form>
             </section>
