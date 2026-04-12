@@ -229,6 +229,42 @@ def _record_gateway_result(provider: str, result, *, phone_number: str = "", mes
         log.debug("Unable to persist delivery report: %s", exc)
 
 
+def _save_admin_config(form, keys: list[str]) -> Settings:
+    current = load_settings_from_store()
+    data = current.model_dump()
+    for key in keys:
+        if key in form:
+            raw = str(form.get(key, "")).strip()
+            data[key] = raw if raw != "" else data.get(key)
+    updated = Settings(**data)
+    save_settings_to_store(updated)
+    return updated
+
+
+def _admin_context(
+    request: Request,
+    settings: Settings,
+    *,
+    active_section: str,
+    success_message: str | None = None,
+) -> dict:
+    settings_sections = _settings_sections(settings)
+    report_summary, recent_reports = _report_context(settings)
+    context = {
+        "request": request,
+        "active_section": active_section,
+        "config_snapshot": {"source": "saved settings" if success_message else "runtime settings", "items": _config_items(settings)},
+        "report_summary": report_summary,
+        "recent_reports": recent_reports,
+        "basic_settings": settings_sections["basic"],
+        "advanced_settings": settings_sections["advanced"],
+        "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
+    }
+    if success_message:
+        context["success_message"] = success_message
+    return context
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Admin portal
 # ─────────────────────────────────────────────────────────────────────────────
@@ -247,21 +283,7 @@ async def admin_portal(
     elif request.url.path.endswith("/reports"):
         section = "reports"
 
-    settings_sections = _settings_sections(settings)
-    report_summary, recent_reports = _report_context(settings)
-    config_items = _config_items(settings)
-
-    context = {
-        "request": request,
-        "active_section": section,
-        "config_snapshot": {"source": "runtime settings", "items": config_items},
-        "report_summary": report_summary,
-        "recent_reports": recent_reports,
-        "basic_settings": settings_sections["basic"],
-        "advanced_settings": settings_sections["advanced"],
-        "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
-    }
-    return templates.TemplateResponse(request, "admin.html", context)
+    return templates.TemplateResponse(request, "admin.html", _admin_context(request, settings, active_section=section))
 
 
 @app.post("/admin/config/basic")
@@ -270,41 +292,25 @@ async def admin_update_basic_config(
     _: None = Depends(dep_admin_credentials),
 ):
     form = await request.form()
-    current = load_settings_from_store()
-    data = current.model_dump()
-    for key in [
-        "tts_provider",
-        "tts_language",
-        "tts_voice",
-        "tts_speaking_rate",
-        "tts_audio_encoding",
-        "phone_regex",
-        "strip_call_prefix",
-        "playback_repeats",
-        "playback_pause_ms",
-    ]:
-        if key in form:
-            raw = str(form.get(key, "")).strip()
-            data[key] = raw if raw != "" else data.get(key)
-    updated = Settings(**data)
-    save_settings_to_store(updated)
-
-    settings = load_settings_from_store()
-    report_summary, recent_reports = _report_context(settings)
-    settings_sections = _settings_sections(settings)
-    config_items = _config_items(settings)
-    context = {
-        "request": request,
-        "active_section": "config",
-        "config_snapshot": {"source": "saved settings", "items": config_items},
-        "report_summary": report_summary,
-        "recent_reports": recent_reports,
-        "basic_settings": settings_sections["basic"],
-        "advanced_settings": settings_sections["advanced"],
-        "success_message": "Basic settings saved.",
-        "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
-    }
-    return templates.TemplateResponse(request, "admin.html", context)
+    settings = _save_admin_config(
+        form,
+        [
+            "tts_provider",
+            "tts_language",
+            "tts_voice",
+            "tts_speaking_rate",
+            "tts_audio_encoding",
+            "phone_regex",
+            "strip_call_prefix",
+            "playback_repeats",
+            "playback_pause_ms",
+        ],
+    )
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="config", success_message="Basic settings saved and applied immediately."),
+    )
 
 
 @app.post("/admin/config/advanced")
@@ -313,70 +319,54 @@ async def admin_update_advanced_config(
     _: None = Depends(dep_admin_credentials),
 ):
     form = await request.form()
-    current = load_settings_from_store()
-    data = current.model_dump()
-    for key in [
-        "webhook_secret",
-        "google_credentials_json",
-        "aws_access_key_id",
-        "aws_secret_access_key",
-        "aws_region",
-        "aws_polly_voice_id",
-        "aws_polly_engine",
-        "openai_api_key",
-        "openai_tts_model",
-        "openai_tts_voice",
-        "elevenlabs_api_key",
-        "elevenlabs_voice_id",
-        "audio_cache_dir",
-        "asterisk_sounds_dir",
-        "audio_cache_ttl",
-        "ami_host",
-        "ami_port",
-        "ami_username",
-        "ami_secret",
-        "ami_connection_timeout",
-        "ami_response_timeout",
-        "sip_channel_prefix",
-        "outbound_caller_id",
-        "call_answer_timeout",
-        "asterisk_context",
-        "asterisk_exten",
-        "asterisk_priority",
-        "redis_url",
-        "redis_prefix",
-        "rate_limit_hourly",
-        "rate_limit_daily",
-        "delivery_report_store_path",
-        "delivery_report_max_items",
-        "host",
-        "port",
-        "debug",
-        "admin_username",
-        "admin_password",
-    ]:
-        if key in form:
-            raw = str(form.get(key, "")).strip()
-            data[key] = raw if raw != "" else data.get(key)
-    updated = Settings(**data)
-    save_settings_to_store(updated)
-
-    settings = load_settings_from_store()
-    report_summary, recent_reports = _report_context(settings)
-    settings_sections = _settings_sections(settings)
-    config_items = _config_items(settings)
-    context = {
-        "request": request,
-        "active_section": "config",
-        "config_snapshot": {"source": "saved settings", "items": config_items},
-        "report_summary": report_summary,
-        "recent_reports": recent_reports,
-        "basic_settings": settings_sections["basic"],
-        "advanced_settings": settings_sections["advanced"],
-        "success_message": "Advanced settings saved.",
-        "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
-    }
-    return templates.TemplateResponse(request, "admin.html", context)
+    settings = _save_admin_config(
+        form,
+        [
+            "webhook_secret",
+            "google_credentials_json",
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_region",
+            "aws_polly_voice_id",
+            "aws_polly_engine",
+            "openai_api_key",
+            "openai_tts_model",
+            "openai_tts_voice",
+            "elevenlabs_api_key",
+            "elevenlabs_voice_id",
+            "audio_cache_dir",
+            "asterisk_sounds_dir",
+            "audio_cache_ttl",
+            "ami_host",
+            "ami_port",
+            "ami_username",
+            "ami_secret",
+            "ami_connection_timeout",
+            "ami_response_timeout",
+            "sip_channel_prefix",
+            "outbound_caller_id",
+            "call_answer_timeout",
+            "asterisk_context",
+            "asterisk_exten",
+            "asterisk_priority",
+            "redis_url",
+            "redis_prefix",
+            "rate_limit_hourly",
+            "rate_limit_daily",
+            "delivery_report_store_path",
+            "delivery_report_max_items",
+            "host",
+            "port",
+            "debug",
+            "admin_username",
+            "admin_password",
+        ],
+    )
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="config", success_message="Advanced settings saved and applied immediately."),
+    )
 
 
 @app.post("/admin/reports/clear")
@@ -388,20 +378,11 @@ async def admin_clear_old_reports(
     collector = get_delivery_report_collector(settings)
     if hasattr(collector, "clear_old_reports"):
         collector.clear_old_reports()
-    report_summary, recent_reports = _report_context(settings)
-    settings_sections = _settings_sections(settings)
-    context = {
-        "request": request,
-        "active_section": "reports",
-        "config_snapshot": {"source": "runtime settings", "items": _config_items(settings)},
-        "report_summary": report_summary,
-        "recent_reports": recent_reports,
-        "basic_settings": settings_sections["basic"],
-        "advanced_settings": settings_sections["advanced"],
-        "success_message": "Old reports cleared.",
-        "report_clear_supported": True,
-    }
-    return templates.TemplateResponse(request, "admin.html", context)
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="reports", success_message="Old reports cleared."),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
