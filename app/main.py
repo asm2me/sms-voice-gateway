@@ -234,6 +234,7 @@ def _build_queue_context(settings: Settings) -> tuple[dict, list[dict], dict, li
     recent_queue_items = list_queue_items(settings, limit=10)
     return inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items
 
+
 def _build_live_call_context(settings: Settings) -> dict:
     service = build_pjsua2_service(settings)
     status = service.status_detail()
@@ -420,6 +421,102 @@ def _delete_smpp_account(settings: Settings, account_id: str) -> Settings:
     )
 
 
+def _build_sip_trunk_health_context(settings: Settings) -> dict:
+    accounts = list(settings.sip_accounts or [])
+    total = len(accounts)
+    enabled = [account for account in accounts if account.enabled]
+    registered = [account for account in enabled if account.register]
+    default_account = next((account for account in accounts if account.default_for_outbound), None)
+    active_account = default_account or next((account for account in enabled), None)
+
+    services: list[dict] = []
+    dependencies: list[dict] = []
+
+    for account in accounts:
+        status_ok = bool(account.enabled) and (not account.register or bool(account.host or account.domain))
+        status_class = "success" if status_ok else "warning" if account.enabled else "danger"
+        status_label = "Healthy" if status_ok else "Degraded" if account.enabled else "Disabled"
+        summary_bits = []
+        if account.host:
+            summary_bits.append(account.host)
+        elif account.domain:
+            summary_bits.append(account.domain)
+        else:
+            summary_bits.append("No host configured")
+        if account.register:
+            summary_bits.append("registration on")
+        else:
+            summary_bits.append("registration off")
+        services.append(
+            {
+                "name": account.label or account.id,
+                "category": "Telephony",
+                "status_class": status_class,
+                "status_label": status_label,
+                "summary": " • ".join(summary_bits),
+                "details": [
+                    f"Account ID: {account.id}",
+                    f"Enabled: {'yes' if account.enabled else 'no'}",
+                    f"Register: {'yes' if account.register else 'no'}",
+                    f"Host: {account.host or '—'}",
+                    f"Domain: {account.domain or '—'}",
+                    f"Username: {account.username or '—'}",
+                    f"Transport: {account.transport}",
+                    f"Port: {account.port}",
+                ],
+                "notes": [
+                    "SIP trunk health is derived from persisted trunk configuration.",
+                    "A disabled trunk is shown as unhealthy for visibility even if it is intentionally offline.",
+                ],
+            }
+        )
+        dependencies.append(
+            {
+                "label": account.label or account.id,
+                "status_class": status_class,
+                "status_label": status_label,
+                "detail": account.host or account.domain or "No host configured",
+            }
+        )
+
+    summary = {
+        "total": total,
+        "enabled": len(enabled),
+        "registered": len(registered),
+        "default_account_id": default_account.id if default_account else "",
+        "default_account_label": default_account.label or default_account.id if default_account else "",
+        "active_account_id": active_account.id if active_account else "",
+        "active_account_label": active_account.label or active_account.id if active_account else "",
+    }
+
+    return {
+        "summary": summary,
+        "services": services,
+        "dependencies": dependencies,
+        "active_count": len(enabled),
+        "items": [
+            {
+                "channel": f"sip:{account.id}",
+                "caller_id_num": account.from_user or "",
+                "caller_id_name": account.display_name or account.label or account.id,
+                "connected_line_num": "",
+                "connected_line_name": "",
+                "state": "registered" if account.enabled else "disabled",
+                "context": "sip-trunk",
+                "extension": "",
+                "application": "sip-account",
+                "duration": "",
+            }
+            for account in enabled
+        ],
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        "engine": "config",
+        "available": total > 0,
+        "registered": len(registered) > 0,
+        "import_error": "",
+    }
+
+
 def _admin_context(
     request: Request,
     settings: Settings,
@@ -431,6 +528,10 @@ def _admin_context(
     report_summary, recent_reports = _report_context(settings)
     sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items = _build_queue_context(settings)
     live_calls = _build_live_call_context(settings)
+    sip_trunks_health = _build_sip_trunk_health_context(settings)
+    health_payload = health_context or _build_health_context(settings)
+    health_payload.setdefault("sip_trunks", sip_trunks_health)
+    health_payload.setdefault("sip_trunk_summary", sip_trunks_health.get("summary", {}))
     context = {
         "request": request,
         "active_section": active_section,
@@ -523,7 +624,7 @@ def _admin_context(
             {"key": "system", "label": "System Bootstrap", "description": "Minimal env/bootstrap values that start the admin"},
         ],
         "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
-        "health": health_context or _build_health_context(settings),
+        "health": health_payload,
         "sip_accounts": [account.model_dump() for account in settings.sip_accounts],
         "smpp_accounts": [account.model_dump() for account in settings.smpp_accounts],
         "smpp_sip_assignments": [
@@ -729,6 +830,14 @@ def _build_health_context(settings: Settings) -> dict:
         ],
     )
 
+    sip_trunk_context = _build_sip_trunk_health_context(settings)
+    for trunk_service in sip_trunk_context.get("services", []):
+        services.append(trunk_service)
+    for trunk_dependency in sip_trunk_context.get("dependencies", []):
+        dependencies.append(trunk_dependency)
+    healthy_count += sum(1 for service in sip_trunk_context.get("services", []) if service.get("status_class") == "success")
+    total_count += len(sip_trunk_context.get("services", []))
+
     overall_ok = healthy_count == total_count
     restart_actions = _restart_actions(settings)
     return {
@@ -749,14 +858,17 @@ def _build_health_context(settings: Settings) -> dict:
             {"label": "Redis", "value": "Online" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "Offline", "detail": settings.redis_url, "class": "success" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
             {"label": "Direct SIP UA", "value": "Registered" if any(d['label'] == 'Direct SIP UA' and d['status_label'] == 'Healthy' for d in dependencies) else "Not Registered", "detail": next((d["detail"] for d in dependencies if d["label"] == "Direct SIP UA"), "PJSUA2"), "class": "success" if any(d['label'] == 'Direct SIP UA' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
             {"label": "SMPP", "value": "Listening" if smpp_ok else "Enabled / Not Listening" if smpp_enabled else "Disabled", "detail": f"{settings.smpp_host}:{settings.smpp_port}", "class": "success" if smpp_ok else "warning" if smpp_enabled else "danger"},
+            {"label": "SIP Trunks", "value": f"{sip_trunk_context.get('summary', {}).get('enabled', 0)} enabled", "detail": f"{sip_trunk_context.get('summary', {}).get('registered', 0)} registered of {sip_trunk_context.get('summary', {}).get('total', 0)} configured", "class": "success" if sip_trunk_context.get("registered") else "warning" if sip_trunk_context.get("available") else "danger"},
         ],
         "services": services,
         "dependencies": dependencies,
+        "sip_trunks": sip_trunk_context,
         "notes": [
             "Restart controls are safety-gated and may be disabled depending on the runtime environment.",
             "Direct SIP UA health depends on the PJSUA2 runtime, valid SIP credentials, and successful account registration.",
             "Configuration changes are loaded from persistent storage per request and apply automatically.",
             "SMPP support is a lightweight listener for inbound bind/connect verification and should be paired with a production SMPP stack if you need full message routing.",
+            "Configured SIP trunks are derived from persisted SIP account settings and shown even when no live SIP account runtime is active.",
         ],
         "actions": {
             "refresh": {"enabled": True, "reason": ""},
@@ -1331,16 +1443,20 @@ async def health(settings: Settings = Depends(dep_settings)):
     except Exception as e:
         log.debug("Redis health check failed: %s", e)
 
-    sip_ok = bool(build_pjsua2_service(settings).status_detail().get("registered"))
+    sip_status = build_pjsua2_service(settings).status_detail()
+    sip_ok = bool(sip_status.get("registered"))
+    sip_trunks = _build_sip_trunk_health_context(settings)
     healthy = sip_ok and redis_ok
     return JSONResponse(
         content={
             "status": "healthy" if healthy else "degraded",
-        "sip": build_pjsua2_service(settings).status_detail(),
-        "redis": redis_ok,
-        "tts_provider": settings.tts_provider,
-        "smpp_enabled": settings.smpp_enabled,
-        "smpp_port": settings.smpp_port,
+            "sip": sip_status,
+            "sip_trunks": sip_trunks,
+            "sip_trunk_summary": sip_trunks.get("summary", {}),
+            "redis": redis_ok,
+            "tts_provider": settings.tts_provider,
+            "smpp_enabled": settings.smpp_enabled,
+            "smpp_port": settings.smpp_port,
         },
         status_code=200 if healthy else 503,
     )

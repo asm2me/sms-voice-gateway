@@ -450,7 +450,16 @@
 {% endif %}
 
 {% if active_section == 'overview' %}
-<section class="dashboard-grid">
+{% set report_total = report_summary.total|default(0) %}
+{% set report_success = report_summary.success|default(0) %}
+{% set report_error = report_summary.error|default(0) %}
+{% set report_pending = report_summary.pending|default(0) %}
+{% set report_unknown = report_summary.unknown|default(0) %}
+{% set report_chart_max = [report_total, report_success, report_error, report_pending, report_unknown, 1]|max %}
+{% set queue_total = queue_summary.total|default(0) %}
+{% set inbox_total = sms_inbox_summary.total|default(0) %}
+{% set activity_total = [queue_total, inbox_total, 1]|max %}
+<section class="dashboard-grid dashboard-grid-overview">
   <article class="card dashboard-card">
     <div class="card-header">
       <div>
@@ -489,22 +498,71 @@
       <a class="button button-secondary" href="/admin/reports">Open reports</a>
     </div>
 
-    <div class="status-grid">
-      <div class="stat-card">
-        <span class="stat-label">Success</span>
-        <strong>{{ report_summary.success }}</strong>
+    <div class="dashboard-chart-card">
+      <div class="dashboard-chart-header">
+        <div class="chart-legend">
+          <span class="legend-item"><span class="legend-swatch legend-success"></span>Success</span>
+          <span class="legend-item"><span class="legend-swatch legend-error"></span>Error</span>
+          <span class="legend-item"><span class="legend-swatch legend-pending"></span>Pending</span>
+          <span class="legend-item"><span class="legend-swatch legend-unknown"></span>Unknown</span>
+        </div>
+        <span class="pill">{{ report_summary.total }} total</span>
       </div>
-      <div class="stat-card">
-        <span class="stat-label">Error</span>
-        <strong>{{ report_summary.error }}</strong>
+
+      <div class="bar-chart" role="img" aria-label="Delivery report summary chart">
+        <div class="bar-chart-axis">
+          <span>0</span>
+          <span>{{ report_chart_max }}</span>
+        </div>
+        <div class="bar-chart-bars">
+          <div class="bar-group">
+            <div class="bar-track">
+              <div class="bar-fill bar-success" style="height: {{ (report_success * 100 / report_chart_max)|round(0, 'floor') if report_chart_max else 0 }}%;"></div>
+            </div>
+            <span class="bar-label">Success</span>
+            <strong>{{ report_success }}</strong>
+          </div>
+          <div class="bar-group">
+            <div class="bar-track">
+              <div class="bar-fill bar-error" style="height: {{ (report_error * 100 / report_chart_max)|round(0, 'floor') if report_chart_max else 0 }}%;"></div>
+            </div>
+            <span class="bar-label">Error</span>
+            <strong>{{ report_error }}</strong>
+          </div>
+          <div class="bar-group">
+            <div class="bar-track">
+              <div class="bar-fill bar-pending" style="height: {{ (report_pending * 100 / report_chart_max)|round(0, 'floor') if report_chart_max else 0 }}%;"></div>
+            </div>
+            <span class="bar-label">Pending</span>
+            <strong>{{ report_pending }}</strong>
+          </div>
+          <div class="bar-group">
+            <div class="bar-track">
+              <div class="bar-fill bar-unknown" style="height: {{ (report_unknown * 100 / report_chart_max)|round(0, 'floor') if report_chart_max else 0 }}%;"></div>
+            </div>
+            <span class="bar-label">Unknown</span>
+            <strong>{{ report_unknown }}</strong>
+          </div>
+        </div>
       </div>
-      <div class="stat-card">
-        <span class="stat-label">Pending</span>
-        <strong>{{ report_summary.pending }}</strong>
-      </div>
-      <div class="stat-card">
-        <span class="stat-label">Total</span>
-        <strong>{{ report_summary.total }}</strong>
+
+      <div class="status-grid">
+        <div class="stat-card">
+          <span class="stat-label">Success</span>
+          <strong>{{ report_summary.success }}</strong>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Error</span>
+          <strong>{{ report_summary.error }}</strong>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Pending</span>
+          <strong>{{ report_summary.pending }}</strong>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Total</span>
+          <strong>{{ report_summary.total }}</strong>
+        </div>
       </div>
     </div>
   </article>
@@ -535,7 +593,33 @@
     </article>
   </div>
 
-  <div class="inbox-queue-grid">
+  <div class="dashboard-chart-grid">
+    <section class="card dashboard-chart-card">
+      <div class="dashboard-chart-header">
+        <div>
+          <p class="eyebrow">Trend chart</p>
+          <h3>Queue vs inbox volume</h3>
+          <p class="muted">A lightweight relative comparison using current dashboard totals.</p>
+        </div>
+        <span class="pill">Totals</span>
+      </div>
+
+      <div class="stacked-bar-chart" role="img" aria-label="Queue and inbox activity comparison">
+        <div class="stacked-bar-axis">
+          <span>0</span>
+          <span>{{ activity_total }}</span>
+        </div>
+        <div class="stacked-bar-track">
+          <div class="stacked-bar-fill stacked-bar-queue" style="height: {{ (queue_total * 100 / activity_total)|round(0, 'floor') if activity_total else 0 }}%;"></div>
+          <div class="stacked-bar-fill stacked-bar-inbox" style="height: {{ (inbox_total * 100 / activity_total)|round(0, 'floor') if activity_total else 0 }}%;"></div>
+        </div>
+        <div class="stacked-bar-legend">
+          <span class="legend-item"><span class="legend-swatch legend-queue"></span>Queue {{ queue_total }}</span>
+          <span class="legend-item"><span class="legend-swatch legend-inbox"></span>Inbox {{ inbox_total }}</span>
+        </div>
+      </div>
+    </section>
+
     <section class="settings-group">
       <div class="card-header compact-header">
         <div>
@@ -1147,30 +1231,6 @@
       <section class="card config-card config-panel">
         <div class="card-header">
           <div>
-            <p class="eyebrow">System Bootstrap</p>
-            <h2>Minimal env/bootstrap values that start the admin</h2>
-          </div>
-          <span class="pill">Env / bootstrap only</span>
-        </div>
-
-        <div class="notice">
-          <strong>Bootstrap settings:</strong> These values remain environment-driven and should be changed in `.env`, not saved from the web admin.
-        </div>
-
-        <div class="form-grid">
-          {% for field in system_settings %}
-          <label class="field-group {% if field.name in ['host'] %}field-span-2{% endif %}">
-            <span class="field-label">{{ field.label }}</span>
-            {{ render_input(field) }}
-            <small class="muted">{{ field.name }} (read-only from env/bootstrap)</small>
-          </label>
-          {% endfor %}
-        </div>
-      </section>
-
-      <section class="card config-card config-panel">
-        <div class="card-header">
-          <div>
             <p class="eyebrow">SMPP</p>
             <h2>SMPP service, bind info, and users</h2>
           </div>
@@ -1391,75 +1451,198 @@
         {% endfor %}
       </section>
 
-      <section class="card config-card config-panel">
-          <div class="card-header">
+        <section class="settings-group settings-group-spaced">
+          <div class="card-header compact-header">
             <div>
               <p class="eyebrow">Assignments</p>
-              <h2>SMPP to SIP mapping</h2>
+              <h3 class="settings-group-title">SMPP to SIP mapping</h3>
             </div>
             <span class="pill">{{ smpp_sip_assignments|length }} routes</span>
           </div>
 
-        <form method="post" action="/admin/config/assignments" class="admin-form">
-          <div class="form-grid">
-            <label class="field-group">
-              <span class="field-label">SMPP Username</span>
-              <select name="smpp_username">
-                <option value="">Select SMPP user</option>
-                {% for account in smpp_accounts %}
-                <option value="{{ account.username }}">{{ account.label or account.username or account.id }}</option>
-                {% endfor %}
-              </select>
-            </label>
-            <label class="field-group">
-              <span class="field-label">SIP Account</span>
-              <select name="sip_account_id">
-                <option value="">Select SIP account</option>
-                {% for account in sip_accounts %}
-                <option value="{{ account.id }}">{{ account.label or account.id }}</option>
-                {% endfor %}
-              </select>
-            </label>
-          </div>
-          <div class="form-actions">
-            <button type="submit" class="button">Save Assignment</button>
-          </div>
-        </form>
+          <form method="post" action="/admin/config/assignments" class="admin-form">
+            <div class="form-grid">
+              <label class="field-group">
+                <span class="field-label">SMPP Username</span>
+                <select name="smpp_username">
+                  <option value="">Select SMPP user</option>
+                  {% for account in smpp_accounts %}
+                  <option value="{{ account.username }}">{{ account.label or account.username or account.id }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label class="field-group">
+                <span class="field-label">SIP Account</span>
+                <select name="sip_account_id">
+                  <option value="">Select SIP account</option>
+                  {% for account in sip_accounts %}
+                  <option value="{{ account.id }}">{{ account.label or account.id }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="button">Save Assignment</button>
+            </div>
+          </form>
 
-        {% if smpp_sip_assignments %}
-        <div class="table-wrap">
-          <table class="data-table account-table assignment-table">
-            <thead>
-              <tr>
-                <th>SMPP User</th>
-                <th>SIP Profile</th>
-                <th>Routing Mode</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for assignment in smpp_sip_assignments %}
-              <tr>
-                <td class="mono">{{ assignment.smpp_username or '—' }}</td>
-                <td>
-                  <strong>{{ assignment.sip_label or assignment.sip_account_id or '—' }}</strong>
-                  <div class="muted account-subtext mono">{{ assignment.sip_account_id or '—' }}</div>
-                </td>
-                <td>direct</td>
-                <td>
-                  <span class="status-badge status-success">active</span>
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+          {% if smpp_sip_assignments %}
+          <div class="table-wrap">
+            <table class="data-table account-table assignment-table">
+              <thead>
+                <tr>
+                  <th>SMPP User</th>
+                  <th>SIP Profile</th>
+                  <th>Routing Mode</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for assignment in smpp_sip_assignments %}
+                <tr>
+                  <td class="mono">{{ assignment.smpp_username or '—' }}</td>
+                  <td>
+                    <strong>{{ assignment.sip_label or assignment.sip_account_id or '—' }}</strong>
+                    <div class="muted account-subtext mono">{{ assignment.sip_account_id or '—' }}</div>
+                  </td>
+                  <td>direct</td>
+                  <td>
+                    <span class="status-badge status-success">active</span>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <div class="empty-state">
+            <h3>No SMPP to SIP assignments yet</h3>
+            <p>Create at least one assignment so authenticated SMPP users route through the correct SIP trunk.</p>
+          </div>
+          {% endif %}
+        </section>
+      </section>
+
+      <section class="card config-card config-panel">
+        {% set system_admin_username = (system_settings | selectattr('name', 'equalto', 'admin_username') | list | first) %}
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">System Bootstrap</p>
+            <h2>System bootstrap, admin access, and permissions</h2>
+          </div>
+          <span class="pill">Env / bootstrap only</span>
         </div>
-        {% else %}
-        <div class="empty-state">
-          <h3>No SMPP to SIP assignments yet</h3>
-          <p>Create at least one assignment so authenticated SMPP users route through the correct SIP trunk.</p>
+
+        <div class="notice">
+          <strong>Bootstrap settings:</strong> These values remain environment-driven and should be changed in `.env`, not saved from the web admin.
         </div>
-        {% endif %}
+
+        <section class="settings-group">
+          <div class="card-header compact-header">
+            <div>
+              <p class="eyebrow">System Admin</p>
+              <h3 class="settings-group-title">Bootstrap runtime settings</h3>
+            </div>
+            <span class="pill">Read-only</span>
+          </div>
+
+          <div class="form-grid">
+            {% for field in system_settings %}
+            <label class="field-group {% if field.name in ['host'] %}field-span-2{% endif %}">
+              <span class="field-label">{{ field.label }}</span>
+              {{ render_input(field) }}
+              <small class="muted">{{ field.name }} (read-only from env/bootstrap)</small>
+            </label>
+            {% endfor %}
+          </div>
+        </section>
+
+        <section class="settings-group settings-group-spaced">
+          <div class="card-header compact-header">
+            <div>
+              <p class="eyebrow">System Users and Permissions</p>
+              <h3 class="settings-group-title">Administrative access</h3>
+            </div>
+            <div class="page-actions">
+              <span class="pill">1 configured</span>
+              <a class="button" href="#system-user-admin-modal">View System User</a>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table account-table">
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Role</th>
+                  <th>Access</th>
+                  <th>Permissions</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <strong>{{ system_admin_username.raw_value or 'admin' }}</strong>
+                    <div class="muted account-subtext mono">bootstrap-admin</div>
+                  </td>
+                  <td>Administrator</td>
+                  <td><span class="status-badge status-success">enabled</span></td>
+                  <td>Health, Reports, Configuration</td>
+                  <td>
+                    <div class="table-actions">
+                      <a class="button button-secondary button-small" href="#system-user-admin-modal">View</a>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="system-user-admin-modal" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close system user dialog"></a>
+            <section class="modal-card">
+              <div class="card-header compact-header">
+                <div>
+                  <p class="eyebrow">System User</p>
+                  <h3 class="settings-group-title">{{ system_admin_username.raw_value or 'admin' }}</h3>
+                </div>
+                <a href="#" class="button button-secondary button-small">Close</a>
+              </div>
+
+              <div class="form-grid">
+                <label class="field-group">
+                  <span class="field-label">Username</span>
+                  <input type="text" value="{{ system_admin_username.raw_value or 'admin' }}" readonly />
+                </label>
+                <label class="field-group">
+                  <span class="field-label">Role</span>
+                  <input type="text" value="Administrator" readonly />
+                </label>
+                <label class="field-group">
+                  <span class="field-label">Status</span>
+                  <input type="text" value="Enabled" readonly />
+                </label>
+                <label class="field-group">
+                  <span class="field-label">Auth Source</span>
+                  <input type="text" value="Bootstrap / Environment" readonly />
+                </label>
+                <label class="field-group field-span-2">
+                  <span class="field-label">Permissions</span>
+                  <input type="text" value="Overview, Health, Configuration, Delivery Reports" readonly />
+                </label>
+                <label class="field-group field-span-2">
+                  <span class="field-label">Password</span>
+                  <input type="password" value="configured" readonly />
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <a href="#" class="button button-secondary">Close</a>
+              </div>
+            </section>
+          </div>
+        </section>
       </section>
     </div>
   </div>
