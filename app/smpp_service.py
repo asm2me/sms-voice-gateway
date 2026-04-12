@@ -36,14 +36,16 @@ _SMPP_STATUS_NAMES = {
 
 _SM_PP_GENERIC_NACK = 0x80000000
 _SM_PP_BIND_RECEIVER = 0x00000001
+_SM_PP_BIND_RECEIVER_RESP = 0x80000001
 _SM_PP_BIND_TRANSMITTER = 0x00000002
-_SM_PP_BIND_RESP = 0x80000002
+_SM_PP_BIND_TRANSMITTER_RESP = 0x80000002
 _SM_PP_SUBMIT_SM = 0x00000004
 _SM_PP_SUBMIT_SM_RESP = 0x80000004
 _SM_PP_DELIVER_SM = 0x00000005
 _SM_PP_UNBIND = 0x00000006
 _SM_PP_UNBIND_RESP = 0x80000006
 _SM_PP_BIND_TRANSCEIVER = 0x00000009
+_SM_PP_BIND_TRANSCEIVER_RESP = 0x80000009
 _SM_PP_ENQUIRE_LINK = 0x00000015
 _SM_PP_ENQUIRE_LINK_RESP = 0x80000015
 
@@ -156,11 +158,16 @@ class SMPPService:
                     log.info("SMPP unbind handled for %s:%s", addr[0], addr[1])
                     break
                 if command_id in {_SM_PP_BIND_RECEIVER, _SM_PP_BIND_TRANSMITTER, _SM_PP_BIND_TRANSCEIVER}:
+                    bind_response_command_id = {
+                        _SM_PP_BIND_RECEIVER: _SM_PP_BIND_RECEIVER_RESP,
+                        _SM_PP_BIND_TRANSMITTER: _SM_PP_BIND_TRANSMITTER_RESP,
+                        _SM_PP_BIND_TRANSCEIVER: _SM_PP_BIND_TRANSCEIVER_RESP,
+                    }[command_id]
                     if self._authenticate(body):
-                        self._send_pdu(conn, _SM_PP_BIND_RESP | (command_id & 0xFF), 0, sequence, b"\x00")
+                        self._send_pdu(conn, bind_response_command_id, 0, sequence, b"\x00")
                         log.info("SMPP bind success from %s:%s", addr[0], addr[1])
                     else:
-                        self._send_pdu(conn, _SM_PP_BIND_RESP | (command_id & 0xFF), 0x0000000E, sequence, b"\x00")
+                        self._send_pdu(conn, bind_response_command_id, 0x0000000E, sequence, b"\x00")
                         log.warning("SMPP bind failed from %s:%s", addr[0], addr[1])
                         break
                 elif command_id == _SM_PP_ENQUIRE_LINK:
