@@ -384,6 +384,42 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
     )
 
 
+def _delete_sip_account(settings: Settings, account_id: str) -> Settings:
+    filtered_accounts = [account for account in settings.sip_accounts if account.id != account_id]
+    filtered_assignments = {
+        smpp_username: sip_id
+        for smpp_username, sip_id in (settings.smpp_sip_assignments or {}).items()
+        if sip_id != account_id
+    }
+    filtered_smpp_accounts = [
+        account.model_copy(
+            update={
+                "default_sip_account_id": "" if account.default_sip_account_id == account_id else account.default_sip_account_id
+            }
+        )
+        for account in settings.smpp_accounts
+    ]
+    return _save_account_collections(
+        sip_accounts=filtered_accounts,
+        smpp_accounts=filtered_smpp_accounts,
+        smpp_sip_assignments=filtered_assignments,
+    )
+
+
+def _delete_smpp_account(settings: Settings, account_id: str) -> Settings:
+    removed_usernames = {account.username for account in settings.smpp_accounts if account.id == account_id and account.username}
+    filtered_accounts = [account for account in settings.smpp_accounts if account.id != account_id]
+    filtered_assignments = {
+        smpp_username: sip_id
+        for smpp_username, sip_id in (settings.smpp_sip_assignments or {}).items()
+        if smpp_username not in removed_usernames
+    }
+    return _save_account_collections(
+        smpp_accounts=filtered_accounts,
+        smpp_sip_assignments=filtered_assignments,
+    )
+
+
 def _admin_context(
     request: Request,
     settings: Settings,
@@ -1054,6 +1090,38 @@ async def admin_assign_smpp_to_sip(
         request,
         "admin.html",
         _admin_context(request, settings, active_section="config", success_message=f"Assigned SMPP user '{smpp_username}' to SIP trunk '{sip_account_id}'."),
+    )
+
+
+@app.post("/admin/config/sip-accounts/delete")
+async def admin_delete_sip_account(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+):
+    form = await request.form()
+    current = ensure_default_accounts(load_settings_from_store())
+    account_id = str(form.get("account_id", "")).strip()
+    settings = _delete_sip_account(current, account_id)
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="config", success_message=f"SIP trunk '{account_id}' deleted."),
+    )
+
+
+@app.post("/admin/config/smpp-accounts/delete")
+async def admin_delete_smpp_account(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+):
+    form = await request.form()
+    current = ensure_default_accounts(load_settings_from_store())
+    account_id = str(form.get("account_id", "")).strip()
+    settings = _delete_smpp_account(current, account_id)
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="config", success_message=f"SMPP user '{account_id}' deleted."),
     )
 
 
