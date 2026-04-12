@@ -1040,11 +1040,46 @@ def _running_in_container() -> bool:
     return Path("/.dockerenv").exists() or "container" in os.environ.get("RUNNING_IN_CONTAINER", "").lower()
 
 
+def _systemd_service_name(settings: Settings) -> str:
+    return os.environ.get("SMS_GATEWAY_SYSTEMD_SERVICE", "sms-voice-gateway.service").strip() or "sms-voice-gateway.service"
+
+
+def _systemctl_available() -> bool:
+    return sys.platform.startswith("linux") and _runtime_command_available("systemctl")
+
+
+def _docker_restart_available() -> bool:
+    return _runtime_command_available("docker") and _runtime_command_available("docker-compose") and (BASE_DIR / "docker-compose.yml").exists()
+
+
 def _restart_actions(settings: Settings) -> list[dict]:
     actions: list[dict] = []
-    available = _runtime_command_available("docker") and _runtime_command_available("docker-compose")
-    compose_path = BASE_DIR / "docker-compose.yml"
-    if available and compose_path.exists():
+    systemd_service = _systemd_service_name(settings)
+
+    if _systemctl_available():
+        actions.append(
+            {
+                "key": "app",
+                "label": "Restart Gateway Service",
+                "description": f"Uses systemctl restart {systemd_service}.",
+                "supported": True,
+                "disabled_reason": "",
+                "safety": "Requires systemctl access and sudo/system service permissions.",
+            }
+        )
+    else:
+        actions.append(
+            {
+                "key": "app",
+                "label": "Restart Gateway Service",
+                "description": "Not available in this runtime.",
+                "supported": False,
+                "disabled_reason": "systemctl is unavailable or this is not a Linux runtime.",
+                "safety": "Disabled for safety.",
+            }
+        )
+
+    if _docker_restart_available():
         actions.append(
             {
                 "key": "gateway",
@@ -1088,16 +1123,6 @@ def _restart_actions(settings: Settings) -> list[dict]:
             }
         )
 
-    actions.append(
-        {
-            "key": "app",
-            "label": "Restart App Process",
-            "description": "In-process restart is intentionally disabled.",
-            "supported": False,
-            "disabled_reason": "Restarting the running ASGI process from inside the request handler is not safe in this deployment.",
-            "safety": "Disabled for safety.",
-        }
-    )
     return actions
 
 
@@ -1106,15 +1131,45 @@ def _restart_action_result(settings: Settings, action: str) -> dict:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown restart action")
 
     if action == "app":
-        return {
-            "ok": False,
-            "action": action,
-            "message": "App restart is disabled in this runtime.",
-            "disabled": True,
-            "reason": "Restarting the running ASGI process from inside the request handler is not safe.",
-        }
+        service_name = _systemd_service_name(settings)
+        if not _systemctl_available():
+            return {
+                "ok": False,
+                "action": action,
+                "message": "systemctl restart is unavailable in this runtime.",
+                "disabled": True,
+                "reason": "systemctl is unavailable or this is not a Linux runtime.",
+            }
 
-    if not (_runtime_command_available("docker") and _runtime_command_available("docker-compose") and (BASE_DIR / "docker-compose.yml").exists()):
+        cmd = ["systemctl", "restart", service_name]
+        try:
+            completed = subprocess.run(cmd, capture_output=True, text=True, timeout=90, check=True)
+            return {
+                "ok": True,
+                "action": action,
+                "message": f"systemctl restart completed for {service_name}.",
+                "disabled": False,
+                "stdout": completed.stdout[-1000:] if completed.stdout else "",
+                "stderr": completed.stderr[-1000:] if completed.stderr else "",
+            }
+        except subprocess.CalledProcessError as exc:
+            return {
+                "ok": False,
+                "action": action,
+                "message": f"systemctl restart failed for {service_name}.",
+                "disabled": False,
+                "reason": (exc.stderr or exc.stdout or str(exc))[-1000:],
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "action": action,
+                "message": f"systemctl restart could not run for {service_name}.",
+                "disabled": False,
+                "reason": str(exc),
+            }
+
+    if not _docker_restart_available():
         return {
             "ok": False,
             "action": action,
@@ -1296,10 +1351,15 @@ async def admin_add_sip_account(
     if action == "test":
         service = build_pjsua2_service(current)
         result = service.register_account(_build_sip_profile_from_account(new_account))
+        status_suffix = (
+            f" Registrar status: {result.status_code} {result.status_text}."
+            if getattr(result, "status_code", 0) or getattr(result, "status_text", "")
+            else ""
+        )
         message = (
-            f"SIP trunk test succeeded for '{new_account.label}'."
+            f"SIP trunk test succeeded for '{new_account.label}'.{status_suffix}"
             if result.success
-            else f"SIP trunk test failed for '{new_account.label}': {result.error or result.message or 'Unknown error'}"
+            else f"SIP trunk test failed for '{new_account.label}': {result.error or result.message or 'Unknown error'}.{status_suffix}"
         )
         return templates.TemplateResponse(
             request,

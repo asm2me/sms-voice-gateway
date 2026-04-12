@@ -198,6 +198,56 @@ docker build -t sms-voice-gateway .
 docker run --rm -p 8000:8000 --env-file .env sms-voice-gateway
 ```
 
+## systemd deployment on Linux
+
+For a non-Docker Linux deployment, you can install the gateway as a `systemd` service.
+
+Files added for this flow:
+
+- `deploy/sms-voice-gateway.service` – service unit template
+- `deploy/install_systemd_service.sh` – installs, enables, and restarts the service
+- `deploy/manage_systemd_service.sh` – helper wrapper for `systemctl` / `journalctl`
+
+### Example install
+
+```bash
+chmod +x deploy/install_systemd_service.sh deploy/manage_systemd_service.sh
+SERVICE_USER=smsgateway SERVICE_GROUP=smsgateway PYTHON_BIN=/opt/sms-voice-gateway/.venv/bin/python WORKING_DIRECTORY=/opt/sms-voice-gateway ENV_FILE=/opt/sms-voice-gateway/.env ./deploy/install_systemd_service.sh
+```
+
+This will:
+
+1. render the unit file from the template
+2. copy it to `/etc/systemd/system/sms-voice-gateway.service`
+3. reload `systemd`
+4. enable the service on boot
+5. restart the gateway service
+6. show the current service status
+
+### Routine service management
+
+```bash
+./deploy/manage_systemd_service.sh status
+./deploy/manage_systemd_service.sh restart
+./deploy/manage_systemd_service.sh logs
+```
+
+### Admin health restart integration
+
+The Health page restart control now supports Linux `systemctl` restarts when the app is running on Linux with `systemctl` available. By default it targets:
+
+```text
+sms-voice-gateway.service
+```
+
+Override the service name for the admin health restart button with:
+
+```bash
+export SMS_GATEWAY_SYSTEMD_SERVICE=my-custom-gateway.service
+```
+
+The web admin will continue to use Docker restart actions when running in a Docker Compose-managed environment.
+
 ## API endpoints
 
 - `GET /health` - service health check

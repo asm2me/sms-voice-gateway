@@ -109,6 +109,8 @@ class PJSUA2RegistrationResult:
     account_id: str = ""
     message: str = ""
     error: str = ""
+    status_code: int = 0
+    status_text: str = ""
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -296,17 +298,37 @@ class PJSipUASession:
 
                 self._account = account
                 self._current_profile = selected
-                self._registered = True
+                registration_probe = self._wait_for_registration(account, timeout_seconds=12.0)
+                self._registered = registration_probe["success"]
+
+                if not registration_probe["success"]:
+                    return PJSUA2RegistrationResult(
+                        success=False,
+                        account_id=selected.id,
+                        error=registration_probe["error"] or "SIP trunk registration did not complete successfully",
+                        status_code=registration_probe["status_code"],
+                        status_text=registration_probe["status_text"],
+                        details={
+                            "id_uri": account_cfg.idUri,
+                            "registrar_uri": registrar_uri,
+                            "username": selected.username,
+                            "transport": selected.transport,
+                            "probe": registration_probe,
+                        },
+                    )
 
                 return PJSUA2RegistrationResult(
                     success=True,
                     account_id=selected.id,
-                    message="SIP account registered",
+                    message="SIP account registered successfully",
+                    status_code=registration_probe["status_code"],
+                    status_text=registration_probe["status_text"],
                     details={
                         "id_uri": account_cfg.idUri,
                         "registrar_uri": registrar_uri,
                         "username": selected.username,
                         "transport": selected.transport,
+                        "probe": registration_probe,
                     },
                 )
             except Exception as exc:
@@ -491,6 +513,53 @@ class PJSipUASession:
             "has_call": self._last_call is not None,
         }
 
+    def _wait_for_registration(self, account: "_GatewayAccount", *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+        deadline = time.time() + max(1.0, timeout_seconds)
+        last_info: dict[str, Any] = {}
+
+        while time.time() < deadline:
+            with suppress(Exception):
+                self._endpoint.libHandleEvents(50)
+
+            info = account.registration_info()
+            if info:
+                last_info = info
+                if info.get("success"):
+                    return {
+                        "success": True,
+                        "status_code": int(info.get("status_code") or 0),
+                        "status_text": str(info.get("status_text") or "OK"),
+                        "registered": bool(info.get("registered")),
+                        "reason": "",
+                        "polls": info.get("polls", 0),
+                    }
+                if info.get("terminal_failure"):
+                    return {
+                        "success": False,
+                        "status_code": int(info.get("status_code") or 0),
+                        "status_text": str(info.get("status_text") or ""),
+                        "registered": bool(info.get("registered")),
+                        "error": f"Registrar replied with {info.get('status_code')}: {info.get('status_text') or 'registration failed'}",
+                        "polls": info.get("polls", 0),
+                    }
+
+            time.sleep(0.2)
+
+        status_code = int(last_info.get("status_code") or 0)
+        status_text = str(last_info.get("status_text") or "")
+        return {
+            "success": False,
+            "status_code": status_code,
+            "status_text": status_text,
+            "registered": bool(last_info.get("registered")),
+            "error": (
+                f"Timed out waiting for SIP registration response ({status_code} {status_text}).".strip()
+                if status_code or status_text
+                else "Timed out waiting for SIP registration response."
+            ),
+            "polls": last_info.get("polls", 0),
+        }
+
     def _build_id_uri(self, profile: SipAccountProfile) -> str:
         if profile.sip_uri:
             return profile.sip_uri
@@ -534,6 +603,7 @@ class _GatewayAccount:
         self._session = session
         self._account_id = account_id
         self._account = None
+        self._poll_count = 0
 
     def create(self, account_cfg: Any) -> None:
         pj = self._session._pj
@@ -549,11 +619,59 @@ class _GatewayAccount:
         call = self._account.makeCall(uri, callback)
         return call
 
+    def registration_info(self) -> dict[str, Any]:
+        if self._account is None:
+            return {}
+
+        self._poll_count += 1
+        info_obj = None
+        with suppress(Exception):
+            info_obj = self._account.getInfo()
+        if info_obj is None:
+            return {"polls": self._poll_count}
+
+        status_code = 0
+        status_text = ""
+        registered = False
+
+        for attr in ("regStatus", "reg_status"):
+            with suppress(Exception):
+                value = getattr(info_obj, attr)
+                if value is not None:
+                    status_code = int(value)
+                    break
+
+        for attr in ("regStatusText", "reg_status_text"):
+            with suppress(Exception):
+                value = getattr(info_obj, attr)
+                if value is not None:
+                    status_text = str(value)
+                    break
+
+        for attr in ("regIsActive", "reg_is_active"):
+            with suppress(Exception):
+                value = getattr(info_obj, attr)
+                registered = bool(value)
+                break
+
+        success = registered and 200 <= status_code < 300
+        terminal_failure = status_code >= 300
+
+        return {
+            "registered": registered,
+            "status_code": status_code,
+            "status_text": status_text,
+            "success": success,
+            "terminal_failure": terminal_failure,
+            "polls": self._poll_count,
+        }
+
     def shutdown(self) -> None:
         if self._account is not None:
             with suppress(Exception):
                 self._account.shutdown()
         self._account = None
+        self._poll_count = 0
 
 
 class _CallCallbackHolder:
