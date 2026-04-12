@@ -10,6 +10,16 @@ from .config import Settings
 
 log = logging.getLogger(__name__)
 
+_SMPP_COMMAND_NAMES = {
+    0x00000001: "bind_receiver",
+    0x00000002: "bind_transmitter",
+    0x00000004: "submit_sm",
+    0x00000005: "deliver_sm",
+    0x00000006: "unbind",
+    0x00000009: "bind_transceiver",
+    0x00000015: "enquire_link",
+}
+
 _SM_PP_BIND_RESP = 0x80000002
 _SM_PP_UNBIND = 0x00000006
 _SM_PP_UNBIND_RESP = 0x80000006
@@ -109,6 +119,17 @@ class SMPPService:
                 command_status = int.from_bytes(header[8:12], "big")
                 sequence = int.from_bytes(header[12:16], "big")
                 body = self._recv_exact(conn, length - 16) if length > 16 else b""
+                log.info(
+                    "SMPP PDU from %s:%s command=%s(0x%08x) status=0x%08x seq=%d length=%d body_hex=%s",
+                    addr[0],
+                    addr[1],
+                    _SMPP_COMMAND_NAMES.get(command_id, "unknown"),
+                    command_id,
+                    command_status,
+                    sequence,
+                    length,
+                    body[:200].hex(),
+                )
                 if command_id == _SM_PP_UNBIND:
                     self._send_pdu(conn, _SM_PP_UNBIND_RESP, 0, sequence, b"")
                     break
@@ -121,7 +142,16 @@ class SMPPService:
                         log.warning("SMPP bind failed from %s:%s", addr[0], addr[1])
                         break
                 else:
-                    log.debug("SMPP command_id=0x%08x status=%d seq=%d", command_id, command_status, sequence)
+                    log.debug(
+                        "SMPP unhandled PDU from %s:%s command=%s(0x%08x) status=0x%08x seq=%d body_hex=%s",
+                        addr[0],
+                        addr[1],
+                        _SMPP_COMMAND_NAMES.get(command_id, "unknown"),
+                        command_id,
+                        command_status,
+                        sequence,
+                        body[:200].hex(),
+                    )
         except Exception as exc:
             log.debug("SMPP client error: %s", exc)
         finally:
