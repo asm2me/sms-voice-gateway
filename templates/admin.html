@@ -1343,7 +1343,7 @@
         <div class="card-header">
           <div>
             <p class="eyebrow">Storage and Persistence</p>
-            <h2>Cache, Redis, reports, retry persistence, and SMPP users</h2>
+            <h2>Cache, Redis, reports, retry persistence, and retained media</h2>
           </div>
           <span class="pill">/admin/config/advanced</span>
         </div>
@@ -1362,6 +1362,43 @@
             <button type="submit" class="button">Save Storage Settings</button>
           </div>
         </form>
+      </section>
+
+      <section class="card config-card config-panel">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">SMPP</p>
+            <h2>SMPP bind settings, users, and routing assignments</h2>
+          </div>
+          <span class="pill">SMPP console</span>
+        </div>
+
+        <section class="settings-group">
+          <div class="card-header compact-header">
+            <div>
+              <p class="eyebrow">SMPP Service and Bind Info</p>
+              <h3 class="settings-group-title">SMPP listener and bind configuration</h3>
+            </div>
+            <span class="pill">/admin/config/advanced</span>
+          </div>
+
+          <form method="post" action="/admin/config/advanced" class="admin-form">
+            <div class="form-grid">
+              {% for field in telephony_settings %}
+              {% if field.name in ['smpp_host', 'smpp_port', 'smpp_system_id', 'smpp_password', 'smpp_system_type', 'smpp_bind_ton', 'smpp_bind_npi', 'smpp_address_range', 'smpp_username'] %}
+              <label class="field-group {% if field.name in ['smpp_host', 'smpp_system_id', 'smpp_username'] %}field-span-2{% endif %}">
+                <span class="field-label">{{ field.label }}</span>
+                {{ render_input(field) }}
+                <small class="muted">{{ field.name }}</small>
+              </label>
+              {% endif %}
+              {% endfor %}
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="button">Save SMPP Service Settings</button>
+            </div>
+          </form>
+        </section>
 
         <section class="settings-group settings-group-spaced">
           <div class="card-header compact-header">
@@ -1415,114 +1452,6 @@
                         <button type="submit" class="button button-danger button-small">Delete</button>
                       </form>
                     </div>
-                  </td>
-                </tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-          {% else %}
-          <div class="empty-state">
-            <h3>No SMPP users configured yet</h3>
-            <p>Create an SMPP account to map authenticated message traffic to a SIP trunk.</p>
-          </div>
-          {% endif %}
-        </section>
-      </section>
-
-      <section class="card config-card config-panel">
-        <div class="card-header">
-          <div>
-            <p class="eyebrow">SMPP</p>
-            <h2>SMPP service, bind info, routing assignments, and system bootstrap dependencies</h2>
-          </div>
-          <span class="pill">SMPP console</span>
-        </div>
-
-        <section class="settings-group">
-          <div class="card-header compact-header">
-            <div>
-              <p class="eyebrow">SMPP Service and Bind Info</p>
-              <h3 class="settings-group-title">SMPP listener and bind configuration</h3>
-            </div>
-            <span class="pill">/admin/config/advanced</span>
-          </div>
-
-          <form method="post" action="/admin/config/advanced" class="admin-form">
-            <div class="form-grid">
-              {% for field in telephony_settings %}
-              {% if field.name in ['smpp_host', 'smpp_port', 'smpp_system_id', 'smpp_password', 'smpp_system_type', 'smpp_bind_ton', 'smpp_bind_npi', 'smpp_address_range', 'smpp_username'] %}
-              <label class="field-group {% if field.name in ['smpp_host', 'smpp_system_id', 'smpp_username'] %}field-span-2{% endif %}">
-                <span class="field-label">{{ field.label }}</span>
-                {{ render_input(field) }}
-                <small class="muted">{{ field.name }}</small>
-              </label>
-              {% endif %}
-              {% endfor %}
-            </div>
-            <div class="form-actions">
-              <button type="submit" class="button">Save SMPP Service Settings</button>
-            </div>
-          </form>
-        </section>
-
-        <section class="settings-group settings-group-spaced">
-          <div class="card-header compact-header">
-            <div>
-              <p class="eyebrow">Assignments</p>
-              <h3 class="settings-group-title">SMPP to SIP mapping</h3>
-            </div>
-            <span class="pill">{{ smpp_sip_assignments|length }} routes</span>
-          </div>
-
-          <form method="post" action="/admin/config/assignments" class="admin-form">
-            <div class="form-grid">
-              <label class="field-group">
-                <span class="field-label">SMPP Username</span>
-                <select name="smpp_username">
-                  <option value="">Select SMPP user</option>
-                  {% for account in smpp_accounts %}
-                  <option value="{{ account.username }}">{{ account.label or account.username or account.id }}</option>
-                  {% endfor %}
-                </select>
-              </label>
-              <label class="field-group">
-                <span class="field-label">SIP Account</span>
-                <select name="sip_account_id">
-                  <option value="">Select SIP account</option>
-                  {% for account in sip_accounts %}
-                  <option value="{{ account.id }}">{{ account.label or account.id }}</option>
-                  {% endfor %}
-                </select>
-              </label>
-            </div>
-            <div class="form-actions">
-              <button type="submit" class="button">Save Assignment</button>
-            </div>
-          </form>
-
-          {% if smpp_sip_assignments %}
-          <div class="table-wrap">
-            <table class="data-table account-table assignment-table">
-              <thead>
-                <tr>
-                  <th>SMPP User</th>
-                  <th>SIP Profile</th>
-                  <th>Routing Mode</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for assignment in smpp_sip_assignments %}
-                <tr>
-                  <td class="mono">{{ assignment.smpp_username or '—' }}</td>
-                  <td>
-                    <strong>{{ assignment.sip_label or assignment.sip_account_id or '—' }}</strong>
-                    <div class="muted account-subtext mono">{{ assignment.sip_account_id or '—' }}</div>
-                  </td>
-                  <td>direct</td>
-                  <td>
-                    <span class="status-badge status-success">active</span>
                   </td>
                 </tr>
                 {% endfor %}
@@ -1656,6 +1585,77 @@
             </section>
           </div>
           {% endfor %}
+        </section>
+
+        <section class="settings-group settings-group-spaced">
+          <div class="card-header compact-header">
+            <div>
+              <p class="eyebrow">Assignments</p>
+              <h3 class="settings-group-title">SMPP to SIP mapping</h3>
+            </div>
+            <span class="pill">{{ smpp_sip_assignments|length }} routes</span>
+          </div>
+
+          <form method="post" action="/admin/config/assignments" class="admin-form">
+            <div class="form-grid">
+              <label class="field-group">
+                <span class="field-label">SMPP Username</span>
+                <select name="smpp_username">
+                  <option value="">Select SMPP user</option>
+                  {% for account in smpp_accounts %}
+                  <option value="{{ account.username }}">{{ account.label or account.username or account.id }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label class="field-group">
+                <span class="field-label">SIP Account</span>
+                <select name="sip_account_id">
+                  <option value="">Select SIP account</option>
+                  {% for account in sip_accounts %}
+                  <option value="{{ account.id }}">{{ account.label or account.id }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="button">Save Assignment</button>
+            </div>
+          </form>
+
+          {% if smpp_sip_assignments %}
+          <div class="table-wrap">
+            <table class="data-table account-table assignment-table">
+              <thead>
+                <tr>
+                  <th>SMPP User</th>
+                  <th>SIP Profile</th>
+                  <th>Routing Mode</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for assignment in smpp_sip_assignments %}
+                <tr>
+                  <td class="mono">{{ assignment.smpp_username or '—' }}</td>
+                  <td>
+                    <strong>{{ assignment.sip_label or assignment.sip_account_id or '—' }}</strong>
+                    <div class="muted account-subtext mono">{{ assignment.sip_account_id or '—' }}</div>
+                  </td>
+                  <td>direct</td>
+                  <td>
+                    <span class="status-badge status-success">active</span>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <div class="empty-state">
+            <h3>No SMPP to SIP assignments yet</h3>
+            <p>Create users and SIP trunks, then add routing assignments here.</p>
+          </div>
+          {% endif %}
         </section>
       </section>
 
