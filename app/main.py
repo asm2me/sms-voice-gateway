@@ -121,16 +121,14 @@ async def admin_portal(request: Request, settings: Settings = Depends(dep_settin
     }
     recent_reports = []
 
-    return templates.TemplateResponse(
-        "admin.html",
-        {
-            "request": request,
-            "active_section": section,
-            "config_snapshot": {"source": "runtime settings", "items": config_items},
-            "report_summary": report_summary,
-            "recent_reports": recent_reports,
-        }
-    )
+    context = {
+        "request": request,
+        "active_section": section,
+        "config_snapshot": {"source": "runtime settings", "items": config_items},
+        "report_summary": report_summary,
+        "recent_reports": recent_reports,
+    }
+    return templates.TemplateResponse("admin.html", context)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
