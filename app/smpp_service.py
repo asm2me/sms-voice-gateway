@@ -34,12 +34,18 @@ _SMPP_STATUS_NAMES = {
     0x0000000E: "ESME_RINVPASWD",
 }
 
+_SM_PP_GENERIC_NACK = 0x80000000
+_SM_PP_BIND_RECEIVER = 0x00000001
+_SM_PP_BIND_TRANSMITTER = 0x00000002
 _SM_PP_BIND_RESP = 0x80000002
+_SM_PP_SUBMIT_SM = 0x00000004
+_SM_PP_SUBMIT_SM_RESP = 0x80000004
+_SM_PP_DELIVER_SM = 0x00000005
 _SM_PP_UNBIND = 0x00000006
 _SM_PP_UNBIND_RESP = 0x80000006
-_SM_PP_BIND_TRANSMITTER = 0x00000002
-_SM_PP_BIND_RECEIVER = 0x00000001
 _SM_PP_BIND_TRANSCEIVER = 0x00000009
+_SM_PP_ENQUIRE_LINK = 0x00000015
+_SM_PP_ENQUIRE_LINK_RESP = 0x80000015
 
 
 @dataclass
@@ -147,6 +153,7 @@ class SMPPService:
                 )
                 if command_id == _SM_PP_UNBIND:
                     self._send_pdu(conn, _SM_PP_UNBIND_RESP, 0, sequence, b"")
+                    log.info("SMPP unbind handled for %s:%s", addr[0], addr[1])
                     break
                 if command_id in {_SM_PP_BIND_RECEIVER, _SM_PP_BIND_TRANSMITTER, _SM_PP_BIND_TRANSCEIVER}:
                     if self._authenticate(body):
@@ -156,7 +163,15 @@ class SMPPService:
                         self._send_pdu(conn, _SM_PP_BIND_RESP | (command_id & 0xFF), 0x0000000E, sequence, b"\x00")
                         log.warning("SMPP bind failed from %s:%s", addr[0], addr[1])
                         break
+                elif command_id == _SM_PP_ENQUIRE_LINK:
+                    self._send_pdu(conn, _SM_PP_ENQUIRE_LINK_RESP, 0, sequence, b"")
+                    log.info("SMPP enquire_link handled for %s:%s", addr[0], addr[1])
+                elif command_id == _SM_PP_SUBMIT_SM:
+                    message_id = b"debug-smpp-message\x00"
+                    self._send_pdu(conn, _SM_PP_SUBMIT_SM_RESP, 0, sequence, message_id)
+                    log.info("SMPP submit_sm acknowledged for %s:%s", addr[0], addr[1])
                 else:
+                    self._send_pdu(conn, _SM_PP_GENERIC_NACK, 0x00000003, sequence, b"")
                     log.debug(
                         "SMPP unhandled PDU from %s:%s command=%s(0x%08x) status=%s(0x%08x) seq=%d body_hex=%s",
                         addr[0],
