@@ -356,11 +356,11 @@
       </div>
       <div class="metric">
         <span class="metric-label">AMI Host</span>
-        <strong class="mono">{{ config_snapshot["items"][5].display_value }}</strong>
+        <strong class="mono">{{ config_snapshot["items"][1].display_value }}</strong>
       </div>
       <div class="metric">
         <span class="metric-label">Redis</span>
-        <strong class="mono">{{ config_snapshot["items"][9].display_value }}</strong>
+        <strong class="mono">{{ config_snapshot["items"][3].display_value }}</strong>
       </div>
       <div class="metric">
         <span class="metric-label">Webhook</span>
@@ -561,241 +561,147 @@
 {% endif %}
 
 {% if active_section == 'config' %}
-<div class="config-tabs">
-  <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-basic" checked>
-  <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-advanced">
-
-  <div class="config-tab-nav">
-    <label for="config-tab-basic" class="config-tab-label">Basic Settings</label>
-    <label for="config-tab-advanced" class="config-tab-label">Advanced Settings</label>
-  </div>
-
-  <div class="config-tab-panels">
-    <section class="card config-card config-panel config-panel-basic">
-      <div class="card-header">
-        <div>
-          <p class="eyebrow">Basic Settings</p>
-          <h2>Editable operational settings</h2>
-          <p class="muted">Tune the runtime behavior without touching the environment file.</p>
-        </div>
-        <span class="pill">/admin/config/basic</span>
+<div class="config-page">
+  <section class="card config-card">
+    <div class="card-header">
+      <div>
+        <p class="eyebrow">Configuration</p>
+        <h2>Edit all runtime settings from the admin portal</h2>
+        <p class="muted">These values are persisted to the config store and applied immediately where supported.</p>
       </div>
+      <span class="pill">Persisted admin config</span>
+    </div>
 
-      <form method="post" action="/admin/config/basic" class="admin-form">
-        <div class="settings-group">
-          <h3 class="settings-group-title">Core runtime</h3>
-          <div class="form-grid">
-            {% for field in basic_settings %}
-            <label class="field-group {% if field.name in ['tts_provider', 'tts_language', 'tts_voice', 'tts_audio_encoding', 'phone_regex'] %}field-span-2{% endif %}">
-              <span class="field-label">{{ field.label }}</span>
-              {% if field.type == 'bool' %}
-              <select name="{{ field.name }}">
-                <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
-                <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
-              </select>
-              {% elif field.name in ['tts_provider', 'tts_audio_encoding', 'tts_language', 'tts_voice', 'phone_regex'] %}
-              <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
-              {% elif field.name in ['tts_speaking_rate'] %}
-              <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
-              {% elif field.name in ['playback_repeats', 'playback_pause_ms'] %}
-              <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
-              {% else %}
-              <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
-              {% endif %}
-              <small class="muted">{{ field.name }}</small>
-            </label>
-            {% endfor %}
-          </div>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="button">Save Basic Settings</button>
-        </div>
-      </form>
-    </section>
+    <div class="config-summary-grid">
+      {% for group in config_groups %}
+      <article class="stat-card stat-card-strong">
+        <span class="stat-label">{{ group.label }}</span>
+        <strong>{{ group.description }}</strong>
+      </article>
+      {% endfor %}
+    </div>
+  </section>
 
-    <section class="card config-card config-panel config-panel-advanced">
-      <div class="card-header">
-        <div>
-          <p class="eyebrow">Advanced Settings</p>
-          <h2>Secrets, AMI, Redis, and storage</h2>
-          <p class="muted">Manage sensitive values and advanced runtime behavior.</p>
-        </div>
-        <span class="pill">/admin/config/advanced</span>
+  {% macro render_input(field) -%}
+    {% if field.is_secret %}
+    <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
+    {% elif field.is_bool %}
+    <select name="{{ field.name }}">
+      <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
+      <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
+    </select>
+    {% elif field.is_integer %}
+    <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
+    {% elif field.is_number %}
+    <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
+    {% else %}
+    <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
+    {% endif %}
+  {%- endmacro %}
+
+  {% for group in config_groups %}
+  <section class="card config-card">
+    <div class="card-header">
+      <div>
+        <p class="eyebrow">{{ group.label }}</p>
+        <h2>{{ group.description }}</h2>
       </div>
+      <span class="pill">/{{ 'admin/config/basic' if group.key == 'basic' else 'admin/config/advanced' }}</span>
+    </div>
 
-      <div class="nested-tabs">
-        <input class="nested-tab-input" type="radio" name="advanced-tab" id="advanced-tab-security" checked>
-        <input class="nested-tab-input" type="radio" name="advanced-tab" id="advanced-tab-tts">
-        <input class="nested-tab-input" type="radio" name="advanced-tab" id="advanced-tab-telephony">
-        <input class="nested-tab-input" type="radio" name="advanced-tab" id="advanced-tab-redis">
-        <input class="nested-tab-input" type="radio" name="advanced-tab" id="advanced-tab-system">
-
-        <div class="nested-tab-nav" aria-label="Advanced settings subsections">
-          <label for="advanced-tab-security" class="nested-tab-label">Security</label>
-          <label for="advanced-tab-tts" class="nested-tab-label">TTS Providers</label>
-          <label for="advanced-tab-telephony" class="nested-tab-label">Telephony / AMI / SMPP</label>
-          <label for="advanced-tab-redis" class="nested-tab-label">Redis / Storage</label>
-          <label for="advanced-tab-system" class="nested-tab-label">System / Admin</label>
-        </div>
-
-        <form method="post" action="/admin/config/advanced" class="admin-form">
-          <section class="nested-panel nested-panel-security">
-            <div class="settings-group">
-              <h3 class="settings-group-title">Security</h3>
-              <div class="form-grid">
-                {% for field in advanced_settings %}
-                {% if field.name in ['webhook_secret', 'admin_password', 'rate_limit_hourly', 'rate_limit_daily'] %}
-                <label class="field-group {% if field.name in ['webhook_secret', 'admin_password'] %}field-span-2{% endif %}">
-                  <span class="field-label">{{ field.label }}</span>
-                  {% if field.is_secret %}
-                  <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
-                  {% elif field.type == 'bool' %}
-                  <select name="{{ field.name }}">
-                    <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
-                    <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
-                  </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds'] %}
-                  <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% elif field.name in ['tts_speaking_rate'] %}
-                  <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% else %}
-                  <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% endif %}
-                  <small class="muted">{{ field.name }}</small>
-                </label>
-                {% endif %}
-                {% endfor %}
-              </div>
-            </div>
-          </section>
-
-          <section class="nested-panel nested-panel-tts">
-            <div class="settings-group">
-              <h3 class="settings-group-title">TTS Providers</h3>
-              <div class="form-grid">
-                {% for field in advanced_settings %}
-                {% if field.name in ['tts_provider', 'tts_language', 'tts_voice', 'tts_audio_encoding', 'tts_speaking_rate', 'audio_cache_ttl'] %}
-                <label class="field-group {% if field.name in ['tts_provider', 'tts_voice', 'tts_audio_encoding'] %}field-span-2{% endif %}">
-                  <span class="field-label">{{ field.label }}</span>
-                  {% if field.is_secret %}
-                  <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
-                  {% elif field.type == 'bool' %}
-                  <select name="{{ field.name }}">
-                    <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
-                    <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
-                  </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds'] %}
-                  <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% elif field.name in ['tts_speaking_rate'] %}
-                  <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% else %}
-                  <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% endif %}
-                  <small class="muted">{{ field.name }}</small>
-                </label>
-                {% endif %}
-                {% endfor %}
-              </div>
-            </div>
-          </section>
-
-          <section class="nested-panel nested-panel-telephony">
-            <div class="settings-group">
-              <h3 class="settings-group-title">Telephony / AMI</h3>
-              <div class="form-grid">
-                {% for field in advanced_settings %}
-                {% if field.name in ['ami_host', 'ami_port', 'ami_username', 'ami_secret', 'ami_connection_timeout', 'ami_response_timeout', 'call_answer_timeout', 'phone_regex', 'smpp_enabled', 'smpp_host', 'smpp_port', 'smpp_username', 'smpp_password'] %}
-                <label class="field-group {% if field.name in ['ami_host', 'ami_username', 'phone_regex', 'smpp_host', 'smpp_username'] %}field-span-2{% endif %}">
-                  <span class="field-label">{{ field.label }}</span>
-                  {% if field.is_secret %}
-                  <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
-                  {% elif field.type == 'bool' %}
-                  <select name="{{ field.name }}">
-                    <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
-                    <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
-                  </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds', 'smpp_port'] %}
-                  <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% elif field.name in ['tts_speaking_rate'] %}
-                  <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% else %}
-                  <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% endif %}
-                  <small class="muted">{{ field.name }}</small>
-                </label>
-                {% endif %}
-                {% endfor %}
-              </div>
-            </div>
-          </section>
-
-          <section class="nested-panel nested-panel-redis">
-            <div class="settings-group">
-              <h3 class="settings-group-title">Redis / Storage</h3>
-              <div class="form-grid">
-                {% for field in advanced_settings %}
-                {% if field.name in ['redis_url', 'delivery_report_max_items', 'audio_cache_ttl'] %}
-                <label class="field-group {% if field.name in ['redis_url'] %}field-span-2{% endif %}">
-                  <span class="field-label">{{ field.label }}</span>
-                  {% if field.is_secret %}
-                  <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
-                  {% elif field.type == 'bool' %}
-                  <select name="{{ field.name }}">
-                    <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
-                    <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
-                  </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds'] %}
-                  <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% elif field.name in ['tts_speaking_rate'] %}
-                  <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% else %}
-                  <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% endif %}
-                  <small class="muted">{{ field.name }}</small>
-                </label>
-                {% endif %}
-                {% endfor %}
-              </div>
-            </div>
-          </section>
-
-          <section class="nested-panel nested-panel-system">
-            <div class="settings-group">
-              <h3 class="settings-group-title">System / Admin</h3>
-              <div class="form-grid">
-                {% for field in advanced_settings %}
-                {% if field.name in ['host', 'port', 'debug', 'webhook_url', 'google_credentials_json', 'aws_access_key_id', 'aws_secret_access_key', 'openai_api_key', 'elevenlabs_api_key'] %}
-                <label class="field-group {% if field.name in ['webhook_url', 'google_credentials_json', 'openai_api_key', 'elevenlabs_api_key'] %}field-span-2{% endif %}">
-                  <span class="field-label">{{ field.label }}</span>
-                  {% if field.is_secret %}
-                  <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
-                  {% elif field.type == 'bool' %}
-                  <select name="{{ field.name }}">
-                    <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
-                    <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
-                  </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds'] %}
-                  <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% elif field.name in ['tts_speaking_rate'] %}
-                  <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% else %}
-                  <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
-                  {% endif %}
-                  <small class="muted">{{ field.name }}</small>
-                </label>
-                {% endif %}
-                {% endfor %}
-              </div>
-            </div>
-          </section>
-
-          <div class="form-actions">
-            <button type="submit" class="button">Save Advanced Settings</button>
-          </div>
-        </form>
+    {% if group.key == 'basic' %}
+    <form method="post" action="/admin/config/basic" class="admin-form">
+      <div class="form-grid">
+        {% for field in basic_settings %}
+        <label class="field-group {% if field.name in ['tts_provider', 'tts_language', 'tts_voice', 'tts_audio_encoding', 'phone_regex'] %}field-span-2{% endif %}">
+          <span class="field-label">{{ field.label }}</span>
+          {{ render_input(field) }}
+          <small class="muted">{{ field.name }}</small>
+        </label>
+        {% endfor %}
       </div>
-    </section>
-  </div>
+      <div class="form-actions">
+        <button type="submit" class="button">Save Core Voice Routing</button>
+      </div>
+    </form>
+    {% elif group.key == 'security' %}
+    <form method="post" action="/admin/config/advanced" class="admin-form">
+      <div class="form-grid">
+        {% for field in security_settings %}
+        <label class="field-group {% if field.name in ['webhook_secret', 'admin_username', 'admin_password'] %}field-span-2{% endif %}">
+          <span class="field-label">{{ field.label }}</span>
+          {{ render_input(field) }}
+          <small class="muted">{{ field.name }}</small>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="button">Save Security Settings</button>
+      </div>
+    </form>
+    {% elif group.key == 'providers' %}
+    <form method="post" action="/admin/config/advanced" class="admin-form">
+      <div class="form-grid">
+        {% for field in provider_settings %}
+        <label class="field-group {% if field.name in ['google_credentials_json', 'openai_api_key', 'elevenlabs_api_key', 'aws_secret_access_key'] %}field-span-2{% endif %}">
+          <span class="field-label">{{ field.label }}</span>
+          {{ render_input(field) }}
+          <small class="muted">{{ field.name }}</small>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="button">Save Provider Settings</button>
+      </div>
+    </form>
+    {% elif group.key == 'telephony' %}
+    <form method="post" action="/admin/config/advanced" class="admin-form">
+      <div class="form-grid">
+        {% for field in telephony_settings %}
+        <label class="field-group {% if field.name in ['ami_host', 'ami_username', 'sip_channel_prefix', 'outbound_caller_id', 'asterisk_context', 'smpp_host', 'smpp_username'] %}field-span-2{% endif %}">
+          <span class="field-label">{{ field.label }}</span>
+          {{ render_input(field) }}
+          <small class="muted">{{ field.name }}</small>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="button">Save Telephony Settings</button>
+      </div>
+    </form>
+    {% elif group.key == 'storage' %}
+    <form method="post" action="/admin/config/advanced" class="admin-form">
+      <div class="form-grid">
+        {% for field in storage_settings %}
+        <label class="field-group {% if field.name in ['audio_cache_dir', 'asterisk_sounds_dir', 'delivery_report_store_path', 'redis_url'] %}field-span-2{% endif %}">
+          <span class="field-label">{{ field.label }}</span>
+          {{ render_input(field) }}
+          <small class="muted">{{ field.name }}</small>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="button">Save Storage Settings</button>
+      </div>
+    </form>
+    {% elif group.key == 'system' %}
+    <form method="post" action="/admin/config/advanced" class="admin-form">
+      <div class="form-grid">
+        {% for field in system_settings %}
+        <label class="field-group {% if field.name in ['host'] %}field-span-2{% endif %}">
+          <span class="field-label">{{ field.label }}</span>
+          {{ render_input(field) }}
+          <small class="muted">{{ field.name }}</small>
+        </label>
+        {% endfor %}
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="button">Save Bootstrap Settings</button>
+      </div>
+    </form>
+    {% endif %}
+  </section>
+  {% endfor %}
 </div>
 {% endif %}
 {% endblock %}

@@ -13,6 +13,16 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 CONFIG_STORE_PATH = DATA_DIR / "config.json"
 
+BOOTSTRAP_ONLY_FIELDS = {
+    "host",
+    "port",
+    "debug",
+    "admin_username",
+    "admin_password",
+}
+
+ADMIN_MANAGED_FIELDS = set(Settings.model_fields) - BOOTSTRAP_ONLY_FIELDS
+
 
 def _ensure_parent_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,14 +65,25 @@ def save_persistent_config(
 
 
 def build_settings_data(settings: Settings) -> dict[str, Any]:
-    return settings.model_dump()
+    data = settings.model_dump()
+    for field in BOOTSTRAP_ONLY_FIELDS:
+        data.pop(field, None)
+    return data
 
 
 def load_settings_from_store(path: Path | str = CONFIG_STORE_PATH) -> Settings:
+    env_settings = Settings()
     data = load_persistent_config(path)
     if not data:
-        return Settings()
-    return Settings(**data)
+        return env_settings
+
+    merged = env_settings.model_dump()
+    for key, value in data.items():
+        if key in BOOTSTRAP_ONLY_FIELDS:
+            continue
+        merged[key] = value
+
+    return Settings(**merged)
 
 
 def save_settings_to_store(settings: Settings, path: Path | str = CONFIG_STORE_PATH) -> Path:

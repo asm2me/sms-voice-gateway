@@ -37,8 +37,8 @@ from pydantic import BaseModel
 from .admin_reports import get_delivery_report_collector, record_delivery_report
 from .ami_service import AMIService
 from .cache import AudioCache, RateLimiter, get_redis
-from .config import Settings, get_settings
-from .config_store import load_settings_from_store, save_settings_to_store
+from .config import Settings
+from .config_store import ADMIN_MANAGED_FIELDS, load_settings_from_store, save_settings_to_store
 from .sms_handler import IncomingSMS, SMSGateway
 from .smpp_service import SMPPService
 
@@ -61,9 +61,8 @@ _retry_worker_thread: Thread | None = None
 def _retry_worker_loop() -> None:
     while not _retry_worker_stop.is_set():
         try:
-            settings = get_settings()
+            settings = load_settings_from_store()
             collector = get_delivery_report_collector(settings)
-            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             if hasattr(collector, "list_reports"):
                 pass
         except Exception as exc:
@@ -90,11 +89,18 @@ def _stop_retry_worker() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
+    settings = load_settings_from_store()
     smpp_service = SMPPService(settings)
     app.state.smpp_service = smpp_service
-    log.info("SMS Voice Gateway starting (TTS=%s, AMI=%s:%d, SMPP=%s:%d enabled=%s)",
-             settings.tts_provider, settings.ami_host, settings.ami_port, settings.smpp_host, settings.smpp_port, settings.smpp_enabled)
+    log.info(
+        "SMS Voice Gateway starting (TTS=%s, AMI=%s:%d, SMPP=%s:%d enabled=%s)",
+        settings.tts_provider,
+        settings.ami_host,
+        settings.ami_port,
+        settings.smpp_host,
+        settings.smpp_port,
+        settings.smpp_enabled,
+    )
     try:
         smpp_service.start()
     except Exception:
@@ -148,83 +154,25 @@ def _is_secret_field(name: str) -> bool:
     return any(token in lowered for token in ("secret", "password", "token", "key", "credential"))
 
 
-def _settings_sections(settings: Settings) -> dict[str, list[dict[str, str]]]:
-    basic_fields = [
-        ("tts_provider", "TTS Provider"),
-        ("tts_language", "TTS Language"),
-        ("tts_voice", "TTS Voice"),
-        ("tts_speaking_rate", "Speaking Rate"),
-        ("tts_audio_encoding", "Audio Encoding"),
-        ("phone_regex", "Phone Regex"),
-        ("strip_call_prefix", "Strip Call Prefix"),
-        ("playback_repeats", "Playback Repeats"),
-        ("playback_pause_ms", "Playback Pause (ms)"),
-    ]
-    advanced_fields = [
-        ("webhook_secret", "Webhook Secret"),
-        ("google_credentials_json", "Google Credentials JSON"),
-        ("aws_access_key_id", "AWS Access Key ID"),
-        ("aws_secret_access_key", "AWS Secret Access Key"),
-        ("aws_region", "AWS Region"),
-        ("aws_polly_voice_id", "AWS Polly Voice ID"),
-        ("aws_polly_engine", "AWS Polly Engine"),
-        ("openai_api_key", "OpenAI API Key"),
-        ("openai_tts_model", "OpenAI TTS Model"),
-        ("openai_tts_voice", "OpenAI TTS Voice"),
-        ("elevenlabs_api_key", "ElevenLabs API Key"),
-        ("elevenlabs_voice_id", "ElevenLabs Voice ID"),
-        ("audio_cache_dir", "Audio Cache Directory"),
-        ("asterisk_sounds_dir", "Asterisk Sounds Directory"),
-        ("audio_cache_ttl", "Audio Cache TTL"),
-        ("ami_host", "AMI Host"),
-        ("ami_port", "AMI Port"),
-        ("ami_username", "AMI Username"),
-        ("ami_secret", "AMI Secret"),
-        ("ami_connection_timeout", "AMI Connection Timeout"),
-        ("ami_response_timeout", "AMI Response Timeout"),
-        ("sip_channel_prefix", "SIP Channel Prefix"),
-        ("outbound_caller_id", "Outbound Caller ID"),
-        ("call_answer_timeout", "Call Answer Timeout"),
-        ("asterisk_context", "Asterisk Context"),
-        ("asterisk_exten", "Asterisk Exten"),
-        ("asterisk_priority", "Asterisk Priority"),
-        ("delivery_retry_count", "Delivery Retry Count"),
-        ("delivery_retry_interval_seconds", "Delivery Retry Interval Seconds"),
-        ("redis_url", "Redis URL"),
-        ("redis_prefix", "Redis Prefix"),
-        ("smpp_enabled", "SMPP Enabled"),
-        ("smpp_host", "SMPP Host"),
-        ("smpp_port", "SMPP Port"),
-        ("smpp_username", "SMPP Username"),
-        ("smpp_password", "SMPP Password"),
-        ("rate_limit_hourly", "Rate Limit Hourly"),
-        ("rate_limit_daily", "Rate Limit Daily"),
-        ("delivery_report_store_path", "Delivery Report Store Path"),
-        ("delivery_report_max_items", "Delivery Report Max Items"),
-        ("host", "Host"),
-        ("port", "Port"),
-        ("debug", "Debug"),
-        ("admin_username", "Admin Username"),
-        ("admin_password", "Admin Password"),
-    ]
-
-    def build_items(field_specs: list[tuple[str, str]]) -> list[dict[str, str]]:
-        items: list[dict[str, str]] = []
-        for name, label in field_specs:
-            value = getattr(settings, name)
-            items.append(
-                {
-                    "name": name,
-                    "label": label,
-                    "value": "••••••" if _is_secret_field(name) and value else "" if value is None else str(value),
-                    "raw_value": "" if value is None else str(value),
-                    "type": type(value).__name__,
-                    "is_secret": _is_secret_field(name),
-                }
-            )
-        return items
-
-    return {"basic": build_items(basic_fields), "advanced": build_items(advanced_fields)}
+def _build_setting_items(settings: Settings, field_specs: list[tuple[str, str]]) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for name, label in field_specs:
+        value = getattr(settings, name)
+        value_type = type(value).__name__
+        items.append(
+            {
+                "name": name,
+                "label": label,
+                "value": "••••••" if _is_secret_field(name) and value else "" if value is None else str(value),
+                "raw_value": "" if value is None else str(value),
+                "type": value_type,
+                "is_secret": _is_secret_field(name),
+                "is_bool": value_type == "bool",
+                "is_integer": value_type == "int",
+                "is_number": value_type in {"float"},
+            }
+        )
+    return items
 
 
 def _report_context(settings: Settings) -> tuple[dict, list[dict]]:
@@ -266,6 +214,7 @@ def _config_items(settings: Settings) -> list[dict[str, str]]:
         {"label": "Webhook Secret", "display_value": "configured" if settings.webhook_secret else "not configured", "visibility": "protected"},
     ]
 
+
 def _build_queue_context(settings: Settings) -> tuple[dict, list[dict], dict, list[dict]]:
     from .admin_reports import list_inbox_messages, list_queue_items, summarize_inbox, summarize_queue
 
@@ -297,10 +246,26 @@ def _record_gateway_result(provider: str, result, *, phone_number: str = "", mes
 def _save_admin_config(form, keys: list[str]) -> Settings:
     current = load_settings_from_store()
     data = current.model_dump()
+    field_types = {name: field.annotation for name, field in Settings.model_fields.items()}
+
     for key in keys:
-        if key in form:
-            raw = str(form.get(key, "")).strip()
-            data[key] = raw if raw != "" else data.get(key)
+        if key not in form:
+            continue
+
+        raw = str(form.get(key, "")).strip()
+        annotation = field_types.get(key)
+
+        if annotation is bool:
+            data[key] = raw.lower() in {"1", "true", "yes", "on"}
+        elif annotation is int:
+            if raw != "":
+                data[key] = int(raw)
+        elif annotation is float:
+            if raw != "":
+                data[key] = float(raw)
+        elif raw != "":
+            data[key] = raw
+
     updated = Settings(**data)
     save_settings_to_store(updated)
     return updated
@@ -314,7 +279,6 @@ def _admin_context(
     success_message: str | None = None,
     health_context: dict | None = None,
 ) -> dict:
-    settings_sections = _settings_sections(settings)
     report_summary, recent_reports = _report_context(settings)
     sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items = _build_queue_context(settings)
     context = {
@@ -327,14 +291,107 @@ def _admin_context(
         "recent_inbox_messages": recent_inbox_messages,
         "queue_summary": queue_summary,
         "recent_queue_items": recent_queue_items,
-        "basic_settings": settings_sections["basic"],
-        "advanced_settings": settings_sections["advanced"],
+        "basic_settings": _build_setting_items(
+            settings,
+            [
+                ("tts_provider", "TTS Provider"),
+                ("tts_language", "TTS Language"),
+                ("tts_voice", "TTS Voice"),
+                ("tts_speaking_rate", "Speaking Rate"),
+                ("tts_audio_encoding", "Audio Encoding"),
+                ("phone_regex", "Phone Regex"),
+                ("strip_call_prefix", "Strip Call Prefix"),
+                ("playback_repeats", "Playback Repeats"),
+                ("playback_pause_ms", "Playback Pause (ms)"),
+            ],
+        ),
+        "security_settings": _build_setting_items(
+            settings,
+            [
+                ("webhook_secret", "Webhook Secret"),
+                ("rate_limit_hourly", "Rate Limit Hourly"),
+                ("rate_limit_daily", "Rate Limit Daily"),
+            ],
+        ),
+        "provider_settings": _build_setting_items(
+            settings,
+            [
+                ("google_credentials_json", "Google Credentials JSON"),
+                ("aws_access_key_id", "AWS Access Key ID"),
+                ("aws_secret_access_key", "AWS Secret Access Key"),
+                ("aws_region", "AWS Region"),
+                ("aws_polly_voice_id", "AWS Polly Voice ID"),
+                ("aws_polly_engine", "AWS Polly Engine"),
+                ("openai_api_key", "OpenAI API Key"),
+                ("openai_tts_model", "OpenAI TTS Model"),
+                ("openai_tts_voice", "OpenAI TTS Voice"),
+                ("elevenlabs_api_key", "ElevenLabs API Key"),
+                ("elevenlabs_voice_id", "ElevenLabs Voice ID"),
+            ],
+        ),
+        "telephony_settings": _build_setting_items(
+            settings,
+            [
+                ("ami_host", "AMI Host"),
+                ("ami_port", "AMI Port"),
+                ("ami_username", "AMI Username"),
+                ("ami_secret", "AMI Secret"),
+                ("ami_connection_timeout", "AMI Connection Timeout"),
+                ("ami_response_timeout", "AMI Response Timeout"),
+                ("sip_channel_prefix", "SIP Channel Prefix"),
+                ("outbound_caller_id", "Outbound Caller ID"),
+                ("call_answer_timeout", "Call Answer Timeout"),
+                ("asterisk_context", "Asterisk Context"),
+                ("asterisk_exten", "Asterisk Exten"),
+                ("asterisk_priority", "Asterisk Priority"),
+                ("smpp_enabled", "SMPP Enabled"),
+                ("smpp_host", "SMPP Host"),
+                ("smpp_port", "SMPP Port"),
+                ("smpp_username", "SMPP Username"),
+                ("smpp_password", "SMPP Password"),
+            ],
+        ),
+        "storage_settings": _build_setting_items(
+            settings,
+            [
+                ("audio_cache_dir", "Audio Cache Directory"),
+                ("asterisk_sounds_dir", "Asterisk Sounds Directory"),
+                ("audio_cache_ttl", "Audio Cache TTL"),
+                ("delivery_retry_count", "Delivery Retry Count"),
+                ("delivery_retry_interval_seconds", "Delivery Retry Interval Seconds"),
+                ("redis_url", "Redis URL"),
+                ("redis_prefix", "Redis Prefix"),
+                ("delivery_report_store_path", "Delivery Report Store Path"),
+                ("delivery_report_max_items", "Delivery Report Max Items"),
+            ],
+        ),
+        "system_settings": _build_setting_items(
+            settings,
+            [
+                ("host", "Host"),
+                ("port", "Port"),
+                ("debug", "Debug"),
+                ("admin_username", "Admin Username"),
+                ("admin_password", "Admin Password"),
+            ],
+        ),
+        "config_groups": [
+            {"key": "basic", "label": "Core Voice Routing", "description": "TTS, parsing, and playback behavior"},
+            {"key": "security", "label": "Security and Access", "description": "Webhook verification and rate limiting"},
+            {"key": "providers", "label": "Speech Provider Credentials", "description": "Cloud/provider credentials and engine options"},
+            {"key": "telephony", "label": "Telephony and Gateway Routing", "description": "AMI, SIP, SMPP, and dialing behavior"},
+            {"key": "storage", "label": "Storage and Persistence", "description": "Cache, Redis, reports, and retry persistence"},
+            {"key": "system", "label": "System Bootstrap", "description": "Minimal env/bootstrap values that start the admin"},
+        ],
         "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
         "health": health_context or _build_health_context(settings),
+        "bootstrap_fields": ["host", "port", "debug", "admin_username", "admin_password"],
+        "admin_managed_fields": sorted(ADMIN_MANAGED_FIELDS),
     }
     if success_message:
         context["success_message"] = success_message
     return context
+
 
 def _ami_debug_probe(settings: Settings) -> dict:
     result = {
@@ -367,6 +424,7 @@ def _ami_debug_probe(settings: Settings) -> dict:
     except Exception as exc:
         result["details"].append(f"Error: {type(exc).__name__}: {exc}")
         return result
+
 
 def _build_health_context(settings: Settings) -> dict:
     checked_at = time.time()
@@ -822,11 +880,6 @@ async def admin_update_advanced_config(
             "rate_limit_daily",
             "delivery_report_store_path",
             "delivery_report_max_items",
-            "host",
-            "port",
-            "debug",
-            "admin_username",
-            "admin_password",
         ],
     )
 

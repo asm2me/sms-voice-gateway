@@ -20,6 +20,59 @@ A FastAPI-based SMS-to-voice gateway that receives incoming SMS webhooks, conver
 - Asterisk AMI integration for outbound call origination
 - Dockerized deployment support
 
+## Configuration model
+
+This project uses an admin-first configuration model:
+
+- `.env` is only for a small bootstrap set of settings needed to start the app.
+- Operational settings are managed in the web admin UI and persisted to disk.
+- Runtime requests load the saved configuration from the config store rather than directly from environment variables.
+
+The persisted config store is used by the admin portal and by the application at runtime after startup.
+
+### Bootstrap settings kept in `.env`
+
+Keep only the settings needed to boot and reach the admin UI, such as:
+
+- `HOST`
+- `PORT`
+- `DEBUG`
+- `WEBHOOK_SECRET`
+- `REDIS_URL`
+- `REDIS_PREFIX`
+- `AUDIO_CACHE_DIR`
+- `ASTERISK_SOUNDS_DIR`
+
+Depending on your deployment, you may also keep any other purely bootstrap/runtime-path setting required before the admin config is available.
+
+### Admin-managed settings
+
+These are edited in the web admin and saved to the config store:
+
+- TTS provider and voice settings
+- Google / AWS / OpenAI / ElevenLabs credentials and model settings
+- AMI connection details
+- SMPP settings
+- SIP / outbound call settings
+- rate limiting and playback settings
+- phone formatting rules
+- other operational gateway behavior
+
+## First run
+
+1. Create your minimal `.env` file from `.env.example`.
+2. Start Redis and Asterisk so the gateway can reach them.
+3. Run the application.
+4. Open the admin UI in your browser.
+5. Set the admin credentials if prompted, then save your gateway configuration in the Configuration page.
+6. Save the configuration to persist it to disk.
+
+After the first save, the application will load the persisted settings from the config store.
+
+### Default admin access
+
+The admin UI is protected by the application’s admin credentials. On first run, use the bootstrap admin credentials defined by your deployment or the application defaults, then change them immediately after login.
+
 ## Prerequisites
 
 - Python 3.11+
@@ -35,43 +88,22 @@ A FastAPI-based SMS-to-voice gateway that receives incoming SMS webhooks, conver
 
 ## Environment setup
 
-The application reads configuration from `.env` using `pydantic-settings`. Start from `.env.example` and create your local `.env`.
+Start from `.env.example` and create your local `.env` with only the bootstrap values you need to launch the app.
 
-Common settings include:
-
-- `HOST`, `PORT`, `DEBUG`
-- `WEBHOOK_SECRET`
-- `TTS_PROVIDER`
-- `TTS_LANGUAGE`, `TTS_VOICE`, `TTS_SPEAKING_RATE`, `TTS_AUDIO_ENCODING`
-- `GOOGLE_CREDENTIALS_JSON`
-- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `AWS_POLLY_VOICE_ID`, `AWS_POLLY_ENGINE`
-- `OPENAI_API_KEY`, `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`
-- `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`
-- `AUDIO_CACHE_DIR`, `ASTERISK_SOUNDS_DIR`, `AUDIO_CACHE_TTL`
-- `AMI_HOST`, `AMI_PORT`, `AMI_USERNAME`, `AMI_SECRET`
-- `SMPP_ENABLED`, `SMPP_HOST`, `SMPP_PORT`, `SMPP_USERNAME`, `SMPP_PASSWORD`
-- `SIP_CHANNEL_PREFIX`, `OUTBOUND_CALLER_ID`
-- `ASTERISK_CONTEXT`, `ASTERISK_EXTEN`, `ASTERISK_PRIORITY`
-- `REDIS_URL`, `REDIS_PREFIX`
-- `RATE_LIMIT_HOURLY`, `RATE_LIMIT_DAILY`
-- `PHONE_REGEX`, `STRIP_CALL_PREFIX`
-- `PLAYBACK_REPEATS`, `PLAYBACK_PAUSE_MS`
-
-Example:
+Example minimal `.env`:
 
 ```env
-TTS_PROVIDER=google
+HOST=0.0.0.0
+PORT=8000
+DEBUG=false
+WEBHOOK_SECRET=change_me_in_production
 REDIS_URL=redis://localhost:6379/0
-AMI_HOST=127.0.0.1
-AMI_PORT=5038
-AMI_USERNAME=manager
-AMI_SECRET=manager_secret
-SMPP_ENABLED=true
-SMPP_PORT=7070
-SMPP_USERNAME=smpp
-SMPP_PASSWORD=smpp_secret
-WEBHOOK_SECRET=change-me
+REDIS_PREFIX=sms_gw:
+AUDIO_CACHE_DIR=./audio_cache
+ASTERISK_SOUNDS_DIR=/var/lib/asterisk/sounds/sms_otp
 ```
+
+If your deployment requires a different bootstrap path or host binding, adjust only those values in `.env`. All telephony, TTS, SMPP, and rate-limit behavior should be configured in the admin UI.
 
 ## Installation
 
@@ -83,7 +115,8 @@ WEBHOOK_SECRET=change-me
    ```bash
    python scripts/dev.py --setup-only
    ```
-4. Copy `.env.example` to `.env` and edit values.
+4. Create your minimal `.env` file from `.env.example`.
+5. Start the app and complete configuration in the admin UI.
 
 To create the virtualenv, install dependencies, and start the app in one step:
 
@@ -114,13 +147,28 @@ For the service to work end-to-end, make sure these are reachable:
 - SMPP port reachable at `SMPP_HOST:SMPP_PORT` if enabled
 - Asterisk can access the audio cache directory configured by `AUDIO_CACHE_DIR` and `ASTERISK_SOUNDS_DIR`
 
+## Web admin configuration
+
+Use the admin portal to manage operational settings.
+
+Common tasks include:
+
+- selecting the TTS provider
+- entering provider credentials
+- configuring AMI credentials
+- enabling and configuring SMPP
+- adjusting rate limits and playback behavior
+- reviewing configuration snapshots and delivery reports
+
+The admin configuration is persisted to disk by the application. This means settings survive restarts without needing to be re-entered in `.env`.
+
 ## Docker
 
 A `Dockerfile` and `docker-compose.yml` are provided.
 
 ### Run with Docker Compose
 
-1. Create your `.env` file from `.env.example`.
+1. Create your minimal `.env` file from `.env.example`.
 2. Start the stack:
    ```bash
    docker compose up --build
@@ -165,10 +213,10 @@ docker run --rm -p 8000:8000 --env-file .env sms-voice-gateway
 
 ## SMPP support
 
-This project now includes a lightweight SMPP listener intended for inbound bind/login verification and future gateway integration.
+This project includes a lightweight SMPP listener intended for inbound bind/login verification and future gateway integration.
 
 - Default listen port: `7070`
-- Configurable via:
+- Configurable via the web admin:
   - `SMPP_ENABLED`
   - `SMPP_HOST`
   - `SMPP_PORT`
@@ -180,19 +228,18 @@ Notes:
 - The listener is started when the app boots if `SMPP_ENABLED=true`.
 - The implementation currently supports basic SMPP bind/unbind handling with credential validation.
 - Logs show connection lifecycle events without exposing secrets.
-- If you need a full production SMPP SMSC/ESME feature set, consider replacing the lightweight listener with a dedicated SMPP server package later.
 
 ## Troubleshooting
 
 - **Health check returns `degraded`**: verify Redis and Asterisk AMI are reachable.
 - **Twilio webhook returns 403**: ensure `WEBHOOK_SECRET` is configured correctly and Twilio is sending the expected signature header.
-- **No outbound call is placed**: confirm `AMI_*` credentials, `SIP_CHANNEL_PREFIX`, and the Asterisk dialplan context are correct.
+- **No outbound call is placed**: confirm AMI credentials, SIP channel prefix, and the Asterisk dialplan context are correct.
 - **Audio files are not found by Asterisk**: make sure `AUDIO_CACHE_DIR` and `ASTERISK_SOUNDS_DIR` point to a shared or mounted path.
-- **Wrong TTS voice or language**: verify the selected provider-specific voice settings.
+- **Wrong TTS voice or language**: verify the selected provider-specific voice settings in the admin UI.
 - **Redis connection errors in Docker**: use the compose-provided `REDIS_URL=redis://redis:6379/0` or point to a reachable Redis instance.
 - **SMPP bind fails**: confirm `SMPP_USERNAME` and `SMPP_PASSWORD` match the connecting gateway credentials, and that the port is exposed if running in Docker.
 
 ## Notes
 
-- The gateway uses `.env` by default and ignores unknown extra environment variables.
+- The application prefers persisted admin configuration for operational settings and uses `.env` only for bootstrap values.
 - Twilio request validation is minimal in code; for production use, consider the official Twilio validator library.

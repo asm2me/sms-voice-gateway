@@ -9,13 +9,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # ── Server ────────────────────────────────────────────────────────────────
+    # ── Bootstrap / runtime ──────────────────────────────────────────────────
+    # These remain env-driven so the app can start and the admin UI can load.
     host: str = "0.0.0.0"
     port: int = 8000
     debug: bool = False
+    admin_username: str = "admin"
+    admin_password: str = "change-me"
+    delivery_report_store_path: Optional[str] = None
+
+    # ── Admin-managed operational settings ───────────────────────────────────
     webhook_secret: str = ""          # shared secret to validate SMS providers
 
-    # ── TTS ───────────────────────────────────────────────────────────────────
+    # TTS
     tts_provider: Literal["google", "aws_polly", "openai", "elevenlabs"] = "google"
     tts_language: str = "en-US"
     tts_voice: str = "en-US-Neural2-F"   # Google voice name
@@ -41,14 +47,12 @@ class Settings(BaseSettings):
     elevenlabs_api_key: Optional[str] = None
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"
 
-    # ── Audio cache ───────────────────────────────────────────────────────────
+    # Audio cache
     audio_cache_dir: str = "./audio_cache"
-    # Asterisk-accessible path (symlink or shared mount if different machine)
     asterisk_sounds_dir: str = "/var/lib/asterisk/sounds/sms_otp"
-    # How long to keep cached audio (seconds)
     audio_cache_ttl: int = 7 * 24 * 3600   # 7 days
 
-    # ── Asterisk AMI ──────────────────────────────────────────────────────────
+    # Asterisk AMI
     ami_host: str = "127.0.0.1"
     ami_port: int = 5038
     ami_username: str = "manager"
@@ -57,51 +61,41 @@ class Settings(BaseSettings):
     ami_response_timeout: int = 30
 
     # SIP trunk / channel template used in AMI Originate
-    # Examples: "SIP/my_trunk", "PJSIP/my_trunk", "DAHDI/g1"
     sip_channel_prefix: str = "PJSIP/trunk"
-    # CallerID presented on outbound calls
     outbound_caller_id: str = "OTP Service <0000>"
-    # Seconds to wait for the remote to answer
     call_answer_timeout: int = 30
-    # Asterisk dialplan context that handles the answered call
     asterisk_context: str = "sms-voice-otp"
     asterisk_exten: str = "s"
     asterisk_priority: str = "1"
 
-    # ── Retry policy ──────────────────────────────────────────────────────────
+    # Retry policy
     delivery_retry_count: int = 2
     delivery_retry_interval_seconds: int = 60
 
-    # ── Redis cache ───────────────────────────────────────────────────────────
+    # Redis cache
     redis_url: str = "redis://localhost:6379/0"
     redis_prefix: str = "sms_gw:"
 
-    # ── SMPP listener ─────────────────────────────────────────────────────────
+    # SMPP listener
     smpp_enabled: bool = False
     smpp_host: str = "0.0.0.0"
     smpp_port: int = 7070
     smpp_username: str = "smpp"
     smpp_password: str = "smpp_secret"
 
-    # ── Rate limiting ─────────────────────────────────────────────────────────
+    # Rate limiting
     rate_limit_hourly: int = 3    # max calls per number per hour
     rate_limit_daily: int = 10    # max calls per number per day
 
-    # ── SMS parsing ───────────────────────────────────────────────────────────
-    # Regex applied to SMS body to extract destination phone number.
-    # First capturing group must be the number.
+    # SMS parsing
     phone_regex: str = r"(?:CALL|TO|call|to)?[:\s]*(\+?[\d\s\-\(\)]{7,20})"
-    # Prefix to strip from OTP text before TTS (e.g. "CALL:+123 ")
     strip_call_prefix: bool = True
 
-    # ── Repeat playback ───────────────────────────────────────────────────────
+    # Repeat playback
     playback_repeats: int = 3     # how many times to repeat the OTP audio
     playback_pause_ms: int = 1500  # silence between repeats (ms)
 
-    # ── Admin / reporting ─────────────────────────────────────────────────────
-    admin_username: str = "admin"
-    admin_password: str = "change-me"
-    delivery_report_store_path: Optional[str] = None
+    # Reporting
     delivery_report_max_items: int = 1000
 
 
