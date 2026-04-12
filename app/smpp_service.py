@@ -32,6 +32,7 @@ _SMPP_STATUS_NAMES = {
     0x00000000: "ESME_ROK",
     0x00000003: "ESME_RINVCMDID",
     0x0000000E: "ESME_RINVPASWD",
+    0x00000033: "ESME_RINVVER",
 }
 
 _SM_PP_GENERIC_NACK = 0x80000000
@@ -163,9 +164,25 @@ class SMPPService:
                         _SM_PP_BIND_TRANSMITTER: _SM_PP_BIND_TRANSMITTER_RESP,
                         _SM_PP_BIND_TRANSCEIVER: _SM_PP_BIND_TRANSCEIVER_RESP,
                     }[command_id]
+                    bind_fields = self._parse_bind_fields(body)
+                    interface_version = bind_fields["interface_version"]
+                    if not self._supported_interface_version(interface_version):
+                        self._send_pdu(conn, bind_response_command_id, 0x00000033, sequence, b"\x00")
+                        log.warning(
+                            "SMPP bind failed from %s:%s due to unsupported interface_version=%r",
+                            addr[0],
+                            addr[1],
+                            interface_version,
+                        )
+                        break
                     if self._authenticate(body):
                         self._send_pdu(conn, bind_response_command_id, 0, sequence, b"\x00")
-                        log.info("SMPP bind success from %s:%s", addr[0], addr[1])
+                        log.info(
+                            "SMPP bind success from %s:%s using interface_version=0x%02x",
+                            addr[0],
+                            addr[1],
+                            interface_version,
+                        )
                     else:
                         self._send_pdu(conn, bind_response_command_id, 0x0000000E, sequence, b"\x00")
                         log.warning("SMPP bind failed from %s:%s", addr[0], addr[1])
@@ -198,23 +215,70 @@ class SMPPService:
             except Exception:
                 pass
 
-    def _authenticate(self, body: bytes) -> bool:
-        if not self.settings.smpp_username and not self.settings.smpp_password:
-            return True
+    def _parse_bind_fields(self, body: bytes) -> dict:
         parts = body.split(b"\x00")
-        system_id = parts[0].decode("utf-8", "ignore").strip() if parts else ""
+        system_id = parts[0].decode("utf-8", "ignore").strip() if len(parts) > 0 else ""
         password = parts[1].decode("utf-8", "ignore").strip() if len(parts) > 1 else ""
+        system_type = parts[2].decode("utf-8", "ignore").strip() if len(parts) > 2 else ""
+
+        remainder = b""
+        zero_count = 0
+        for index, byte in enumerate(body):
+            if byte == 0:
+                zero_count += 1
+                if zero_count == 3:
+                    remainder = body[index + 1 :]
+                    break
+
+        interface_version = remainder[0] if len(remainder) >= 1 else None
+        addr_ton = remainder[1] if len(remainder) >= 2 else None
+        addr_npi = remainder[2] if len(remainder) >= 3 else None
+        address_range = ""
+        if len(remainder) >= 4:
+            address_range = remainder[3:].split(b"\x00", 1)[0].decode("utf-8", "ignore").strip()
+
+        return {
+            "system_id": system_id,
+            "password": password,
+            "system_type": system_type,
+            "interface_version": interface_version,
+            "addr_ton": addr_ton,
+            "addr_npi": addr_npi,
+            "address_range": address_range,
+        }
+
+    def _supported_interface_version(self, interface_version: int | None) -> bool:
+        return interface_version in {0x34, 0x50}
+
+    def _authenticate(self, body: bytes) -> bool:
+        bind_fields = self._parse_bind_fields(body)
+        system_id = bind_fields["system_id"]
+        password = bind_fields["password"]
+        interface_version = bind_fields["interface_version"]
         expected_system_id = (self.settings.smpp_username or "").strip()
         expected_password = (self.settings.smpp_password or "").strip()
+
+        if not self._supported_interface_version(interface_version):
+            log.warning(
+                "SMPP bind version mismatch from client: system_id=%r interface_version=%r supported_versions=%s",
+                system_id,
+                interface_version,
+                "0x34,0x50",
+            )
+            return False
+
+        if not self.settings.smpp_username and not self.settings.smpp_password:
+            return True
 
         auth_ok = system_id == expected_system_id and password == expected_password
         if not auth_ok:
             log.warning(
-                "SMPP bind auth mismatch from client: system_id=%r expected_system_id=%r password_len=%d expected_password_len=%d",
+                "SMPP bind auth mismatch from client: system_id=%r expected_system_id=%r password_len=%d expected_password_len=%d interface_version=%r",
                 system_id,
                 expected_system_id,
                 len(password),
                 len(expected_password),
+                interface_version,
             )
         return auth_ok
 
