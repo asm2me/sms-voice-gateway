@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 from collections import Counter, deque
@@ -8,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, Deque, Optional
+
+from openpyxl import Workbook
 
 from .config import Settings
 
@@ -487,6 +491,98 @@ def summarize_queue(settings: Settings) -> dict[str, Any]:
         "active_label": f"{active_count} active",
     }
 
+
+def export_delivery_reports_csv(settings: Settings) -> bytes:
+    reports = get_delivery_report_collector(settings).list_reports(limit=getattr(settings, "delivery_report_max_items", 1000))
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["timestamp", "status", "provider", "phone_number", "destination", "message", "message_excerpt", "ami_action_id", "error"])
+    for report in reports:
+        writer.writerow(
+            [
+                report.get("timestamp", ""),
+                report.get("status", ""),
+                report.get("provider", report.get("source", "")),
+                report.get("phone_number", ""),
+                report.get("destination", ""),
+                report.get("message", ""),
+                report.get("message_excerpt", ""),
+                report.get("ami_action_id", ""),
+                report.get("error", ""),
+            ]
+        )
+    return buffer.getvalue().encode("utf-8")
+
+def export_delivery_reports_xlsx(settings: Settings) -> bytes:
+    reports = get_delivery_report_collector(settings).list_reports(limit=getattr(settings, "delivery_report_max_items", 1000))
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Delivery Reports"
+    sheet.append(["timestamp", "status", "provider", "phone_number", "destination", "message", "message_excerpt", "ami_action_id", "error"])
+    for report in reports:
+        sheet.append(
+            [
+                report.get("timestamp", ""),
+                report.get("status", ""),
+                report.get("provider", report.get("source", "")),
+                report.get("phone_number", ""),
+                report.get("destination", ""),
+                report.get("message", ""),
+                report.get("message_excerpt", ""),
+                report.get("ami_action_id", ""),
+                report.get("error", ""),
+            ]
+        )
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+def export_inbox_messages_csv(settings: Settings) -> bytes:
+    messages = list_inbox_messages(settings, limit=getattr(settings, "delivery_report_max_items", 1000))
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["created_at", "updated_at", "from_number", "to_number", "provider", "status", "body", "body_preview", "source", "last_error"])
+    for message in messages:
+        writer.writerow(
+            [
+                message.get("created_at", ""),
+                message.get("updated_at", ""),
+                message.get("phone_number", ""),
+                message.get("destination", ""),
+                message.get("provider", ""),
+                message.get("status", ""),
+                message.get("body", ""),
+                message.get("body_preview", ""),
+                message.get("source", ""),
+                message.get("last_error", ""),
+            ]
+        )
+    return buffer.getvalue().encode("utf-8")
+
+def export_inbox_messages_xlsx(settings: Settings) -> bytes:
+    messages = list_inbox_messages(settings, limit=getattr(settings, "delivery_report_max_items", 1000))
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "SMS Inbox"
+    sheet.append(["created_at", "updated_at", "from_number", "to_number", "provider", "status", "body", "body_preview", "source", "last_error"])
+    for message in messages:
+        sheet.append(
+            [
+                message.get("created_at", ""),
+                message.get("updated_at", ""),
+                message.get("phone_number", ""),
+                message.get("destination", ""),
+                message.get("provider", ""),
+                message.get("status", ""),
+                message.get("body", ""),
+                message.get("body_preview", ""),
+                message.get("source", ""),
+                message.get("last_error", ""),
+            ]
+        )
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 def record_delivery_report(
     settings: Settings,

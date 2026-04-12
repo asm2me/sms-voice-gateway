@@ -28,13 +28,20 @@ from threading import Event, Thread
 from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from .admin_reports import get_delivery_report_collector, record_delivery_report
+from .admin_reports import (
+    export_delivery_reports_csv,
+    export_delivery_reports_xlsx,
+    export_inbox_messages_csv,
+    export_inbox_messages_xlsx,
+    get_delivery_report_collector,
+    record_delivery_report,
+)
 from .ami_service import AMIService
 from .cache import AudioCache, RateLimiter, get_redis
 from .config import Settings
@@ -895,6 +902,51 @@ async def admin_update_advanced_config(
         request,
         "admin.html",
         _admin_context(request, settings, active_section="config", success_message=f"Advanced settings saved and applied immediately.{smpp_message}"),
+    )
+
+
+@app.get("/admin/reports/export/{dataset}.{file_format}")
+async def admin_export_reports(
+    dataset: str,
+    file_format: str,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    dataset_key = dataset.strip().lower()
+    format_key = file_format.strip().lower()
+
+    exporters: dict[tuple[str, str], tuple[bytes, str, str]] = {
+        ("reports", "csv"): (
+            export_delivery_reports_csv(settings),
+            "text/csv; charset=utf-8",
+            "delivery-reports.csv",
+        ),
+        ("reports", "xls"): (
+            export_delivery_reports_xlsx(settings),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "delivery-reports.xlsx",
+        ),
+        ("inbox", "csv"): (
+            export_inbox_messages_csv(settings),
+            "text/csv; charset=utf-8",
+            "sms-inbox.csv",
+        ),
+        ("inbox", "xls"): (
+            export_inbox_messages_xlsx(settings),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "sms-inbox.xlsx",
+        ),
+    }
+
+    selected = exporters.get((dataset_key, format_key))
+    if not selected:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unsupported export type")
+
+    content, media_type, filename = selected
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

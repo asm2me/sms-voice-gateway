@@ -191,6 +191,10 @@
     </div>
     <div class="page-actions">
       <a class="button button-secondary" href="/admin/reports">Refresh</a>
+      <a class="button button-secondary" href="/admin/reports/export/reports.csv">Export Reports CSV</a>
+      <a class="button button-secondary" href="/admin/reports/export/reports.xls">Export Reports XLS</a>
+      <a class="button button-secondary" href="/admin/reports/export/inbox.csv">Export Inbox CSV</a>
+      <a class="button button-secondary" href="/admin/reports/export/inbox.xls">Export Inbox XLS</a>
       {% if report_clear_supported %}
       <form method="post" action="/admin/reports/clear" class="inline-form">
         <button type="submit" class="button button-secondary button-danger">Clear Old Reports</button>
@@ -259,6 +263,78 @@
   <div class="empty-state">
     <h3>No delivery reports yet</h3>
     <p>Reports will appear here once SMS messages are processed and calls are initiated.</p>
+  </div>
+  {% endif %}
+</section>
+
+<section class="card inbox-queue-panel">
+  <div class="card-header">
+    <div>
+      <p class="eyebrow">SMS Inbox</p>
+      <h2>Received messages from SMPP and webhook sources</h2>
+      <p class="muted">Review inbound messages alongside delivery reports from the same admin reports page.</p>
+    </div>
+    <div class="page-actions">
+      <span class="pill">{{ sms_inbox_summary.unread_label or 'Recent' }}</span>
+    </div>
+  </div>
+
+  <div class="status-grid report-summary-grid">
+    <div class="stat-card">
+      <span class="stat-label">Inbox Total</span>
+      <strong>{{ sms_inbox_summary.total }}</strong>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Latest</span>
+      <strong class="mono">{{ sms_inbox_summary.latest_timestamp or '—' }}</strong>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Queue Total</span>
+      <strong>{{ queue_summary.total }}</strong>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Queue Status</span>
+      <strong>{{ queue_summary.active_label or 'Monitoring' }}</strong>
+    </div>
+  </div>
+
+  {% if recent_inbox_messages %}
+  <div class="table-wrap">
+    <table class="data-table inbox-table">
+      <thead>
+        <tr>
+          <th>Received</th>
+          <th>From</th>
+          <th>Destination</th>
+          <th>Provider</th>
+          <th>Status</th>
+          <th>Source</th>
+          <th>Message</th>
+          <th>Last Error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for message in recent_inbox_messages %}
+        <tr>
+          <td class="mono">{{ message.created_at }}</td>
+          <td class="mono">{{ message.phone_number or '—' }}</td>
+          <td class="mono">{{ message.destination or '—' }}</td>
+          <td>{{ message.provider or '—' }}</td>
+          <td>
+            <span class="status-badge status-{{ message.status_class }}">{{ message.status }}</span>
+          </td>
+          <td>{{ message.source or '—' }}</td>
+          <td class="message-preview">{{ message.body_preview or message.body or '—' }}</td>
+          <td>{{ message.last_error or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h3>No inbox messages yet</h3>
+    <p>Inbound SMPP and webhook messages will appear here once they are recorded.</p>
   </div>
   {% endif %}
 </section>
