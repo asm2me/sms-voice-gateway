@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .config import SIPAccount, SMPPAccount, Settings
+from .config import SIPAccount, SMPPAccount, Settings, SystemUser
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +25,17 @@ ADMIN_MANAGED_FIELDS = set(Settings.model_fields) - BOOTSTRAP_ONLY_FIELDS
 
 _DEFAULT_SIP_ACCOUNT_ID = "default-sip"
 _DEFAULT_SMPP_ACCOUNT_ID = "default-smpp"
+_DEFAULT_SYSTEM_USER_ID = "portal-admin"
+_DEFAULT_SYSTEM_USER_PERMISSIONS = [
+    "Overview — Read",
+    "Health — Read",
+    "Health — Write",
+    "Configuration — Read",
+    "Configuration — Write",
+    "Delivery Reports — Read",
+    "Delivery Reports — Write",
+    "System Users — Write",
+]
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -93,16 +104,34 @@ def _coerce_smpp_account(raw: Any) -> SMPPAccount | None:
     return SMPPAccount(**data)
 
 
+def _coerce_system_user(raw: Any) -> SystemUser | None:
+    if isinstance(raw, SystemUser):
+        return raw
+    if not isinstance(raw, dict):
+        return None
+    data = dict(raw)
+    if not data.get("id"):
+        data["id"] = _DEFAULT_SYSTEM_USER_ID
+    if not data.get("username"):
+        data["username"] = "admin"
+    permissions = data.get("permissions")
+    if not isinstance(permissions, list):
+        data["permissions"] = list(_DEFAULT_SYSTEM_USER_PERMISSIONS)
+    return SystemUser(**data)
+
+
 def _normalize_account_lists(
     values: dict[str, Any],
-) -> tuple[list[SIPAccount], list[SMPPAccount], dict[str, str]]:
+) -> tuple[list[SIPAccount], list[SMPPAccount], dict[str, str], list[SystemUser]]:
     sip_accounts_raw = values.get("sip_accounts")
     smpp_accounts_raw = values.get("smpp_accounts")
     assignments_raw = values.get("smpp_sip_assignments")
+    system_users_raw = values.get("system_users")
 
     sip_accounts: list[SIPAccount] = []
     smpp_accounts: list[SMPPAccount] = []
     smpp_sip_assignments: dict[str, str] = {}
+    system_users: list[SystemUser] = []
 
     if isinstance(sip_accounts_raw, list):
         for item in sip_accounts_raw:
@@ -120,6 +149,12 @@ def _normalize_account_lists(
         for smpp_username, sip_account_id in assignments_raw.items():
             if isinstance(smpp_username, str) and isinstance(sip_account_id, str):
                 smpp_sip_assignments[smpp_username] = sip_account_id
+
+    if isinstance(system_users_raw, list):
+        for item in system_users_raw:
+            user = _coerce_system_user(item)
+            if user is not None:
+                system_users.append(user)
 
     if not sip_accounts and not smpp_accounts and not smpp_sip_assignments:
         legacy_smpp_username = str(values.get("smpp_username") or "").strip()
@@ -174,7 +209,20 @@ def _normalize_account_lists(
     if smpp_accounts and not any(account.default_for_inbound for account in smpp_accounts):
         smpp_accounts[0] = smpp_accounts[0].model_copy(update={"default_for_inbound": True})
 
-    return sip_accounts, smpp_accounts, smpp_sip_assignments
+    if not system_users:
+        system_users.append(
+            SystemUser(
+                id=_DEFAULT_SYSTEM_USER_ID,
+                username="admin",
+                password="",
+                role="Administrator",
+                enabled=True,
+                auth_source="Bootstrap / Environment",
+                permissions=list(_DEFAULT_SYSTEM_USER_PERMISSIONS),
+            )
+        )
+
+    return sip_accounts, smpp_accounts, smpp_sip_assignments, system_users
 
 
 def build_settings_data(settings: Settings) -> dict[str, Any]:
@@ -185,10 +233,12 @@ def build_settings_data(settings: Settings) -> dict[str, Any]:
     sip_accounts = data.pop("sip_accounts", [])
     smpp_accounts = data.pop("smpp_accounts", [])
     smpp_sip_assignments = data.pop("smpp_sip_assignments", {})
+    system_users = data.pop("system_users", [])
 
     data["sip_accounts"] = [account.model_dump() if isinstance(account, SIPAccount) else account for account in sip_accounts]
     data["smpp_accounts"] = [account.model_dump() if isinstance(account, SMPPAccount) else account for account in smpp_accounts]
     data["smpp_sip_assignments"] = dict(smpp_sip_assignments)
+    data["system_users"] = [user.model_dump() if isinstance(user, SystemUser) else user for user in system_users]
     return data
 
 
@@ -204,10 +254,11 @@ def load_settings_from_store(path: Path | str = CONFIG_STORE_PATH) -> Settings:
             continue
         merged[key] = value
 
-    sip_accounts, smpp_accounts, smpp_sip_assignments = _normalize_account_lists(merged)
+    sip_accounts, smpp_accounts, smpp_sip_assignments, system_users = _normalize_account_lists(merged)
     merged["sip_accounts"] = sip_accounts
     merged["smpp_accounts"] = smpp_accounts
     merged["smpp_sip_assignments"] = smpp_sip_assignments
+    merged["system_users"] = system_users
 
     return Settings(**merged)
 
@@ -258,6 +309,7 @@ def ensure_default_accounts(settings: Settings) -> Settings:
     sip_accounts = list(settings.sip_accounts)
     smpp_accounts = list(settings.smpp_accounts)
     assignments = dict(settings.smpp_sip_assignments)
+    system_users = list(settings.system_users)
 
     if not sip_accounts:
         sip_accounts.append(
@@ -291,10 +343,24 @@ def ensure_default_accounts(settings: Settings) -> Settings:
             if account.username and account.username not in assignments:
                 assignments[account.username] = account.default_sip_account_id or sip_accounts[0].id
 
+    if not system_users:
+        system_users.append(
+            SystemUser(
+                id=_DEFAULT_SYSTEM_USER_ID,
+                username=settings.admin_username or "admin",
+                password=settings.admin_password or "",
+                role="Administrator",
+                enabled=True,
+                auth_source="Bootstrap / Environment",
+                permissions=list(_DEFAULT_SYSTEM_USER_PERMISSIONS),
+            )
+        )
+
     return settings.model_copy(
         update={
             "sip_accounts": sip_accounts,
             "smpp_accounts": smpp_accounts,
             "smpp_sip_assignments": assignments,
+            "system_users": system_users,
         }
     )

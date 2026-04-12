@@ -37,6 +37,16 @@ class SMPPAccount(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+class SystemUser(BaseModel):
+    id: str
+    username: str
+    password: str = ""
+    role: str = "Administrator"
+    enabled: bool = True
+    auth_source: str = "Admin Portal"
+    permissions: list[str] = Field(default_factory=list)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -103,6 +113,7 @@ class Settings(BaseSettings):
     sip_accounts: list[SIPAccount] = Field(default_factory=list)
     smpp_accounts: list[SMPPAccount] = Field(default_factory=list)
     smpp_sip_assignments: dict[str, str] = Field(default_factory=dict)
+    system_users: list[SystemUser] = Field(default_factory=list)
 
     # Retry policy
     delivery_retry_count: int = 2

@@ -203,22 +203,26 @@
     </div>
   </div>
 
+  {% set report_success = report_summary.status_counts[0].count if report_summary.status_counts|length > 0 else 0 %}
+  {% set report_error = report_summary.status_counts[1].count if report_summary.status_counts|length > 1 else 0 %}
+  {% set report_pending = report_summary.status_counts[2].count if report_summary.status_counts|length > 2 else 0 %}
+  {% set report_unknown = report_summary.status_counts[3].count if report_summary.status_counts|length > 3 else 0 %}
   <div class="status-grid report-summary-grid">
     <div class="stat-card">
       <span class="stat-label">Success</span>
-      <strong>{{ report_summary.success }}</strong>
+      <strong>{{ report_success }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Error</span>
-      <strong>{{ report_summary.error }}</strong>
+      <strong>{{ report_error }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Pending</span>
-      <strong>{{ report_summary.pending }}</strong>
+      <strong>{{ report_pending }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Unknown</span>
-      <strong>{{ report_summary.unknown }}</strong>
+      <strong>{{ report_unknown }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Total</span>
@@ -517,28 +521,28 @@
         <div class="bar-chart-bars">
           <div class="bar-group">
             <div class="bar-track">
-              <div class="bar-fill bar-success" style="height: {{ (report_success * 100 / report_chart_max)|round(0, 'floor') if report_chart_max else 0 }}%;"></div>
+              <div class="bar-fill bar-success"></div>
             </div>
             <span class="bar-label">Success</span>
             <strong>{{ report_success }}</strong>
           </div>
           <div class="bar-group">
             <div class="bar-track">
-              <div class="bar-fill bar-error" style="height: {{ (report_error * 100 / report_chart_max)|round(0, 'floor') if report_chart_max else 0 }}%;"></div>
+              <div class="bar-fill bar-error"></div>
             </div>
             <span class="bar-label">Error</span>
             <strong>{{ report_error }}</strong>
           </div>
           <div class="bar-group">
             <div class="bar-track">
-              <div class="bar-fill bar-pending" style="height: {{ (report_pending * 100 / report_chart_max)|round(0, 'floor') if report_chart_max else 0 }}%;"></div>
+              <div class="bar-fill bar-pending"></div>
             </div>
             <span class="bar-label">Pending</span>
             <strong>{{ report_pending }}</strong>
           </div>
           <div class="bar-group">
             <div class="bar-track">
-              <div class="bar-fill bar-unknown" style="height: {{ (report_unknown * 100 / report_chart_max)|round(0, 'floor') if report_chart_max else 0 }}%;"></div>
+              <div class="bar-fill bar-unknown"></div>
             </div>
             <span class="bar-label">Unknown</span>
             <strong>{{ report_unknown }}</strong>
@@ -610,8 +614,8 @@
           <span>{{ activity_total }}</span>
         </div>
         <div class="stacked-bar-track">
-          <div class="stacked-bar-fill stacked-bar-queue" style="height: {{ (queue_total * 100 / activity_total)|round(0, 'floor') if activity_total else 0 }}%;"></div>
-          <div class="stacked-bar-fill stacked-bar-inbox" style="height: {{ (inbox_total * 100 / activity_total)|round(0, 'floor') if activity_total else 0 }}%;"></div>
+          <div class="stacked-bar-fill stacked-bar-queue"></div>
+          <div class="stacked-bar-fill stacked-bar-inbox"></div>
         </div>
         <div class="stacked-bar-legend">
           <span class="legend-item"><span class="legend-swatch legend-queue"></span>Queue {{ queue_total }}</span>
@@ -1149,7 +1153,7 @@
                   <td>
                     <div class="table-actions">
                       <a class="button button-secondary button-small" href="#sip-trunk-edit-{{ account.id }}">Edit</a>
-                      <button type="button" class="button button-secondary button-small">Test Connect</button>
+                      <a class="button button-secondary button-small" href="#sip-trunk-edit-{{ account.id }}">Test Connect</a>
                       <form method="post" action="/admin/config/sip-accounts/delete" class="inline-form">
                         <input type="hidden" name="account_id" value="{{ account.id }}" />
                         <button type="submit" class="button button-danger button-small">Delete</button>
@@ -1260,9 +1264,9 @@
                   </label>
                 </div>
                 <div class="form-actions">
-                  <button type="button" class="button button-secondary">Test Connect</button>
+                  <button type="submit" name="form_action" value="test" class="button button-secondary">Test Connect</button>
                   <a href="#" class="button button-secondary">Cancel</a>
-                  <button type="submit" class="button">Save SIP Trunk</button>
+                  <button type="submit" name="form_action" value="save" class="button">Save SIP Trunk</button>
                 </div>
               </form>
             </section>
@@ -1328,9 +1332,9 @@
                   </label>
                 </div>
                 <div class="form-actions">
-                  <button type="button" class="button button-secondary">Test Connect</button>
+                  <button type="submit" name="form_action" value="test" class="button button-secondary">Test Connect</button>
                   <a href="#" class="button button-secondary">Cancel</a>
-                  <button type="submit" class="button">Update SIP Trunk</button>
+                  <button type="submit" name="form_action" value="save" class="button">Update SIP Trunk</button>
                 </div>
               </form>
             </section>
@@ -1366,6 +1370,7 @@
 
       <section class="card config-card config-panel">
         {% set system_admin_username = (system_settings | selectattr('name', 'equalto', 'admin_username') | list | first) %}
+        {% set bootstrap_user = (system_users | selectattr('auth_source', 'equalto', 'Bootstrap / Environment') | list | first) %}
         <div class="card-header">
           <div>
             <p class="eyebrow">System Bootstrap</p>
@@ -1412,8 +1417,8 @@
               <h3 class="settings-group-title">Administrative access</h3>
             </div>
             <div class="page-actions">
-              <span class="pill">1 configured</span>
-              <a class="button" href="#system-user-admin-modal">View System User</a>
+              <span class="pill">{{ system_users|length }} configured</span>
+              <a class="button" href="#system-user-add-modal">Add System User</a>
             </div>
           </div>
 
@@ -1429,84 +1434,152 @@
                 </tr>
               </thead>
               <tbody>
+                {% for user in system_users %}
                 <tr>
                   <td>
-                    <strong>{{ system_admin_username.raw_value or 'admin' }}</strong>
-                    <div class="muted account-subtext mono">bootstrap-admin</div>
+                    <strong>{{ user.username or user.id or '—' }}</strong>
+                    <div class="muted account-subtext mono">{{ user.auth_source or 'Admin Portal' }}</div>
                   </td>
-                  <td>Administrator</td>
-                  <td><span class="status-badge status-success">enabled</span></td>
+                  <td>{{ user.role or 'Administrator' }}</td>
+                  <td><span class="status-badge status-{% if user.enabled %}success{% else %}danger{% endif %}">{% if user.enabled %}enabled{% else %}disabled{% endif %}</span></td>
                   <td>
                     <div class="permission-summary">
-                      <span class="pill">Overview: Read</span>
-                      <span class="pill">Health: Read/Write</span>
-                      <span class="pill">Configuration: Read/Write</span>
-                      <span class="pill">Delivery Reports: Read</span>
+                      {% for permission in user.permissions %}
+                      <span class="pill">{{ permission }}</span>
+                      {% endfor %}
                     </div>
                   </td>
                   <td>
                     <div class="table-actions">
-                      <a class="button button-secondary button-small" href="#system-user-admin-modal">View</a>
+                      <a class="button button-secondary button-small" href="#system-user-edit-{{ user.id }}">Edit</a>
+                      {% if user.auth_source != 'Bootstrap / Environment' %}
+                      <form method="post" action="/admin/config/system-users/delete" class="inline-form">
+                        <input type="hidden" name="user_id" value="{{ user.id }}" />
+                        <button type="submit" class="button button-danger button-small">Delete</button>
+                      </form>
+                      {% endif %}
                     </div>
                   </td>
                 </tr>
+                {% endfor %}
               </tbody>
             </table>
           </div>
 
-          <div id="system-user-admin-modal" class="modal-shell">
-            <a href="#" class="modal-backdrop" aria-label="Close system user dialog"></a>
+          <div id="system-user-add-modal" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close add system user dialog"></a>
             <section class="modal-card">
               <div class="card-header compact-header">
                 <div>
-                  <p class="eyebrow">System User</p>
-                  <h3 class="settings-group-title">{{ system_admin_username.raw_value or 'admin' }}</h3>
+                  <p class="eyebrow">Add</p>
+                  <h3 class="settings-group-title">Add system user</h3>
                 </div>
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <div class="form-grid">
-                <label class="field-group">
-                  <span class="field-label">Username</span>
-                  <input type="text" value="{{ system_admin_username.raw_value or 'admin' }}" readonly />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Role</span>
-                  <input type="text" value="Administrator" readonly />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Status</span>
-                  <input type="text" value="Enabled" readonly />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Auth Source</span>
-                  <input type="text" value="Bootstrap / Environment" readonly />
-                </label>
-                <label class="field-group field-span-2">
-                  <span class="field-label">Permissions</span>
-                  <select multiple size="8" readonly>
-                    <option selected>Overview — Read</option>
-                    <option selected>Health — Read</option>
-                    <option selected>Health — Write</option>
-                    <option selected>Configuration — Read</option>
-                    <option selected>Configuration — Write</option>
-                    <option selected>Delivery Reports — Read</option>
-                    <option>Delivery Reports — Write</option>
-                    <option>System Users — Write</option>
-                  </select>
-                  <small class="muted">Permissions are shown as multi-select values with explicit Read/Write scope.</small>
-                </label>
-                <label class="field-group field-span-2">
-                  <span class="field-label">Password</span>
-                  <input type="password" value="configured" readonly />
-                </label>
-              </div>
+              <form method="post" action="/admin/config/system-users" class="admin-form">
+                <div class="form-grid">
+                  <label class="field-group">
+                    <span class="field-label">User ID</span>
+                    <input type="text" name="user_id" placeholder="optional-auto-generated-id" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Username</span>
+                    <input type="text" name="username" placeholder="portal-user" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Password</span>
+                    <input type="password" name="password" placeholder="portal password" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Role</span>
+                    <input type="text" name="role" value="Administrator" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Enabled</span>
+                    <select name="enabled">
+                      <option value="true" selected>True</option>
+                      <option value="false">False</option>
+                    </select>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Auth Source</span>
+                    <input type="text" name="auth_source" value="Admin Portal" />
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Permissions</span>
+                    <select multiple size="8" name="permissions">
+                      {% for permission in available_permissions %}
+                      <option value="{{ permission }}">{{ permission }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                </div>
 
-              <div class="form-actions">
-                <a href="#" class="button button-secondary">Close</a>
-              </div>
+                <div class="form-actions">
+                  <a href="#" class="button button-secondary">Cancel</a>
+                  <button type="submit" class="button">Save System User</button>
+                </div>
+              </form>
             </section>
           </div>
+
+          {% for user in system_users %}
+          <div id="system-user-edit-{{ user.id }}" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close edit system user dialog"></a>
+            <section class="modal-card">
+              <div class="card-header compact-header">
+                <div>
+                  <p class="eyebrow">Edit</p>
+                  <h3 class="settings-group-title">{{ user.username or user.id }}</h3>
+                </div>
+                <a href="#" class="button button-secondary button-small">Close</a>
+              </div>
+
+              <form method="post" action="/admin/config/system-users" class="admin-form">
+                <div class="form-grid">
+                  <input type="hidden" name="user_id" value="{{ user.id }}" />
+                  <label class="field-group">
+                    <span class="field-label">Username</span>
+                    <input type="text" name="username" value="{{ user.username or '' }}" {% if user.auth_source == 'Bootstrap / Environment' %}readonly{% endif %} />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Password</span>
+                    <input type="password" name="password" value="{{ user.password or '' }}" {% if user.auth_source == 'Bootstrap / Environment' %}readonly{% endif %} />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Role</span>
+                    <input type="text" name="role" value="{{ user.role or 'Administrator' }}" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Enabled</span>
+                    <select name="enabled">
+                      <option value="true" {% if user.enabled %}selected{% endif %}>True</option>
+                      <option value="false" {% if not user.enabled %}selected{% endif %}>False</option>
+                    </select>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Auth Source</span>
+                    <input type="text" name="auth_source" value="{{ user.auth_source or 'Admin Portal' }}" readonly />
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Permissions</span>
+                    <select multiple size="8" name="permissions" {% if user.auth_source == 'Bootstrap / Environment' %}disabled{% endif %}>
+                      {% for permission in available_permissions %}
+                      <option value="{{ permission }}" {% if permission in user.permissions %}selected{% endif %}>{{ permission }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                </div>
+
+                <div class="form-actions">
+                  <a href="#" class="button button-secondary">Cancel</a>
+                  <button type="submit" class="button">{% if user.auth_source == 'Bootstrap / Environment' %}Save View Metadata{% else %}Update System User{% endif %}</button>
+                </div>
+              </form>
+            </section>
+          </div>
+          {% endfor %}
         </section>
       </section>
 

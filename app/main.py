@@ -43,7 +43,7 @@ from .admin_reports import (
     record_delivery_report,
 )
 from .cache import AudioCache, RateLimiter, get_redis
-from .config import SIPAccount, SMPPAccount, Settings
+from .config import SIPAccount, SMPPAccount, Settings, SystemUser
 from .config_store import (
     ADMIN_MANAGED_FIELDS,
     ensure_default_accounts,
@@ -331,6 +331,7 @@ def _save_account_collections(
     sip_accounts: list[SIPAccount] | None = None,
     smpp_accounts: list[SMPPAccount] | None = None,
     smpp_sip_assignments: dict[str, str] | None = None,
+    system_users: list[SystemUser] | None = None,
 ) -> Settings:
     current = ensure_default_accounts(load_settings_from_store())
     update_data = {}
@@ -340,6 +341,8 @@ def _save_account_collections(
         update_data["smpp_accounts"] = smpp_accounts
     if smpp_sip_assignments is not None:
         update_data["smpp_sip_assignments"] = smpp_sip_assignments
+    if system_users is not None:
+        update_data["system_users"] = system_users
     updated = ensure_default_accounts(current.model_copy(update=update_data))
     save_settings_to_store(updated)
     return updated
@@ -383,6 +386,45 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
         default_for_inbound=_form_bool(form, "default_for_inbound"),
         default_sip_account_id=str(form.get("default_sip_account_id", "")).strip(),
     )
+
+
+def _build_system_user_from_form(form) -> SystemUser:
+    username = str(form.get("username", "")).strip()
+    user_id = str(form.get("user_id", "")).strip() or _slugify_identifier(username, "system-user")
+    permissions = [
+        value.strip()
+        for value in form.getlist("permissions")
+        if str(value).strip()
+    ] if hasattr(form, "getlist") else []
+    return SystemUser(
+        id=user_id,
+        username=username or user_id,
+        password=str(form.get("password", "")).strip(),
+        role=str(form.get("role", "Administrator")).strip() or "Administrator",
+        enabled=_form_bool(form, "enabled"),
+        auth_source=str(form.get("auth_source", "Admin Portal")).strip() or "Admin Portal",
+        permissions=permissions,
+    )
+
+
+def _build_sip_profile_from_account(account: SIPAccount) -> dict[str, str | bool | int | dict]:
+    domain = account.domain or account.host
+    proxy_uri = account.outbound_proxy.strip()
+    if proxy_uri and not proxy_uri.startswith("sip:"):
+        proxy_uri = f"sip:{proxy_uri}"
+    return {
+        "id": account.id,
+        "display_name": account.display_name or account.label,
+        "domain": domain,
+        "username": account.username,
+        "password": account.password,
+        "registrar_uri": f"sip:{domain}" if domain else "",
+        "proxy_uri": proxy_uri,
+        "transport": (account.transport or "udp").upper(),
+        "caller_id": account.from_user or account.display_name or account.label,
+        "enabled": account.enabled,
+        "extra": dict(account.extra or {}),
+    }
 
 
 def _delete_sip_account(settings: Settings, account_id: str) -> Settings:
@@ -627,6 +669,17 @@ def _admin_context(
         "health": health_payload,
         "sip_accounts": [account.model_dump() for account in settings.sip_accounts],
         "smpp_accounts": [account.model_dump() for account in settings.smpp_accounts],
+        "system_users": [user.model_dump() for user in settings.system_users],
+        "available_permissions": [
+            "Overview — Read",
+            "Health — Read",
+            "Health — Write",
+            "Configuration — Read",
+            "Configuration — Write",
+            "Delivery Reports — Read",
+            "Delivery Reports — Write",
+            "System Users — Write",
+        ],
         "smpp_sip_assignments": [
             {
                 "smpp_username": smpp_username,
@@ -1044,7 +1097,7 @@ async def admin_update_basic_config(
     )
     return templates.TemplateResponse(
         request,
-        "admin.html",
+ba        "admin.html",
         _admin_context(request, settings, active_section="config", success_message="Basic settings saved and applied immediately."),
     )
 
@@ -1140,6 +1193,22 @@ async def admin_add_sip_account(
     form = await request.form()
     current = ensure_default_accounts(load_settings_from_store())
     new_account = _build_sip_account_from_form(form)
+    action = str(form.get("form_action", "save")).strip().lower()
+
+    if action == "test":
+        service = build_pjsua2_service(current)
+        result = service.register_account(_build_sip_profile_from_account(new_account))
+        message = (
+            f"SIP trunk test succeeded for '{new_account.label}'."
+            if result.success
+            else f"SIP trunk test failed for '{new_account.label}': {result.error or result.message or 'Unknown error'}"
+        )
+        return templates.TemplateResponse(
+            request,
+            "admin.html",
+            _admin_context(request, current, active_section="config", success_message=message),
+        )
+
     sip_accounts = [account for account in current.sip_accounts if account.id != new_account.id]
     if new_account.default_for_outbound:
         sip_accounts = [account.model_copy(update={"default_for_outbound": False}) for account in sip_accounts]
@@ -1147,6 +1216,7 @@ async def admin_add_sip_account(
     settings = _save_account_collections(
         sip_accounts=sip_accounts,
         smpp_sip_assignments=dict(current.smpp_sip_assignments),
+        system_users=list(current.system_users),
     )
     return templates.TemplateResponse(
         request,
@@ -1230,6 +1300,51 @@ async def admin_delete_smpp_account(
         request,
         "admin.html",
         _admin_context(request, settings, active_section="config", success_message=f"SMPP user '{account_id}' deleted."),
+    )
+
+
+@app.post("/admin/config/system-users")
+async def admin_save_system_user(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+):
+    form = await request.form()
+    current = ensure_default_accounts(load_settings_from_store())
+    new_user = _build_system_user_from_form(form)
+    system_users = [user for user in current.system_users if user.id != new_user.id]
+    system_users.append(new_user)
+    settings = _save_account_collections(
+        system_users=system_users,
+        sip_accounts=list(current.sip_accounts),
+        smpp_accounts=list(current.smpp_accounts),
+        smpp_sip_assignments=dict(current.smpp_sip_assignments),
+    )
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="config", success_message=f"System user '{new_user.username}' saved."),
+    )
+
+
+@app.post("/admin/config/system-users/delete")
+async def admin_delete_system_user(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+):
+    form = await request.form()
+    current = ensure_default_accounts(load_settings_from_store())
+    user_id = str(form.get("user_id", "")).strip()
+    filtered_users = [user for user in current.system_users if user.id != user_id]
+    settings = _save_account_collections(
+        system_users=filtered_users,
+        sip_accounts=list(current.sip_accounts),
+        smpp_accounts=list(current.smpp_accounts),
+        smpp_sip_assignments=dict(current.smpp_sip_assignments),
+    )
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="config", success_message=f"System user '{user_id}' deleted."),
     )
 
 
