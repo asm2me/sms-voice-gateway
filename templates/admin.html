@@ -722,37 +722,6 @@
   </div>
 </section>
 
-<section class="card">
-  <div class="card-header">
-    <div>
-      <p class="eyebrow">Configuration</p>
-      <h2>Settings snapshot</h2>
-      <p class="muted">A read-only overview of the most important operational values.</p>
-    </div>
-    <span class="pill">{{ config_snapshot["source"] }}</span>
-  </div>
-
-  <div class="table-wrap">
-    <table class="data-table">
-      <thead>
-        <tr>
-          <th>Field</th>
-          <th>Value</th>
-          <th>Visibility</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for item in config_snapshot["items"] %}
-        <tr>
-          <td>{{ item.label }}</td>
-          <td class="mono">{{ item.display_value }}</td>
-          <td>{{ item.visibility }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
 {% endif %}
 
 {% if active_section == 'config' %}
@@ -760,6 +729,30 @@
   {% macro render_input(field) -%}
     {% if field.is_secret %}
     <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
+    {% elif field.name == 'tts_provider' %}
+    <select name="{{ field.name }}">
+      <option value="google" {% if field.raw_value == 'google' %}selected{% endif %}>Google</option>
+      <option value="aws" {% if field.raw_value == 'aws' %}selected{% endif %}>AWS Polly</option>
+      <option value="openai" {% if field.raw_value == 'openai' %}selected{% endif %}>OpenAI</option>
+      <option value="elevenlabs" {% if field.raw_value == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
+    </select>
+    {% elif field.name == 'tts_language' %}
+    <select name="{{ field.name }}">
+      <option value="en-US" {% if field.raw_value == 'en-US' %}selected{% endif %}>English (US)</option>
+      <option value="en-GB" {% if field.raw_value == 'en-GB' %}selected{% endif %}>English (UK)</option>
+      <option value="ar-EG" {% if field.raw_value == 'ar-EG' %}selected{% endif %}>Arabic (Egypt)</option>
+      <option value="ar-SA" {% if field.raw_value == 'ar-SA' %}selected{% endif %}>Arabic (Saudi Arabia)</option>
+      <option value="fr-FR" {% if field.raw_value == 'fr-FR' %}selected{% endif %}>French</option>
+      <option value="de-DE" {% if field.raw_value == 'de-DE' %}selected{% endif %}>German</option>
+    </select>
+    {% elif field.name == 'tts_audio_encoding' %}
+    <select name="{{ field.name }}">
+      <option value="LINEAR16" {% if field.raw_value == 'LINEAR16' %}selected{% endif %}>LINEAR16</option>
+      <option value="MP3" {% if field.raw_value == 'MP3' %}selected{% endif %}>MP3</option>
+      <option value="MULAW" {% if field.raw_value == 'MULAW' %}selected{% endif %}>MULAW</option>
+      <option value="ALAW" {% if field.raw_value == 'ALAW' %}selected{% endif %}>ALAW</option>
+      <option value="OGG_OPUS" {% if field.raw_value == 'OGG_OPUS' %}selected{% endif %}>OGG OPUS</option>
+    </select>
     {% elif field.is_bool %}
     <select name="{{ field.name }}">
       <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
@@ -776,7 +769,6 @@
 
   <div class="config-tabs">
     <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-voice" checked>
-    <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-web-security">
     <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-telephony">
     <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-storage">
     <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-smpp">
@@ -784,7 +776,6 @@
 
     <div class="config-tab-nav">
       <label for="config-tab-voice" class="config-tab-label">VOICE</label>
-      <label for="config-tab-web-security" class="config-tab-label">Web Service Security and Access</label>
       <label for="config-tab-telephony" class="config-tab-label">Telephone and Gateway</label>
       <label for="config-tab-storage" class="config-tab-label">Storage & Persistence</label>
       <label for="config-tab-smpp" class="config-tab-label">SMPP</label>
@@ -1080,31 +1071,6 @@
       <section class="card config-card config-panel">
         <div class="card-header">
           <div>
-            <p class="eyebrow">Web Service Security and Access</p>
-            <h2>Webhook verification and access controls</h2>
-          </div>
-          <span class="pill">/admin/config/advanced</span>
-        </div>
-
-        <form method="post" action="/admin/config/advanced" class="admin-form">
-          <div class="form-grid">
-            {% for field in security_settings %}
-            <label class="field-group {% if field.name in ['webhook_secret'] %}field-span-2{% endif %}">
-              <span class="field-label">{{ field.label }}</span>
-              {{ render_input(field) }}
-              <small class="muted">{{ field.name }}</small>
-            </label>
-            {% endfor %}
-          </div>
-          <div class="form-actions">
-            <button type="submit" class="button">Save Security Settings</button>
-          </div>
-        </form>
-      </section>
-
-      <section class="card config-card config-panel">
-        <div class="card-header">
-          <div>
             <p class="eyebrow">Telephone and Gateway</p>
             <h2>SIP trunks and telephony configuration</h2>
           </div>
@@ -1159,6 +1125,7 @@
                   <th>Host</th>
                   <th>Username</th>
                   <th>Transport</th>
+                  <th>Concurrency Limit</th>
                   <th>Enabled</th>
                   <th>Default</th>
                   <th>Registration</th>
@@ -1175,12 +1142,14 @@
                   <td class="mono">{{ account.host or account.domain or '—' }}{% if account.port %}:{{ account.port }}{% endif %}</td>
                   <td class="mono">{{ account.username or '—' }}</td>
                   <td>{{ account.transport or '—' }}</td>
+                  <td class="mono">{{ account.max_concurrent_channels or account.concurrency_limit or account.channel_limit or '—' }}</td>
                   <td><span class="status-badge status-{% if account.enabled %}success{% else %}danger{% endif %}">{% if account.enabled %}enabled{% else %}disabled{% endif %}</span></td>
                   <td><span class="status-badge status-{% if account.default_for_outbound %}success{% else %}unknown{% endif %}">{% if account.default_for_outbound %}default{% else %}secondary{% endif %}</span></td>
                   <td><span class="status-badge status-{% if account.register %}pending{% else %}unknown{% endif %}">{% if account.register %}register{% else %}no-register{% endif %}</span></td>
                   <td>
                     <div class="table-actions">
                       <a class="button button-secondary button-small" href="#sip-trunk-edit-{{ account.id }}">Edit</a>
+                      <button type="button" class="button button-secondary button-small">Test Connect</button>
                       <form method="post" action="/admin/config/sip-accounts/delete" class="inline-form">
                         <input type="hidden" name="account_id" value="{{ account.id }}" />
                         <button type="submit" class="button button-danger button-small">Delete</button>
@@ -1265,6 +1234,10 @@
                     <input type="text" name="outbound_proxy" placeholder="sip:proxy.example.com;transport=udp" />
                   </label>
                   <label class="field-group">
+                    <span class="field-label">SIP Channels Concurrency Limit</span>
+                    <input type="number" step="1" min="1" name="max_concurrent_channels" value="1" />
+                  </label>
+                  <label class="field-group">
                     <span class="field-label">Enabled</span>
                     <select name="enabled">
                       <option value="true" selected>True</option>
@@ -1287,6 +1260,7 @@
                   </label>
                 </div>
                 <div class="form-actions">
+                  <button type="button" class="button button-secondary">Test Connect</button>
                   <a href="#" class="button button-secondary">Cancel</a>
                   <button type="submit" class="button">Save SIP Trunk</button>
                 </div>
@@ -1328,6 +1302,10 @@
                   <label class="field-group"><span class="field-label">From Domain</span><input type="text" name="from_domain" value="{{ account.from_domain or '' }}" /></label>
                   <label class="field-group field-span-2"><span class="field-label">Outbound Proxy</span><input type="text" name="outbound_proxy" value="{{ account.outbound_proxy or '' }}" /></label>
                   <label class="field-group">
+                    <span class="field-label">SIP Channels Concurrency Limit</span>
+                    <input type="number" step="1" min="1" name="max_concurrent_channels" value="{{ account.max_concurrent_channels or account.concurrency_limit or account.channel_limit or 1 }}" />
+                  </label>
+                  <label class="field-group">
                     <span class="field-label">Enabled</span>
                     <select name="enabled">
                       <option value="true" {% if account.enabled %}selected{% endif %}>True</option>
@@ -1350,6 +1328,7 @@
                   </label>
                 </div>
                 <div class="form-actions">
+                  <button type="button" class="button button-secondary">Test Connect</button>
                   <a href="#" class="button button-secondary">Cancel</a>
                   <button type="submit" class="button">Update SIP Trunk</button>
                 </div>
@@ -1745,7 +1724,14 @@
                   </td>
                   <td>Administrator</td>
                   <td><span class="status-badge status-success">enabled</span></td>
-                  <td>Health, Reports, Configuration</td>
+                  <td>
+                    <div class="permission-summary">
+                      <span class="pill">Overview: Read</span>
+                      <span class="pill">Health: Read/Write</span>
+                      <span class="pill">Configuration: Read/Write</span>
+                      <span class="pill">Delivery Reports: Read</span>
+                    </div>
+                  </td>
                   <td>
                     <div class="table-actions">
                       <a class="button button-secondary button-small" href="#system-user-admin-modal">View</a>
@@ -1786,7 +1772,17 @@
                 </label>
                 <label class="field-group field-span-2">
                   <span class="field-label">Permissions</span>
-                  <input type="text" value="Overview, Health, Configuration, Delivery Reports" readonly />
+                  <select multiple size="8" readonly>
+                    <option selected>Overview — Read</option>
+                    <option selected>Health — Read</option>
+                    <option selected>Health — Write</option>
+                    <option selected>Configuration — Read</option>
+                    <option selected>Configuration — Write</option>
+                    <option selected>Delivery Reports — Read</option>
+                    <option>Delivery Reports — Write</option>
+                    <option>System Users — Write</option>
+                  </select>
+                  <small class="muted">Permissions are shown as multi-select values with explicit Read/Write scope.</small>
                 </label>
                 <label class="field-group field-span-2">
                   <span class="field-label">Password</span>
@@ -1805,4 +1801,15 @@
   </div>
 </div>
 {% endif %}
+
+<footer class="card admin-audit-footer">
+  <div class="card-header compact-header">
+    <div>
+      <p class="eyebrow">Audit</p>
+      <h3 class="settings-group-title">Administrative activity</h3>
+      <p class="muted">All configuration changes, report operations, and runtime actions should be tracked through the audit trail.</p>
+    </div>
+    <span class="pill">Audit enabled</span>
+  </div>
+</footer>
 {% endblock %}
