@@ -335,20 +335,18 @@ a {
 }
 
 #config-tab-voice:checked ~ .config-tab-panels .config-panel:nth-child(1),
-#config-tab-web-security:checked ~ .config-tab-panels .config-panel:nth-child(2),
-#config-tab-telephony:checked ~ .config-tab-panels .config-panel:nth-child(3),
-#config-tab-storage:checked ~ .config-tab-panels .config-panel:nth-child(4),
-#config-tab-smpp:checked ~ .config-tab-panels .config-panel:nth-child(5),
-#config-tab-system:checked ~ .config-tab-panels .config-panel:nth-child(6) {
+#config-tab-telephony:checked ~ .config-tab-panels .config-panel:nth-child(2),
+#config-tab-storage:checked ~ .config-tab-panels .config-panel:nth-child(3),
+#config-tab-system:checked ~ .config-tab-panels .config-panel:nth-child(4),
+#config-tab-smpp:checked ~ .config-tab-panels .config-panel:nth-child(5) {
   display: block;
 }
 
 #config-tab-voice:checked ~ .config-tab-panels .config-panel:not(:nth-child(1)),
-#config-tab-web-security:checked ~ .config-tab-panels .config-panel:not(:nth-child(2)),
-#config-tab-telephony:checked ~ .config-tab-panels .config-panel:not(:nth-child(3)),
-#config-tab-storage:checked ~ .config-tab-panels .config-panel:not(:nth-child(4)),
-#config-tab-smpp:checked ~ .config-tab-panels .config-panel:not(:nth-child(5)),
-#config-tab-system:checked ~ .config-tab-panels .config-panel:not(:nth-child(6)) {
+#config-tab-telephony:checked ~ .config-tab-panels .config-panel:not(:nth-child(2)),
+#config-tab-storage:checked ~ .config-tab-panels .config-panel:not(:nth-child(3)),
+#config-tab-system:checked ~ .config-tab-panels .config-panel:not(:nth-child(4)),
+#config-tab-smpp:checked ~ .config-tab-panels .config-panel:not(:nth-child(5)) {
   display: none;
 }
 
