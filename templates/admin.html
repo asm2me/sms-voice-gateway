@@ -633,7 +633,7 @@
         <div class="nested-tab-nav" aria-label="Advanced settings subsections">
           <label for="advanced-tab-security" class="nested-tab-label">Security</label>
           <label for="advanced-tab-tts" class="nested-tab-label">TTS Providers</label>
-          <label for="advanced-tab-telephony" class="nested-tab-label">Telephony / AMI</label>
+          <label for="advanced-tab-telephony" class="nested-tab-label">Telephony / AMI / SMPP</label>
           <label for="advanced-tab-redis" class="nested-tab-label">Redis / Storage</label>
           <label for="advanced-tab-system" class="nested-tab-label">System / Admin</label>
         </div>
@@ -704,8 +704,8 @@
               <h3 class="settings-group-title">Telephony / AMI</h3>
               <div class="form-grid">
                 {% for field in advanced_settings %}
-                {% if field.name in ['ami_host', 'ami_port', 'ami_username', 'ami_secret', 'ami_connection_timeout', 'ami_response_timeout', 'call_answer_timeout', 'phone_regex'] %}
-                <label class="field-group {% if field.name in ['ami_host', 'ami_username', 'phone_regex'] %}field-span-2{% endif %}">
+                {% if field.name in ['ami_host', 'ami_port', 'ami_username', 'ami_secret', 'ami_connection_timeout', 'ami_response_timeout', 'call_answer_timeout', 'phone_regex', 'smpp_enabled', 'smpp_host', 'smpp_port', 'smpp_username', 'smpp_password'] %}
+                <label class="field-group {% if field.name in ['ami_host', 'ami_username', 'phone_regex', 'smpp_host', 'smpp_username'] %}field-span-2{% endif %}">
                   <span class="field-label">{{ field.label }}</span>
                   {% if field.is_secret %}
                   <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
@@ -714,7 +714,7 @@
                     <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
                     <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
                   </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds'] %}
+                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds', 'smpp_port'] %}
                   <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
                   {% elif field.name in ['tts_speaking_rate'] %}
                   <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
