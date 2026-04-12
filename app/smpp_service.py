@@ -6,6 +6,7 @@ import threading
 from dataclasses import dataclass
 from typing import Optional
 
+from .admin_reports import record_inbox_message
 from .config import Settings
 
 log = logging.getLogger(__name__)
@@ -191,9 +192,33 @@ class SMPPService:
                     self._send_pdu(conn, _SM_PP_ENQUIRE_LINK_RESP, 0, sequence, b"")
                     log.info("SMPP enquire_link handled for %s:%s", addr[0], addr[1])
                 elif command_id == _SM_PP_SUBMIT_SM:
-                    message_id = b"debug-smpp-message\x00"
+                    submit_fields = self._parse_submit_sm(body)
+                    record_inbox_message(
+                        self.settings,
+                        from_number=submit_fields["source_addr"],
+                        to_number=submit_fields["destination_addr"],
+                        provider="smpp",
+                        body=submit_fields["short_message"],
+                        source=f"smpp:{addr[0]}:{addr[1]}",
+                        status="received",
+                    )
+                    log.info(
+                        "SMPP inbox message stored from=%s to=%s text=%r source=%s",
+                        submit_fields["source_addr"],
+                        submit_fields["destination_addr"],
+                        submit_fields["short_message"][:120],
+                        f"smpp:{addr[0]}:{addr[1]}",
+                    )
+                    message_id = f"smpp-{sequence}".encode("ascii", "ignore") + b"\x00"
                     self._send_pdu(conn, _SM_PP_SUBMIT_SM_RESP, 0, sequence, message_id)
-                    log.info("SMPP submit_sm acknowledged for %s:%s", addr[0], addr[1])
+                    log.info(
+                        "SMPP submit_sm acknowledged for %s:%s from=%s to=%s text=%r",
+                        addr[0],
+                        addr[1],
+                        submit_fields["source_addr"],
+                        submit_fields["destination_addr"],
+                        submit_fields["short_message"][:120],
+                    )
                 else:
                     self._send_pdu(conn, _SM_PP_GENERIC_NACK, 0x00000003, sequence, b"")
                     log.debug(
@@ -245,6 +270,77 @@ class SMPPService:
             "addr_ton": addr_ton,
             "addr_npi": addr_npi,
             "address_range": address_range,
+        }
+
+    def _read_cstring(self, data: bytes, offset: int) -> tuple[str, int]:
+        if offset >= len(data):
+            return "", offset
+        end = data.find(b"\x00", offset)
+        if end == -1:
+            end = len(data)
+            next_offset = len(data)
+        else:
+            next_offset = end + 1
+        return data[offset:end].decode("utf-8", "ignore").strip(), next_offset
+
+    def _parse_submit_sm(self, body: bytes) -> dict:
+        offset = 0
+        service_type, offset = self._read_cstring(body, offset)
+        source_addr_ton = body[offset] if offset < len(body) else 0
+        offset += 1
+        source_addr_npi = body[offset] if offset < len(body) else 0
+        offset += 1
+        source_addr, offset = self._read_cstring(body, offset)
+        dest_addr_ton = body[offset] if offset < len(body) else 0
+        offset += 1
+        dest_addr_npi = body[offset] if offset < len(body) else 0
+        offset += 1
+        destination_addr, offset = self._read_cstring(body, offset)
+
+        esm_class = body[offset] if offset < len(body) else 0
+        offset += 1
+        protocol_id = body[offset] if offset < len(body) else 0
+        offset += 1
+        priority_flag = body[offset] if offset < len(body) else 0
+        offset += 1
+        schedule_delivery_time, offset = self._read_cstring(body, offset)
+        validity_period, offset = self._read_cstring(body, offset)
+        registered_delivery = body[offset] if offset < len(body) else 0
+        offset += 1
+        replace_if_present_flag = body[offset] if offset < len(body) else 0
+        offset += 1
+        data_coding = body[offset] if offset < len(body) else 0
+        offset += 1
+        sm_default_msg_id = body[offset] if offset < len(body) else 0
+        offset += 1
+        sm_length = body[offset] if offset < len(body) else 0
+        offset += 1
+        short_message_bytes = body[offset : offset + sm_length] if offset <= len(body) else b""
+
+        if data_coding == 8:
+            short_message = short_message_bytes.decode("utf-16-be", "ignore")
+        else:
+            short_message = short_message_bytes.decode("utf-utf-8", "ignore") if False else short_message_bytes.decode("latin-1", "ignore")
+
+        return {
+            "service_type": service_type,
+            "source_addr_ton": source_addr_ton,
+            "source_addr_npi": source_addr_npi,
+            "source_addr": source_addr,
+            "dest_addr_ton": dest_addr_ton,
+            "dest_addr_npi": dest_addr_npi,
+            "destination_addr": destination_addr,
+            "esm_class": esm_class,
+            "protocol_id": protocol_id,
+            "priority_flag": priority_flag,
+            "schedule_delivery_time": schedule_delivery_time,
+            "validity_period": validity_period,
+            "registered_delivery": registered_delivery,
+            "replace_if_present_flag": replace_if_present_flag,
+            "data_coding": data_coding,
+            "sm_default_msg_id": sm_default_msg_id,
+            "sm_length": sm_length,
+            "short_message": short_message,
         }
 
     def _supported_interface_version(self, interface_version: int | None) -> bool:
