@@ -127,8 +127,16 @@ class AMIService:
         try:
             with self._connection() as s:
                 s.send_action({"Action": "Ping"})
-                resp = s.read_response()
-                return resp.get("Response") == "Success"
+                while True:
+                    resp = s.read_response(timeout=self.settings.ami_response_timeout)
+                    event_name = resp.get("Event")
+                    if event_name:
+                        log.debug("AMI ping ignoring event packet: %s", event_name)
+                        continue
+                    if not resp:
+                        break
+                    return resp.get("Response") == "Success"
+                return False
         except Exception as exc:
             log.warning("AMI ping failed: %s", exc)
             return False
@@ -180,7 +188,12 @@ class AMIService:
             with self._connection() as s:
                 s.send_action(action)
                 # With Async=true Asterisk immediately returns "Response: Success"
-                resp = s.read_response(timeout=self.settings.ami_response_timeout)
+                while True:
+                    resp = s.read_response(timeout=self.settings.ami_response_timeout)
+                    if resp.get("Event"):
+                        log.debug("AMI originate ignoring event packet: %s", resp.get("Event"))
+                        continue
+                    break
                 success = resp.get("Response") == "Success"
                 result = OriginateResult(
                     action_id=action_id,
@@ -211,7 +224,9 @@ class AMIService:
                 s.send_action({"Action": "CoreShowChannels"})
                 channels = []
                 while True:
-                    resp = s.read_response()
+                    resp = s.read_response(timeout=self.settings.ami_response_timeout)
+                    if resp.get("Response") == "Success":
+                        continue
                     if resp.get("Event") == "CoreShowChannel":
                         channels.append(resp)
                     elif resp.get("Event") == "CoreShowChannelsComplete":
