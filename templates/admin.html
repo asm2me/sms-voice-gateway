@@ -599,109 +599,174 @@
     {% endif %}
   {%- endmacro %}
 
-  {% for group in config_groups %}
-  <section class="card config-card">
-    <div class="card-header">
-      <div>
-        <p class="eyebrow">{{ group.label }}</p>
-        <h2>{{ group.description }}</h2>
-      </div>
-      <span class="pill">/{{ 'admin/config/basic' if group.key == 'basic' else 'admin/config/advanced' }}</span>
+  <div class="config-tabs">
+    <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-basic" checked>
+    <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-security">
+    <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-providers">
+    <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-telephony">
+    <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-storage">
+    <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-system">
+
+    <div class="config-tab-nav">
+      <label for="config-tab-basic" class="config-tab-label">Core Voice Routing</label>
+      <label for="config-tab-security" class="config-tab-label">Security & Access</label>
+      <label for="config-tab-providers" class="config-tab-label">Provider Credentials</label>
+      <label for="config-tab-telephony" class="config-tab-label">Telephony & Gateway</label>
+      <label for="config-tab-storage" class="config-tab-label">Storage & Persistence</label>
+      <label for="config-tab-system" class="config-tab-label">System Bootstrap</label>
     </div>
 
-    {% if group.key == 'basic' %}
-    <form method="post" action="/admin/config/basic" class="admin-form">
-      <div class="form-grid">
-        {% for field in basic_settings %}
-        <label class="field-group {% if field.name in ['tts_provider', 'tts_language', 'tts_voice', 'tts_audio_encoding', 'phone_regex'] %}field-span-2{% endif %}">
-          <span class="field-label">{{ field.label }}</span>
-          {{ render_input(field) }}
-          <small class="muted">{{ field.name }}</small>
-        </label>
-        {% endfor %}
-      </div>
-      <div class="form-actions">
-        <button type="submit" class="button">Save Core Voice Routing</button>
-      </div>
-    </form>
-    {% elif group.key == 'security' %}
-    <form method="post" action="/admin/config/advanced" class="admin-form">
-      <div class="form-grid">
-        {% for field in security_settings %}
-        <label class="field-group {% if field.name in ['webhook_secret', 'admin_username', 'admin_password'] %}field-span-2{% endif %}">
-          <span class="field-label">{{ field.label }}</span>
-          {{ render_input(field) }}
-          <small class="muted">{{ field.name }}</small>
-        </label>
-        {% endfor %}
-      </div>
-      <div class="form-actions">
-        <button type="submit" class="button">Save Security Settings</button>
-      </div>
-    </form>
-    {% elif group.key == 'providers' %}
-    <form method="post" action="/admin/config/advanced" class="admin-form">
-      <div class="form-grid">
-        {% for field in provider_settings %}
-        <label class="field-group {% if field.name in ['google_credentials_json', 'openai_api_key', 'elevenlabs_api_key', 'aws_secret_access_key'] %}field-span-2{% endif %}">
-          <span class="field-label">{{ field.label }}</span>
-          {{ render_input(field) }}
-          <small class="muted">{{ field.name }}</small>
-        </label>
-        {% endfor %}
-      </div>
-      <div class="form-actions">
-        <button type="submit" class="button">Save Provider Settings</button>
-      </div>
-    </form>
-    {% elif group.key == 'telephony' %}
-    <form method="post" action="/admin/config/advanced" class="admin-form">
-      <div class="form-grid">
-        {% for field in telephony_settings %}
-        <label class="field-group {% if field.name in ['ami_host', 'ami_username', 'sip_channel_prefix', 'outbound_caller_id', 'asterisk_context', 'smpp_host', 'smpp_username'] %}field-span-2{% endif %}">
-          <span class="field-label">{{ field.label }}</span>
-          {{ render_input(field) }}
-          <small class="muted">{{ field.name }}</small>
-        </label>
-        {% endfor %}
-      </div>
-      <div class="form-actions">
-        <button type="submit" class="button">Save Telephony Settings</button>
-      </div>
-    </form>
-    {% elif group.key == 'storage' %}
-    <form method="post" action="/admin/config/advanced" class="admin-form">
-      <div class="form-grid">
-        {% for field in storage_settings %}
-        <label class="field-group {% if field.name in ['audio_cache_dir', 'asterisk_sounds_dir', 'delivery_report_store_path', 'redis_url'] %}field-span-2{% endif %}">
-          <span class="field-label">{{ field.label }}</span>
-          {{ render_input(field) }}
-          <small class="muted">{{ field.name }}</small>
-        </label>
-        {% endfor %}
-      </div>
-      <div class="form-actions">
-        <button type="submit" class="button">Save Storage Settings</button>
-      </div>
-    </form>
-    {% elif group.key == 'system' %}
-    <form method="post" action="/admin/config/advanced" class="admin-form">
-      <div class="form-grid">
-        {% for field in system_settings %}
-        <label class="field-group {% if field.name in ['host'] %}field-span-2{% endif %}">
-          <span class="field-label">{{ field.label }}</span>
-          {{ render_input(field) }}
-          <small class="muted">{{ field.name }}</small>
-        </label>
-        {% endfor %}
-      </div>
-      <div class="form-actions">
-        <button type="submit" class="button">Save Bootstrap Settings</button>
-      </div>
-    </form>
-    {% endif %}
-  </section>
-  {% endfor %}
+    <div class="config-tab-panels">
+      <section class="card config-card config-panel">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">Core Voice Routing</p>
+            <h2>TTS, parsing, and playback behavior</h2>
+          </div>
+          <span class="pill">/admin/config/basic</span>
+        </div>
+
+        <form method="post" action="/admin/config/basic" class="admin-form">
+          <div class="form-grid">
+            {% for field in basic_settings %}
+            <label class="field-group {% if field.name in ['tts_provider', 'tts_language', 'tts_voice', 'tts_audio_encoding', 'phone_regex'] %}field-span-2{% endif %}">
+              <span class="field-label">{{ field.label }}</span>
+              {{ render_input(field) }}
+              <small class="muted">{{ field.name }}</small>
+            </label>
+            {% endfor %}
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button">Save Core Voice Routing</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card config-card config-panel">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">Security and Access</p>
+            <h2>Webhook verification and rate limiting</h2>
+          </div>
+          <span class="pill">/admin/config/advanced</span>
+        </div>
+
+        <form method="post" action="/admin/config/advanced" class="admin-form">
+          <div class="form-grid">
+            {% for field in security_settings %}
+            <label class="field-group {% if field.name in ['webhook_secret'] %}field-span-2{% endif %}">
+              <span class="field-label">{{ field.label }}</span>
+              {{ render_input(field) }}
+              <small class="muted">{{ field.name }}</small>
+            </label>
+            {% endfor %}
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button">Save Security Settings</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card config-card config-panel">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">Speech Provider Credentials</p>
+            <h2>Cloud/provider credentials and engine options</h2>
+          </div>
+          <span class="pill">/admin/config/advanced</span>
+        </div>
+
+        <form method="post" action="/admin/config/advanced" class="admin-form">
+          <div class="form-grid">
+            {% for field in provider_settings %}
+            <label class="field-group {% if field.name in ['google_credentials_json', 'openai_api_key', 'elevenlabs_api_key', 'aws_secret_access_key'] %}field-span-2{% endif %}">
+              <span class="field-label">{{ field.label }}</span>
+              {{ render_input(field) }}
+              <small class="muted">{{ field.name }}</small>
+            </label>
+            {% endfor %}
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button">Save Provider Settings</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card config-card config-panel">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">Telephony and Gateway Routing</p>
+            <h2>AMI, SIP, SMPP, and dialing behavior</h2>
+          </div>
+          <span class="pill">/admin/config/advanced</span>
+        </div>
+
+        <form method="post" action="/admin/config/advanced" class="admin-form">
+          <div class="form-grid">
+            {% for field in telephony_settings %}
+            <label class="field-group {% if field.name in ['ami_host', 'ami_username', 'sip_channel_prefix', 'outbound_caller_id', 'asterisk_context', 'smpp_host', 'smpp_username'] %}field-span-2{% endif %}">
+              <span class="field-label">{{ field.label }}</span>
+              {{ render_input(field) }}
+              <small class="muted">{{ field.name }}</small>
+            </label>
+            {% endfor %}
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button">Save Telephony Settings</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card config-card config-panel">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">Storage and Persistence</p>
+            <h2>Cache, Redis, reports, and retry persistence</h2>
+          </div>
+          <span class="pill">/admin/config/advanced</span>
+        </div>
+
+        <form method="post" action="/admin/config/advanced" class="admin-form">
+          <div class="form-grid">
+            {% for field in storage_settings %}
+            <label class="field-group {% if field.name in ['audio_cache_dir', 'asterisk_sounds_dir', 'delivery_report_store_path', 'redis_url'] %}field-span-2{% endif %}">
+              <span class="field-label">{{ field.label }}</span>
+              {{ render_input(field) }}
+              <small class="muted">{{ field.name }}</small>
+            </label>
+            {% endfor %}
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button">Save Storage Settings</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card config-card config-panel">
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">System Bootstrap</p>
+            <h2>Minimal env/bootstrap values that start the admin</h2>
+          </div>
+          <span class="pill">Env / bootstrap only</span>
+        </div>
+
+        <div class="notice">
+          <strong>Bootstrap settings:</strong> These values remain environment-driven and should be changed in `.env`, not saved from the web admin.
+        </div>
+
+        <div class="form-grid">
+          {% for field in system_settings %}
+          <label class="field-group {% if field.name in ['host'] %}field-span-2{% endif %}">
+            <span class="field-label">{{ field.label }}</span>
+            {{ render_input(field) }}
+            <small class="muted">{{ field.name }} (read-only from env/bootstrap)</small>
+          </label>
+          {% endfor %}
+        </div>
+      </section>
+    </div>
+  </div>
 </div>
 {% endif %}
 {% endblock %}
