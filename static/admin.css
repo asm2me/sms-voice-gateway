@@ -813,6 +813,51 @@ a {
   margin-bottom: 0.2rem;
 }
 
+.table-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.button-small {
+  padding: 0.55rem 0.85rem;
+  border-radius: 9px;
+  font-size: 0.9rem;
+  box-shadow: none;
+}
+
+.modal-shell {
+  position: fixed;
+  inset: 0;
+  display: none;
+  z-index: 60;
+}
+
+.modal-shell:target {
+  display: block;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.52);
+  backdrop-filter: blur(2px);
+}
+
+.modal-card {
+  position: relative;
+  z-index: 1;
+  width: min(760px, calc(100% - 2rem));
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+  margin: 1.5rem auto;
+  padding: 1.25rem;
+  border-radius: 20px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.2);
+}
+
 @media (max-width: 900px) {
   .dashboard-grid,
   .metric-grid,
@@ -840,6 +885,23 @@ a {
   .health-actions-panel {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .table-actions {
+    width: 100%;
+  }
+
+  .table-actions .button,
+  .table-actions .inline-form,
+  .table-actions .inline-form .button {
+    width: 100%;
+  }
+
+  .modal-card {
+    width: calc(100% - 1rem);
+    margin: 0.5rem auto;
+    max-height: calc(100vh - 1rem);
+    padding: 1rem;
   }
 
   .form-actions {
