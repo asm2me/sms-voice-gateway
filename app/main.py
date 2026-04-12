@@ -488,8 +488,6 @@ def _admin_context(
                 ("smpp_enabled", "SMPP Enabled"),
                 ("smpp_host", "SMPP Host"),
                 ("smpp_port", "SMPP Port"),
-                ("smpp_username", "Legacy SMPP Username"),
-                ("smpp_password", "Legacy SMPP Password"),
             ],
         ),
         "storage_settings": _build_setting_items(
@@ -982,8 +980,6 @@ async def admin_update_advanced_config(
             "smpp_enabled",
             "smpp_host",
             "smpp_port",
-            "smpp_username",
-            "smpp_password",
             "rate_limit_hourly",
             "rate_limit_daily",
             "delivery_report_store_path",

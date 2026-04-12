@@ -833,8 +833,7 @@
           <div class="card-header compact-header">
             <div>
               <p class="eyebrow">SIP Trunks</p>
-              <h3 class="settings-group-title">Manage SIP trunks and registration profiles</h3>
-              <p class="muted">Create direct SIP routing profiles used for outbound voice delivery.</p>
+              <h3 class="settings-group-title">SIP trunks</h3>
             </div>
             <span class="pill">{{ sip_accounts|length }} configured</span>
           </div>
@@ -1066,36 +1065,31 @@
       </section>
 
       <section class="card config-card config-panel">
-        <div class="card-header">
-          <div>
-            <p class="eyebrow">SMPP Accounts</p>
-            <h2>Manage SMPP users and default SIP targets</h2>
-            <p class="muted">Define authenticated SMPP usernames and bind each one to a default SIP account used for outbound call placement.</p>
+          <div class="card-header">
+            <div>
+              <p class="eyebrow">SMPP Users</p>
+              <h2>SMPP users</h2>
+            </div>
+            <span class="pill">{{ smpp_accounts|length }} configured</span>
           </div>
-          <span class="pill">{{ smpp_accounts|length }} configured</span>
-        </div>
 
         <form method="post" action="/admin/config/smpp-accounts" class="admin-form">
           <div class="form-grid">
             <label class="field-group">
               <span class="field-label">Account ID</span>
               <input type="text" name="account_id" placeholder="optional-auto-generated-id" />
-              <small class="muted">Leave blank to auto-generate from label/username.</small>
             </label>
             <label class="field-group">
               <span class="field-label">Label</span>
               <input type="text" name="label" placeholder="Main SMPP Client" />
-              <small class="muted">Friendly display name for the SMPP user.</small>
             </label>
             <label class="field-group">
               <span class="field-label">Username</span>
               <input type="text" name="username" placeholder="smpp-user" />
-              <small class="muted">Authenticated SMPP system_id / username.</small>
             </label>
             <label class="field-group">
               <span class="field-label">Password</span>
               <input type="password" name="password" placeholder="SMPP password" />
-              <small class="muted">Stored in the persistent config store.</small>
             </label>
             <label class="field-group">
               <span class="field-label">Enabled</span>
@@ -1103,7 +1097,6 @@
                 <option value="true" selected>True</option>
                 <option value="false">False</option>
               </select>
-              <small class="muted">Disabled accounts are ignored for routing.</small>
             </label>
             <label class="field-group">
               <span class="field-label">Default Inbound</span>
@@ -1111,7 +1104,6 @@
                 <option value="false" selected>False</option>
                 <option value="true">True</option>
               </select>
-              <small class="muted">Primary SMPP account when a default is needed.</small>
             </label>
             <label class="field-group field-span-2">
               <span class="field-label">Default SIP Account</span>
@@ -1121,7 +1113,6 @@
                 <option value="{{ account.id }}">{{ account.label or account.id }}</option>
                 {% endfor %}
               </select>
-              <small class="muted">Used to seed the SMPP→SIP routing assignment for this username.</small>
             </label>
           </div>
           <div class="form-actions">
@@ -1225,14 +1216,13 @@
       </section>
 
       <section class="card config-card config-panel">
-        <div class="card-header">
-          <div>
-            <p class="eyebrow">Assignment Mapping</p>
-            <h2>Map SMPP users to SIP connections</h2>
-            <p class="muted">Each authenticated SMPP username can be routed through a specific SIP trunk for direct outbound delivery.</p>
+          <div class="card-header">
+            <div>
+              <p class="eyebrow">Assignments</p>
+              <h2>SMPP to SIP mapping</h2>
+            </div>
+            <span class="pill">{{ smpp_sip_assignments|length }} routes</span>
           </div>
-          <span class="pill">{{ smpp_sip_assignments|length }} routes</span>
-        </div>
 
         <form method="post" action="/admin/config/assignments" class="admin-form">
           <div class="form-grid">
@@ -1244,7 +1234,6 @@
                 <option value="{{ account.username }}">{{ account.label or account.username or account.id }}</option>
                 {% endfor %}
               </select>
-              <small class="muted">Authenticated SMPP identity.</small>
             </label>
             <label class="field-group">
               <span class="field-label">SIP Account</span>
@@ -1254,7 +1243,6 @@
                 <option value="{{ account.id }}">{{ account.label or account.id }}</option>
                 {% endfor %}
               </select>
-              <small class="muted">Outbound SIP route used for this SMPP username.</small>
             </label>
           </div>
           <div class="form-actions">
