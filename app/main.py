@@ -507,6 +507,8 @@ def _build_health_context(settings: Settings) -> dict:
         ami_probe["summary"],
         details=ami_details,
         notes=[
+            "AMI health uses short-lived login, ping, and logoff probes. It does not keep a persistent manager session open.",
+            "Because this gateway opens AMI only for probes and originate requests, Asterisk may not show a continuously connected manager user except during those short operations.",
             "If this gateway runs in Docker, 127.0.0.1 usually points to the gateway container, not the Asterisk host.",
             "Use the AMI debug section to verify connectivity and credentials without restarting the app.",
             "Typical requirements: enabled AMI, correct manager username/secret, correct bind/permit rules, and port 5038 reachable.",
