@@ -881,11 +881,107 @@
         <div class="card-header">
           <div>
             <p class="eyebrow">SIP Accounts</p>
-            <h2>Manage SIP connection profiles</h2>
-            <p class="muted">This section expects the backend to provide a sip_accounts list for rendering SIP profiles, registration state, and the target SIP URI used for outbound delivery.</p>
+            <h2>Manage SIP trunks and registration profiles</h2>
+            <p class="muted">Create direct SIP routing profiles used for outbound voice delivery. Mark one account as the default outbound SIP trunk.</p>
           </div>
-          <span class="pill">sip_accounts</span>
+          <span class="pill">{{ sip_accounts|length }} configured</span>
         </div>
+
+        <form method="post" action="/admin/config/sip-accounts" class="admin-form">
+          <div class="form-grid">
+            <label class="field-group">
+              <span class="field-label">Account ID</span>
+              <input type="text" name="account_id" placeholder="optional-auto-generated-id" />
+              <small class="muted">Leave blank to auto-generate from label/username/host.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Label</span>
+              <input type="text" name="label" placeholder="Primary SIP Trunk" />
+              <small class="muted">Friendly display name shown in admin mappings.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Host</span>
+              <input type="text" name="host" placeholder="sip.example.com" />
+              <small class="muted">SIP registrar or outbound proxy hostname.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Port</span>
+              <input type="number" step="1" name="port" value="5060" />
+              <small class="muted">Usually 5060 for UDP/TCP or 5061 for TLS.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Username</span>
+              <input type="text" name="username" placeholder="sip-user" />
+              <small class="muted">Authentication username.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Password</span>
+              <input type="password" name="password" placeholder="SIP password" />
+              <small class="muted">Stored in the persistent config store.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Transport</span>
+              <select name="transport">
+                <option value="udp">udp</option>
+                <option value="tcp">tcp</option>
+                <option value="tls">tls</option>
+              </select>
+              <small class="muted">Transport used by the direct SIP UA.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Domain</span>
+              <input type="text" name="domain" placeholder="example.com" />
+              <small class="muted">Optional SIP domain / realm.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Display Name</span>
+              <input type="text" name="display_name" placeholder="Gateway Caller" />
+              <small class="muted">Friendly caller display name.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">From User</span>
+              <input type="text" name="from_user" placeholder="gateway" />
+              <small class="muted">Optional explicit From user.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">From Domain</span>
+              <input type="text" name="from_domain" placeholder="example.com" />
+              <small class="muted">Optional explicit From domain.</small>
+            </label>
+            <label class="field-group field-span-2">
+              <span class="field-label">Outbound Proxy</span>
+              <input type="text" name="outbound_proxy" placeholder="sip:proxy.example.com;transport=udp" />
+              <small class="muted">Optional proxy for routed SIP traffic.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Enabled</span>
+              <select name="enabled">
+                <option value="true" selected>True</option>
+                <option value="false">False</option>
+              </select>
+              <small class="muted">Disabled trunks are ignored for routing.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Register</span>
+              <select name="register">
+                <option value="true" selected>True</option>
+                <option value="false">False</option>
+              </select>
+              <small class="muted">Whether the SIP UA should register this account.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Default Outbound</span>
+              <select name="default_for_outbound">
+                <option value="false" selected>False</option>
+                <option value="true">True</option>
+              </select>
+              <small class="muted">Used when no SMPP-specific SIP mapping exists.</small>
+            </label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button">Save SIP Trunk</button>
+          </div>
+        </form>
 
         {% if sip_accounts %}
         <div class="table-wrap">
@@ -896,26 +992,36 @@
                 <th>Host</th>
                 <th>Username</th>
                 <th>Transport</th>
+                <th>Enabled</th>
+                <th>Default</th>
                 <th>Registration</th>
-                <th>Caller ID</th>
-                <th>Notes</th>
               </tr>
             </thead>
             <tbody>
               {% for account in sip_accounts %}
               <tr>
                 <td>
-                  <strong>{{ account.label or account.name or account.id or '—' }}</strong>
-                  <div class="muted account-subtext">ID: <span class="mono">{{ account.id or account.name or '—' }}</span></div>
+                  <strong>{{ account.label or account.id or '—' }}</strong>
+                  <div class="muted account-subtext">ID: <span class="mono">{{ account.id or '—' }}</span></div>
                 </td>
-                <td class="mono">{{ account.host or account.server or account.domain or '—' }}</td>
+                <td class="mono">{{ account.host or account.domain or '—' }}{% if account.port %}:{{ account.port }}{% endif %}</td>
                 <td class="mono">{{ account.username or '—' }}</td>
-                <td>{{ account.transport or account.protocol or '—' }}</td>
+                <td>{{ account.transport or '—' }}</td>
                 <td>
-                  <span class="status-badge status-{{ account.status_class or 'unknown' }}">{{ account.status_label or account.registration_status or 'unknown' }}</span>
+                  <span class="status-badge status-{% if account.enabled %}success{% else %}danger{% endif %}">
+                    {% if account.enabled %}enabled{% else %}disabled{% endif %}
+                  </span>
                 </td>
-                <td>{{ account.caller_id or account.outbound_caller_id or '—' }}</td>
-                <td>{{ account.notes or account.description or '—' }}</td>
+                <td>
+                  <span class="status-badge status-{% if account.default_for_outbound %}success{% else %}unknown{% endif %}">
+                    {% if account.default_for_outbound %}default{% else %}secondary{% endif %}
+                  </span>
+                </td>
+                <td>
+                  <span class="status-badge status-{% if account.register %}pending{% else %}unknown{% endif %}">
+                    {% if account.register %}register{% else %}no-register{% endif %}
+                  </span>
+                </td>
               </tr>
               {% endfor %}
             </tbody>
@@ -923,26 +1029,75 @@
         </div>
         {% else %}
         <div class="empty-state">
-          <h3>No SIP accounts configured yet</h3>
-          <p>Once the backend provides sip_accounts, they will appear here for admin review and assignment to SMPP users.</p>
+          <h3>No SIP trunks configured yet</h3>
+          <p>Create at least one SIP account so inbound SMPP users can route voice delivery through it.</p>
         </div>
         {% endif %}
-
-        <div class="settings-group settings-group-spaced">
-          <h3 class="settings-group-title">SIP profile form contract</h3>
-          <p class="muted">The backend can render editable SIP account forms using fields such as label, host, port, username, password, domain, transport, caller_id, register_enabled, and notes. Keep this section aligned with the existing card/form styling.</p>
-        </div>
       </section>
 
       <section class="card config-card config-panel">
         <div class="card-header">
           <div>
             <p class="eyebrow">SMPP Accounts</p>
-            <h2>Manage SMPP user profiles</h2>
-            <p class="muted">This section expects the backend to provide a smpp_accounts list for rendering SMPP listener/client profiles and authentication details.</p>
+            <h2>Manage SMPP users and default SIP targets</h2>
+            <p class="muted">Define authenticated SMPP usernames and bind each one to a default SIP account used for outbound call placement.</p>
           </div>
-          <span class="pill">smpp_accounts</span>
+          <span class="pill">{{ smpp_accounts|length }} configured</span>
         </div>
+
+        <form method="post" action="/admin/config/smpp-accounts" class="admin-form">
+          <div class="form-grid">
+            <label class="field-group">
+              <span class="field-label">Account ID</span>
+              <input type="text" name="account_id" placeholder="optional-auto-generated-id" />
+              <small class="muted">Leave blank to auto-generate from label/username.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Label</span>
+              <input type="text" name="label" placeholder="Main SMPP Client" />
+              <small class="muted">Friendly display name for the SMPP user.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Username</span>
+              <input type="text" name="username" placeholder="smpp-user" />
+              <small class="muted">Authenticated SMPP system_id / username.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Password</span>
+              <input type="password" name="password" placeholder="SMPP password" />
+              <small class="muted">Stored in the persistent config store.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Enabled</span>
+              <select name="enabled">
+                <option value="true" selected>True</option>
+                <option value="false">False</option>
+              </select>
+              <small class="muted">Disabled accounts are ignored for routing.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">Default Inbound</span>
+              <select name="default_for_inbound">
+                <option value="false" selected>False</option>
+                <option value="true">True</option>
+              </select>
+              <small class="muted">Primary SMPP account when a default is needed.</small>
+            </label>
+            <label class="field-group field-span-2">
+              <span class="field-label">Default SIP Account</span>
+              <select name="default_sip_account_id">
+                <option value="">Select SIP account</option>
+                {% for account in sip_accounts %}
+                <option value="{{ account.id }}">{{ account.label or account.id }}</option>
+                {% endfor %}
+              </select>
+              <small class="muted">Used to seed the SMPP→SIP routing assignment for this username.</small>
+            </label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button">Save SMPP User</button>
+          </div>
+        </form>
 
         {% if smpp_accounts %}
         <div class="table-wrap">
@@ -950,12 +1105,10 @@
             <thead>
               <tr>
                 <th>Account</th>
-                <th>Host</th>
-                <th>Port</th>
                 <th>Username</th>
-                <th>Status</th>
-                <th>System role</th>
-                <th>Notes</th>
+                <th>Enabled</th>
+                <th>Default</th>
+                <th>Default SIP</th>
               </tr>
             </thead>
             <tbody>
@@ -963,16 +1116,20 @@
               <tr>
                 <td>
                   <strong>{{ account.label or account.username or account.id or '—' }}</strong>
-                  <div class="muted account-subtext">ID: <span class="mono">{{ account.id or account.username or '—' }}</span></div>
+                  <div class="muted account-subtext">ID: <span class="mono">{{ account.id or '—' }}</span></div>
                 </td>
-                <td class="mono">{{ account.host or '—' }}</td>
-                <td class="mono">{{ account.port or '—' }}</td>
                 <td class="mono">{{ account.username or '—' }}</td>
                 <td>
-                  <span class="status-badge status-{{ account.status_class or 'unknown' }}">{{ account.status_label or account.connection_status or 'unknown' }}</span>
+                  <span class="status-badge status-{% if account.enabled %}success{% else %}danger{% endif %}">
+                    {% if account.enabled %}enabled{% else %}disabled{% endif %}
+                  </span>
                 </td>
-                <td>{{ account.role or account.system_role or '—' }}</td>
-                <td>{{ account.notes or account.description or '—' }}</td>
+                <td>
+                  <span class="status-badge status-{% if account.default_for_inbound %}success{% else %}unknown{% endif %}">
+                    {% if account.default_for_inbound %}default{% else %}secondary{% endif %}
+                  </span>
+                </td>
+                <td class="mono">{{ account.default_sip_account_id or '—' }}</td>
               </tr>
               {% endfor %}
             </tbody>
@@ -980,15 +1137,10 @@
         </div>
         {% else %}
         <div class="empty-state">
-          <h3>No SMPP accounts configured yet</h3>
-          <p>Once the backend provides smpp_accounts, they will appear here for review and assignment to SIP profiles.</p>
+          <h3>No SMPP users configured yet</h3>
+          <p>Create an SMPP account to map authenticated message traffic to a SIP trunk.</p>
         </div>
         {% endif %}
-
-        <div class="settings-group settings-group-spaced">
-          <h3 class="settings-group-title">SMPP profile form contract</h3>
-          <p class="muted">The backend can render editable SMPP account forms using fields such as label, host, port, username, password, system_type, bind_type, and notes.</p>
-        </div>
       </section>
 
       <section class="card config-card config-panel">
@@ -996,10 +1148,38 @@
           <div>
             <p class="eyebrow">Assignment Mapping</p>
             <h2>Map SMPP users to SIP connections</h2>
-            <p class="muted">This section expects the backend to provide smpp_sip_assignments so administrators can see which authenticated SMPP username routes through which SIP profile.</p>
+            <p class="muted">Each authenticated SMPP username can be routed through a specific SIP trunk for direct outbound delivery.</p>
           </div>
-          <span class="pill">smpp_sip_assignments</span>
+          <span class="pill">{{ smpp_sip_assignments|length }} routes</span>
         </div>
+
+        <form method="post" action="/admin/config/assignments" class="admin-form">
+          <div class="form-grid">
+            <label class="field-group">
+              <span class="field-label">SMPP Username</span>
+              <select name="smpp_username">
+                <option value="">Select SMPP user</option>
+                {% for account in smpp_accounts %}
+                <option value="{{ account.username }}">{{ account.label or account.username or account.id }}</option>
+                {% endfor %}
+              </select>
+              <small class="muted">Authenticated SMPP identity.</small>
+            </label>
+            <label class="field-group">
+              <span class="field-label">SIP Account</span>
+              <select name="sip_account_id">
+                <option value="">Select SIP account</option>
+                {% for account in sip_accounts %}
+                <option value="{{ account.id }}">{{ account.label or account.id }}</option>
+                {% endfor %}
+              </select>
+              <small class="muted">Outbound SIP route used for this SMPP username.</small>
+            </label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="button">Save Assignment</button>
+          </div>
+        </form>
 
         {% if smpp_sip_assignments %}
         <div class="table-wrap">
@@ -1010,22 +1190,20 @@
                 <th>SIP Profile</th>
                 <th>Routing Mode</th>
                 <th>Status</th>
-                <th>Notes</th>
               </tr>
             </thead>
             <tbody>
               {% for assignment in smpp_sip_assignments %}
               <tr>
-                <td class="mono">{{ assignment.smpp_username or assignment.username or assignment.smpp_account or '—' }}</td>
+                <td class="mono">{{ assignment.smpp_username or '—' }}</td>
                 <td>
-                  <strong>{{ assignment.sip_label or assignment.sip_account or assignment.sip_username or assignment.sip_profile or '—' }}</strong>
-                  <div class="muted account-subtext">{{ assignment.sip_host or assignment.sip_destination or '' }}</div>
+                  <strong>{{ assignment.sip_label or assignment.sip_account_id or '—' }}</strong>
+                  <div class="muted account-subtext mono">{{ assignment.sip_account_id or '—' }}</div>
                 </td>
-                <td>{{ assignment.routing_mode or assignment.mode or 'direct' }}</td>
+                <td>direct</td>
                 <td>
-                  <span class="status-badge status-{{ assignment.status_class or 'unknown' }}">{{ assignment.status_label or assignment.status or 'unknown' }}</span>
+                  <span class="status-badge status-success">active</span>
                 </td>
-                <td>{{ assignment.notes or assignment.description or '—' }}</td>
               </tr>
               {% endfor %}
             </tbody>
@@ -1034,14 +1212,9 @@
         {% else %}
         <div class="empty-state">
           <h3>No SMPP to SIP assignments yet</h3>
-          <p>Once the backend provides smpp_sip_assignments, each authenticated SMPP user can be matched to the correct SIP profile for outbound delivery.</p>
+          <p>Create at least one assignment so authenticated SMPP users route through the correct SIP trunk.</p>
         </div>
         {% endif %}
-
-        <div class="settings-group settings-group-spaced">
-          <h3 class="settings-group-title">Assignment form contract</h3>
-          <p class="muted">The backend can render assignment forms with fields such as smpp_username, sip_account_id, sip_profile, active, priority, and notes while preserving this existing admin layout.</p>
-        </div>
       </section>
     </div>
   </div>

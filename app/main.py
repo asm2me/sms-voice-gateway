@@ -43,7 +43,7 @@ from .admin_reports import (
     record_delivery_report,
 )
 from .cache import AudioCache, RateLimiter, get_redis
-from .config import Settings
+from .config import SIPAccount, SMPPAccount, Settings
 from .config_store import (
     ADMIN_MANAGED_FIELDS,
     ensure_default_accounts,
@@ -313,6 +313,75 @@ def _save_admin_config(form, keys: list[str]) -> Settings:
     updated = Settings(**data)
     save_settings_to_store(updated)
     return updated
+
+
+def _slugify_identifier(value: str, fallback: str) -> str:
+    cleaned = "".join(ch.lower() if ch.isalnum() else "-" for ch in (value or "").strip())
+    compact = "-".join(part for part in cleaned.split("-") if part)
+    return compact[:50] or fallback
+
+
+def _form_bool(form, key: str) -> bool:
+    return str(form.get(key, "")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _save_account_collections(
+    *,
+    sip_accounts: list[SIPAccount] | None = None,
+    smpp_accounts: list[SMPPAccount] | None = None,
+    smpp_sip_assignments: dict[str, str] | None = None,
+) -> Settings:
+    current = ensure_default_accounts(load_settings_from_store())
+    update_data = {}
+    if sip_accounts is not None:
+        update_data["sip_accounts"] = sip_accounts
+    if smpp_accounts is not None:
+        update_data["smpp_accounts"] = smpp_accounts
+    if smpp_sip_assignments is not None:
+        update_data["smpp_sip_assignments"] = smpp_sip_assignments
+    updated = ensure_default_accounts(current.model_copy(update=update_data))
+    save_settings_to_store(updated)
+    return updated
+
+
+def _build_sip_account_from_form(form) -> SIPAccount:
+    label = str(form.get("label", "")).strip()
+    host = str(form.get("host", "")).strip()
+    username = str(form.get("username", "")).strip()
+    account_id = str(form.get("account_id", "")).strip() or _slugify_identifier(label or username or host, "sip-account")
+    port_raw = str(form.get("port", "5060")).strip()
+    return SIPAccount(
+        id=account_id,
+        label=label or account_id,
+        host=host,
+        username=username,
+        password=str(form.get("password", "")).strip(),
+        transport=str(form.get("transport", "udp")).strip() or "udp",
+        port=int(port_raw or "5060"),
+        domain=str(form.get("domain", "")).strip(),
+        display_name=str(form.get("display_name", "")).strip(),
+        from_user=str(form.get("from_user", "")).strip(),
+        from_domain=str(form.get("from_domain", "")).strip(),
+        enabled=_form_bool(form, "enabled"),
+        default_for_outbound=_form_bool(form, "default_for_outbound"),
+        register=_form_bool(form, "register"),
+        outbound_proxy=str(form.get("outbound_proxy", "")).strip(),
+    )
+
+
+def _build_smpp_account_from_form(form) -> SMPPAccount:
+    label = str(form.get("label", "")).strip()
+    username = str(form.get("username", "")).strip()
+    account_id = str(form.get("account_id", "")).strip() or _slugify_identifier(label or username, "smpp-account")
+    return SMPPAccount(
+        id=account_id,
+        label=label or account_id,
+        username=username,
+        password=str(form.get("password", "")).strip(),
+        enabled=_form_bool(form, "enabled"),
+        default_for_inbound=_form_bool(form, "default_for_inbound"),
+        default_sip_account_id=str(form.get("default_sip_account_id", "")).strip(),
+    )
 
 
 def _admin_context(
@@ -916,6 +985,75 @@ async def admin_update_advanced_config(
         request,
         "admin.html",
         _admin_context(request, settings, active_section="config", success_message=f"Advanced settings saved and applied immediately.{smpp_message}"),
+    )
+
+
+@app.post("/admin/config/sip-accounts")
+async def admin_add_sip_account(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+):
+    form = await request.form()
+    current = ensure_default_accounts(load_settings_from_store())
+    new_account = _build_sip_account_from_form(form)
+    sip_accounts = [account for account in current.sip_accounts if account.id != new_account.id]
+    if new_account.default_for_outbound:
+        sip_accounts = [account.model_copy(update={"default_for_outbound": False}) for account in sip_accounts]
+    sip_accounts.append(new_account)
+    settings = _save_account_collections(
+        sip_accounts=sip_accounts,
+        smpp_sip_assignments=dict(current.smpp_sip_assignments),
+    )
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="config", success_message=f"SIP trunk '{new_account.label}' saved."),
+    )
+
+
+@app.post("/admin/config/smpp-accounts")
+async def admin_add_smpp_account(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+):
+    form = await request.form()
+    current = ensure_default_accounts(load_settings_from_store())
+    new_account = _build_smpp_account_from_form(form)
+    smpp_accounts = [account for account in current.smpp_accounts if account.id != new_account.id]
+    if new_account.default_for_inbound:
+        smpp_accounts = [account.model_copy(update={"default_for_inbound": False}) for account in smpp_accounts]
+    smpp_accounts.append(new_account)
+    assignments = dict(current.smpp_sip_assignments)
+    if new_account.username:
+        assignments[new_account.username] = new_account.default_sip_account_id or assignments.get(new_account.username, "")
+    settings = _save_account_collections(
+        smpp_accounts=smpp_accounts,
+        smpp_sip_assignments=assignments,
+    )
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="config", success_message=f"SMPP user '{new_account.label}' saved."),
+    )
+
+
+@app.post("/admin/config/assignments")
+async def admin_assign_smpp_to_sip(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+):
+    form = await request.form()
+    current = ensure_default_accounts(load_settings_from_store())
+    smpp_username = str(form.get("smpp_username", "")).strip()
+    sip_account_id = str(form.get("sip_account_id", "")).strip()
+    assignments = dict(current.smpp_sip_assignments)
+    if smpp_username and sip_account_id:
+        assignments[smpp_username] = sip_account_id
+    settings = _save_account_collections(smpp_sip_assignments=assignments)
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="config", success_message=f"Assigned SMPP user '{smpp_username}' to SIP trunk '{sip_account_id}'."),
     )
 
 
