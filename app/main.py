@@ -337,33 +337,40 @@ def _build_health_context(settings: Settings) -> dict:
             details=[f"URL: {settings.redis_url}"],
         )
 
+    ami_ok = False
+    ami_detail = "AMI ping failed."
+    ami_details = [
+        f"Target: {settings.ami_host}:{settings.ami_port}",
+        f"Username: {settings.ami_username}",
+        f"Connection timeout: {settings.ami_connection_timeout}s",
+        f"Response timeout: {settings.ami_response_timeout}s",
+    ]
     try:
-        ami_ok = AMIService(settings).ping()
-        ami_channels = len(AMIService(settings).get_active_channels()) if ami_ok else 0
-        add_service(
-            "AMI",
-            "Telephony",
-            ami_ok,
-            "AMI ping succeeded." if ami_ok else "AMI ping failed.",
-            details=[
-                f"Target: {settings.ami_host}:{settings.ami_port}",
-                f"Username: {settings.ami_username}",
-                f"Active channels: {ami_channels}",
-                f"Connection timeout: {settings.ami_connection_timeout}s",
-                f"Response timeout: {settings.ami_response_timeout}s",
-            ],
-        )
+        ami_service = AMIService(settings)
+        ami_ok = ami_service.ping()
+        if ami_ok:
+            ami_channels = len(ami_service.get_active_channels())
+            ami_detail = "AMI ping succeeded."
+            ami_details.append(f"Active channels: {ami_channels}")
+        else:
+            ami_detail = "AMI ping failed. Verify AMI host, port, username, secret, and Asterisk manager.conf access rules."
+            ami_details.append("Check that AMI is enabled and reachable from the gateway runtime.")
     except Exception as exc:
-        add_service(
-            "AMI",
-            "Telephony",
-            False,
-            f"AMI ping failed: {exc}",
-            details=[
-                f"Target: {settings.ami_host}:{settings.ami_port}",
-                f"Username: {settings.ami_username}",
-            ],
-        )
+        ami_detail = f"AMI ping failed: {exc}"
+        ami_details.append(f"Error: {exc}")
+
+    add_service(
+        "AMI",
+        "Telephony",
+        ami_ok,
+        ami_detail,
+        details=ami_details,
+        notes=[
+            "If this gateway runs in Docker, 127.0.0.1 usually points to the gateway container, not the Asterisk host.",
+            "Use the AMI debug section to verify connectivity and credentials without restarting the app.",
+            "Typical requirements: enabled AMI, correct manager username/secret, correct bind/permit rules, and port 5038 reachable.",
+        ],
+    )
 
     config_store_path = BASE_DIR / "data" / "config.json"
     try:
