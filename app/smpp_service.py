@@ -31,12 +31,22 @@ class SMPPService:
         self._server: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._last_error: str = ""
 
     @property
     def enabled(self) -> bool:
         return bool(self.settings.smpp_enabled)
 
+    @property
+    def is_listening(self) -> bool:
+        return self._server is not None and not self._stop_event.is_set()
+
+    @property
+    def last_error(self) -> str:
+        return self._last_error
+
     def start(self) -> None:
+        self._last_error = ""
         if not self.enabled:
             log.info("SMPP listener disabled")
             return
@@ -45,14 +55,24 @@ class SMPPService:
 
         host = self.settings.smpp_host
         port = self.settings.smpp_port
-        self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server.bind((host, port))
-        self._server.listen(5)
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._serve, name="smpp-listener", daemon=True)
-        self._thread.start()
-        log.info("SMPP listener started on %s:%s", host, port)
+        try:
+            self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._server.bind((host, port))
+            self._server.listen(5)
+            self._stop_event.clear()
+            self._thread = threading.Thread(target=self._serve, name="smpp-listener", daemon=True)
+            self._thread.start()
+            log.info("SMPP listener started on %s:%s", host, port)
+        except Exception as exc:
+            self._last_error = str(exc)
+            if self._server is not None:
+                try:
+                    self._server.close()
+                except Exception:
+                    pass
+                self._server = None
+            raise
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -62,6 +82,7 @@ class SMPPService:
             except Exception:
                 pass
             self._server = None
+        self._thread = None
         log.info("SMPP listener stopped")
 
     def _serve(self) -> None:

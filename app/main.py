@@ -455,22 +455,36 @@ def _build_health_context(settings: Settings) -> dict:
         ],
     )
 
-    smpp_ok = False
-    smpp_details = [f"Target: {settings.smpp_host}:{settings.smpp_port}", f"Enabled: {'yes' if settings.smpp_enabled else 'no'}"]
-    try:
-        smpp_ok = bool(settings.smpp_enabled)
-    except Exception as exc:
-        smpp_details.append(f"Error: {exc}")
+    smpp_service = getattr(app.state, "smpp_service", None)
+    smpp_enabled = bool(settings.smpp_enabled)
+    smpp_listening = bool(smpp_service and getattr(smpp_service, "is_listening", False))
+    smpp_last_error = getattr(smpp_service, "last_error", "") if smpp_service else ""
+    smpp_ok = smpp_enabled and smpp_listening
+    smpp_summary = (
+        "SMPP listener is enabled and listening."
+        if smpp_ok
+        else "SMPP listener is enabled but not listening."
+        if smpp_enabled
+        else "SMPP listener is disabled."
+    )
+    smpp_details = [
+        f"Target: {settings.smpp_host}:{settings.smpp_port}",
+        f"Enabled: {'yes' if smpp_enabled else 'no'}",
+        f"Listening: {'yes' if smpp_listening else 'no'}",
+    ]
+    if smpp_last_error:
+        smpp_details.append(f"Last error: {smpp_last_error}")
 
     add_service(
         "SMPP",
         "Messaging",
         smpp_ok,
-        "SMPP listener is enabled." if smpp_ok else "SMPP listener is disabled.",
+        smpp_summary,
         details=smpp_details,
         notes=[
-            "SMPP listens locally for external SMSC/gateway connections and requires matching system_id/password credentials.",
+            "SMPP health is only healthy when the listener is actually bound and accepting connections.",
             "If this gateway runs in Docker, expose the SMPP port from the container to the host.",
+            "After enabling SMPP in the admin UI, restart the app/container if your process has not rebound the listener yet.",
         ],
     )
 
@@ -553,7 +567,7 @@ def _build_health_context(settings: Settings) -> dict:
             {"label": "Total Services", "value": str(total_count), "detail": "Monitored components", "class": "unknown"},
             {"label": "Redis", "value": "Online" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "Offline", "detail": settings.redis_url, "class": "success" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
             {"label": "AMI", "value": "Connected" if any(d['label'] == 'AMI' and d['status_label'] == 'Healthy' for d in dependencies) else "Disconnected", "detail": f"{settings.ami_host}:{settings.ami_port}", "class": "success" if any(d['label'] == 'AMI' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
-            {"label": "SMPP", "value": "Enabled" if smpp_ok else "Disabled", "detail": f"{settings.smpp_host}:{settings.smpp_port}", "class": "success" if smpp_ok else "warning"},
+            {"label": "SMPP", "value": "Listening" if smpp_ok else "Enabled / Not Listening" if smpp_enabled else "Disabled", "detail": f"{settings.smpp_host}:{settings.smpp_port}", "class": "success" if smpp_ok else "warning" if smpp_enabled else "danger"},
         ],
         "services": services,
         "dependencies": dependencies,
