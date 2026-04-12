@@ -396,36 +396,14 @@ def _admin_context(
 
 
 def _ami_debug_probe(settings: Settings) -> dict:
-    result = {
-        "ok": False,
-        "status": "degraded",
-        "summary": "AMI connection test failed.",
-        "details": [
-            f"Target: {settings.ami_host}:{settings.ami_port}",
-            f"Username: {settings.ami_username}",
-            f"Connection timeout: {settings.ami_connection_timeout}s",
-            f"Response timeout: {settings.ami_response_timeout}s",
-        ],
+    service = AMIService(settings)
+    result = service.ping_detail()
+    return {
+        "ok": bool(result.get("ok")),
+        "status": "healthy" if result.get("ok") else "degraded",
+        "summary": str(result.get("summary", "AMI connection test failed.")),
+        "details": list(result.get("details", [])),
     }
-    try:
-        service = AMIService(settings)
-        with service._connection() as conn:
-            conn.send_action({"Action": "Ping"})
-            ping_resp = conn.read_response(timeout=settings.ami_response_timeout)
-            result["details"].append("Login response: success")
-            result["details"].append(f"Ping response: {ping_resp.get('Response', 'unknown')}")
-            if ping_resp.get("Message"):
-                result["details"].append(f"Ping message: {ping_resp.get('Message')}")
-            if ping_resp.get("Response") == "Success":
-                result["ok"] = True
-                result["status"] = "healthy"
-                result["summary"] = "AMI login and ping succeeded."
-                return result
-            result["summary"] = "AMI login succeeded but ping did not return success."
-            return result
-    except Exception as exc:
-        result["details"].append(f"Error: {type(exc).__name__}: {exc}")
-        return result
 
 
 def _build_health_context(settings: Settings) -> dict:

@@ -122,34 +122,65 @@ class AMIService:
                 s.close()
                 log.info("AMI TCP disconnect complete for %s:%d", self.settings.ami_host, self.settings.ami_port)
 
-    def ping(self) -> bool:
-        """Test AMI connectivity. Returns True on success."""
+    def ping_detail(self) -> dict[str, object]:
+        """Test AMI connectivity and return detailed result for admin/health usage."""
+        result: dict[str, object] = {
+            "ok": False,
+            "summary": "AMI connection test failed.",
+            "details": [
+                f"Target: {self.settings.ami_host}:{self.settings.ami_port}",
+                f"Username: {self.settings.ami_username}",
+                f"Connection timeout: {self.settings.ami_connection_timeout}s",
+                f"Response timeout: {self.settings.ami_response_timeout}s",
+            ],
+        }
         try:
             with self._connection() as s:
                 s.send_action({"Action": "Ping"})
                 while True:
                     resp = s.read_response(timeout=self.settings.ami_response_timeout)
+                    if not resp:
+                        result["summary"] = "AMI ping returned no response."
+                        return result
                     event_name = resp.get("Event")
                     if event_name:
+                        result["details"].append(f"Event packet ignored during ping: {event_name}")
                         log.debug("AMI ping ignoring event packet: %s", event_name)
                         continue
-                    if not resp:
-                        log.warning("AMI ping returned no response for %s:%d", self.settings.ami_host, self.settings.ami_port)
-                        return False
-                    success = resp.get("Response") == "Success"
+
+                    response_value = resp.get("Response", "")
+                    message_value = resp.get("Message", "")
+                    ping_value = resp.get("Ping", "")
+                    result["details"].append(f"Ping response field: {response_value or '(missing)'}")
+                    if message_value:
+                        result["details"].append(f"Ping message: {message_value}")
+                    if ping_value:
+                        result["details"].append(f"Ping field: {ping_value}")
+
+                    success = response_value == "Success" or ping_value.lower() == "pong"
                     if success:
+                        result["ok"] = True
+                        result["summary"] = "AMI login and ping succeeded."
                         log.info("AMI ping response success for %s:%d", self.settings.ami_host, self.settings.ami_port)
                     else:
+                        result["summary"] = "AMI login succeeded but ping did not return success."
                         log.warning(
-                            "AMI ping response failure for %s:%d: %s",
+                            "AMI ping response failure for %s:%d: response=%s ping=%s message=%s",
                             self.settings.ami_host,
                             self.settings.ami_port,
-                            resp.get("Message", "unknown"),
+                            response_value or "(missing)",
+                            ping_value or "(missing)",
+                            message_value or "(missing)",
                         )
-                    return success
+                    return result
         except Exception as exc:
+            result["details"].append(f"Error: {type(exc).__name__}: {exc}")
             log.warning("AMI ping failed for %s:%d: %s", self.settings.ami_host, self.settings.ami_port, exc)
-            return False
+            return result
+
+    def ping(self) -> bool:
+        """Test AMI connectivity. Returns True on success."""
+        return bool(self.ping_detail()["ok"])
 
     def originate_playback(
         self,
