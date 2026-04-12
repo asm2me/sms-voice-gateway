@@ -19,6 +19,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from .admin_reports import QueueItem, get_queue_store
@@ -27,7 +28,7 @@ from .cache import AudioCache, RateLimiter
 from .config import SIPAccount, Settings
 from .config_store import get_sip_account_for_smpp_username
 from .pjsua2_service import SipCallRequest, build_pjsua2_service
-from .tts_service import TTSService
+from .tts_service import TTSService, _generate_silence
 
 log = logging.getLogger(__name__)
 
@@ -173,12 +174,21 @@ class SMSGateway:
             audio_path, was_cached = self.tts.get_or_create_audio(spoken_text)
         except Exception as exc:
             log.exception("TTS failed for text=%r", spoken_text[:60])
-            return GatewayResult(
-                success=False,
-                phone_number=phone,
-                text_spoken=spoken_text,
-                error=f"TTS error: {exc}",
-            )
+            if sms.provider == "admin-test":
+                fallback_hash = self.tts.hash_for(f"admin-test-fallback:{spoken_text}")
+                audio_path = self.audio_cache.store_audio(fallback_hash, _generate_silence(1500))
+                was_cached = False
+                log.warning(
+                    "Admin test-send falling back to generated silence audio because TTS failed: %s",
+                    exc,
+                )
+            else:
+                return GatewayResult(
+                    success=False,
+                    phone_number=phone,
+                    text_spoken=spoken_text,
+                    error=f"TTS error: {exc}",
+                )
 
         hkey = self.tts.hash_for(spoken_text)
         max_attempts = max(1, int(self.settings.delivery_retry_count) + 1)
@@ -211,7 +221,7 @@ class SMSGateway:
 
         for attempt in range(1, max_attempts + 1):
             if use_ami_fallback:
-                asterisk_sound_ref = self.audio_cache.to_asterisk_sound_ref(audio_path)
+                asterisk_sound_ref = self.audio_cache.asterisk_sound_ref(Path(audio_path).stem)
                 ami_result = self.ami.originate_playback(
                     phone,
                     asterisk_sound_ref,
