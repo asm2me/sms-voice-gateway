@@ -3,7 +3,7 @@ services:
   # ── Redis ───────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
-    restart: unless-stopped
+    restart: always
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
@@ -18,7 +18,7 @@ services:
   # ── SMS Voice Gateway ────────────────────────────────────────────────────────
   gateway:
     build: .
-    restart: unless-stopped
+    restart: always
     env_file: .env
     environment:
       REDIS_URL: redis://redis:6379/0
