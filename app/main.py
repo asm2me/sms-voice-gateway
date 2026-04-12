@@ -128,7 +128,7 @@ async def admin_portal(request: Request, settings: Settings = Depends(dep_settin
         "report_summary": report_summary,
         "recent_reports": recent_reports,
     }
-    return templates.TemplateResponse("admin.html", context)
+    return templates.TemplateResponse(request, "admin.html", context)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

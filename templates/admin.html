@@ -26,7 +26,7 @@
         <p class="eyebrow">Configuration</p>
         <h2>Settings snapshot</h2>
       </div>
-      <span class="pill">{{ config_snapshot.source }}</span>
+      <span class="pill">{{ config_snapshot["source"] }}</span>
     </div>
 
     <table class="data-table">
@@ -38,7 +38,7 @@
         </tr>
       </thead>
       <tbody>
-        {% for item in config_snapshot.items %}
+        {% for item in config_snapshot["items"] %}
         <tr>
           <td>{{ item.label }}</td>
           <td class="mono">{{ item.display_value }}</td>
@@ -59,7 +59,7 @@
     </div>
 
     <div class="status-grid">
-      {% for stat in report_summary.status_counts %}
+      {% for stat in report_summary["status_counts"] %}
       <div class="stat-card">
         <span class="stat-label">{{ stat.status }}</span>
         <strong>{{ stat.count }}</strong>
