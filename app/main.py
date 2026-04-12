@@ -492,8 +492,12 @@ def _simulate_smpp_test_send(
         current_queue_item.updated_at = _utc_now_iso()
         current_queue_item.status = "delivered" if result.success else "failed"
         current_queue_item.last_error = "" if result.success else result.error or "Test send failed"
-        current_queue_item.ami_action_id = result.ami_action_id or current_queue_item.ami_action_id
-        current_queue_item.sip_account_id = result.sip_account_id or current_queue_item.sip_account_id
+        current_queue_item.ami_action_id = result.ami_action_id or getattr(current_queue_item, "ami_action_id", "")
+        if hasattr(current_queue_item, "sip_account_id"):
+            current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
+        if hasattr(current_queue_item, "details") and isinstance(getattr(current_queue_item, "details", None), dict):
+            current_queue_item.details["sip_account_id"] = result.sip_account_id or current_queue_item.details.get("sip_account_id", "")
+            current_queue_item.details["sip_call_id"] = result.sip_call_id or current_queue_item.details.get("sip_call_id", "")
         queue_store.upsert(current_queue_item)
 
     return {
