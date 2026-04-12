@@ -34,6 +34,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from .admin_reports import get_delivery_report_collector, record_delivery_report
+from .ami_service import AMIService
 from .cache import AudioCache, RateLimiter, get_redis
 from .config import Settings, get_settings
 from .config_store import load_settings_from_store, save_settings_to_store
@@ -271,9 +272,40 @@ def _admin_context(
     return context
 
 
-def _build_health_context(settings: Settings) -> dict:
-    from .ami_service import AMIService
+def _ami_debug_probe(settings: Settings) -> dict:
+    result = {
+        "ok": False,
+        "status": "degraded",
+        "summary": "AMI connection test failed.",
+        "details": [
+            f"Target: {settings.ami_host}:{settings.ami_port}",
+            f"Username: {settings.ami_username}",
+            f"Connection timeout: {settings.ami_connection_timeout}s",
+            f"Response timeout: {settings.ami_response_timeout}s",
+        ],
+    }
+    try:
+        service = AMIService(settings)
+        with service._connection() as conn:
+            conn.send_action({"Action": "Ping"})
+            ping_resp = conn.read_response(timeout=settings.ami_response_timeout)
+            result["details"].append(f"Login response: success")
+            result["details"].append(f"Ping response: {ping_resp.get('Response', 'unknown')}")
+            if ping_resp.get("Message"):
+                result["details"].append(f"Ping message: {ping_resp.get('Message')}")
+            if ping_resp.get("Response") == "Success":
+                result["ok"] = True
+                result["status"] = "healthy"
+                result["summary"] = "AMI login and ping succeeded."
+                return result
+            result["summary"] = "AMI login succeeded but ping did not return success."
+            return result
+    except Exception as exc:
+        result["details"].append(f"Error: {type(exc).__name__}: {exc}")
+        return result
 
+
+def _build_health_context(settings: Settings) -> dict:
     checked_at = time.time()
     services: list[dict] = []
     dependencies: list[dict] = []
@@ -337,33 +369,21 @@ def _build_health_context(settings: Settings) -> dict:
             details=[f"URL: {settings.redis_url}"],
         )
 
-    ami_ok = False
-    ami_detail = "AMI ping failed."
-    ami_details = [
-        f"Target: {settings.ami_host}:{settings.ami_port}",
-        f"Username: {settings.ami_username}",
-        f"Connection timeout: {settings.ami_connection_timeout}s",
-        f"Response timeout: {settings.ami_response_timeout}s",
-    ]
-    try:
-        ami_service = AMIService(settings)
-        ami_ok = ami_service.ping()
-        if ami_ok:
-            ami_channels = len(ami_service.get_active_channels())
-            ami_detail = "AMI ping succeeded."
+    ami_probe = _ami_debug_probe(settings)
+    ami_ok = bool(ami_probe["ok"])
+    ami_details = list(ami_probe["details"])
+    if ami_ok:
+        try:
+            ami_channels = len(AMIService(settings).get_active_channels())
             ami_details.append(f"Active channels: {ami_channels}")
-        else:
-            ami_detail = "AMI ping failed. Verify AMI host, port, username, secret, and Asterisk manager.conf access rules."
-            ami_details.append("Check that AMI is enabled and reachable from the gateway runtime.")
-    except Exception as exc:
-        ami_detail = f"AMI ping failed: {exc}"
-        ami_details.append(f"Error: {exc}")
+        except Exception as exc:
+            ami_details.append(f"Active channel query failed: {exc}")
 
     add_service(
         "AMI",
         "Telephony",
         ami_ok,
-        ami_detail,
+        ami_probe["summary"],
         details=ami_details,
         notes=[
             "If this gateway runs in Docker, 127.0.0.1 usually points to the gateway container, not the Asterisk host.",
