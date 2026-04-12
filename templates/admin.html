@@ -1365,6 +1365,152 @@
       </section>
 
       <section class="card config-card config-panel">
+        {% set system_admin_username = (system_settings | selectattr('name', 'equalto', 'admin_username') | list | first) %}
+        <div class="card-header">
+          <div>
+            <p class="eyebrow">System Bootstrap</p>
+            <h2>System bootstrap, admin access, and permissions</h2>
+          </div>
+          <span class="pill">Env / bootstrap only</span>
+        </div>
+
+        <div class="notice">
+          <strong>Bootstrap settings:</strong> These values remain environment-driven and should be changed in `.env`, not saved from the web admin.
+        </div>
+
+        <section class="settings-group">
+          <div class="card-header compact-header">
+            <div>
+              <p class="eyebrow">System Admin</p>
+              <h3 class="settings-group-title">Bootstrap runtime settings</h3>
+            </div>
+            <span class="pill">Read-only</span>
+          </div>
+
+          {% if system_settings %}
+          <div class="form-grid">
+            {% for field in system_settings %}
+            <label class="field-group {% if field.name in ['host'] %}field-span-2{% endif %}">
+              <span class="field-label">{{ field.label }}</span>
+              {{ render_input(field) }}
+              <small class="muted">{{ field.name }} (read-only from env/bootstrap)</small>
+            </label>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="empty-state">
+            <h3>No bootstrap settings available</h3>
+            <p>Bootstrap values are not currently exposed by the runtime. Configure them in <span class="mono">.env</span> and reload the service.</p>
+          </div>
+          {% endif %}
+        </section>
+
+        <section class="settings-group settings-group-spaced">
+          <div class="card-header compact-header">
+            <div>
+              <p class="eyebrow">System Users and Permissions</p>
+              <h3 class="settings-group-title">Administrative access</h3>
+            </div>
+            <div class="page-actions">
+              <span class="pill">1 configured</span>
+              <a class="button" href="#system-user-admin-modal">View System User</a>
+            </div>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table account-table">
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Role</th>
+                  <th>Access</th>
+                  <th>Permissions</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <strong>{{ system_admin_username.raw_value or 'admin' }}</strong>
+                    <div class="muted account-subtext mono">bootstrap-admin</div>
+                  </td>
+                  <td>Administrator</td>
+                  <td><span class="status-badge status-success">enabled</span></td>
+                  <td>
+                    <div class="permission-summary">
+                      <span class="pill">Overview: Read</span>
+                      <span class="pill">Health: Read/Write</span>
+                      <span class="pill">Configuration: Read/Write</span>
+                      <span class="pill">Delivery Reports: Read</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="table-actions">
+                      <a class="button button-secondary button-small" href="#system-user-admin-modal">View</a>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="system-user-admin-modal" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close system user dialog"></a>
+            <section class="modal-card">
+              <div class="card-header compact-header">
+                <div>
+                  <p class="eyebrow">System User</p>
+                  <h3 class="settings-group-title">{{ system_admin_username.raw_value or 'admin' }}</h3>
+                </div>
+                <a href="#" class="button button-secondary button-small">Close</a>
+              </div>
+
+              <div class="form-grid">
+                <label class="field-group">
+                  <span class="field-label">Username</span>
+                  <input type="text" value="{{ system_admin_username.raw_value or 'admin' }}" readonly />
+                </label>
+                <label class="field-group">
+                  <span class="field-label">Role</span>
+                  <input type="text" value="Administrator" readonly />
+                </label>
+                <label class="field-group">
+                  <span class="field-label">Status</span>
+                  <input type="text" value="Enabled" readonly />
+                </label>
+                <label class="field-group">
+                  <span class="field-label">Auth Source</span>
+                  <input type="text" value="Bootstrap / Environment" readonly />
+                </label>
+                <label class="field-group field-span-2">
+                  <span class="field-label">Permissions</span>
+                  <select multiple size="8" readonly>
+                    <option selected>Overview — Read</option>
+                    <option selected>Health — Read</option>
+                    <option selected>Health — Write</option>
+                    <option selected>Configuration — Read</option>
+                    <option selected>Configuration — Write</option>
+                    <option selected>Delivery Reports — Read</option>
+                    <option>Delivery Reports — Write</option>
+                    <option>System Users — Write</option>
+                  </select>
+                  <small class="muted">Permissions are shown as multi-select values with explicit Read/Write scope.</small>
+                </label>
+                <label class="field-group field-span-2">
+                  <span class="field-label">Password</span>
+                  <input type="password" value="configured" readonly />
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <a href="#" class="button button-secondary">Close</a>
+              </div>
+            </section>
+          </div>
+        </section>
+      </section>
+
+      <section class="card config-card config-panel">
         <div class="card-header">
           <div>
             <p class="eyebrow">SMPP</p>
@@ -1658,155 +1804,8 @@
           {% endif %}
         </section>
       </section>
-
-      <section class="card config-card config-panel">
-        {% set system_admin_username = (system_settings | selectattr('name', 'equalto', 'admin_username') | list | first) %}
-        <div class="card-header">
-          <div>
-            <p class="eyebrow">System Bootstrap</p>
-            <h2>System bootstrap, admin access, and permissions</h2>
-          </div>
-          <span class="pill">Env / bootstrap only</span>
-        </div>
-
-        <div class="notice">
-          <strong>Bootstrap settings:</strong> These values remain environment-driven and should be changed in `.env`, not saved from the web admin.
-        </div>
-
-        <section class="settings-group">
-          <div class="card-header compact-header">
-            <div>
-              <p class="eyebrow">System Admin</p>
-              <h3 class="settings-group-title">Bootstrap runtime settings</h3>
-            </div>
-            <span class="pill">Read-only</span>
-          </div>
-
-          {% if system_settings %}
-          <div class="form-grid">
-            {% for field in system_settings %}
-            <label class="field-group {% if field.name in ['host'] %}field-span-2{% endif %}">
-              <span class="field-label">{{ field.label }}</span>
-              {{ render_input(field) }}
-              <small class="muted">{{ field.name }} (read-only from env/bootstrap)</small>
-            </label>
-            {% endfor %}
-          </div>
-          {% else %}
-          <div class="empty-state">
-            <h3>No bootstrap settings available</h3>
-            <p>Bootstrap values are not currently exposed by the runtime. Configure them in <span class="mono">.env</span> and reload the service.</p>
-          </div>
-          {% endif %}
-        </section>
-
-        <section class="settings-group settings-group-spaced">
-          <div class="card-header compact-header">
-            <div>
-              <p class="eyebrow">System Users and Permissions</p>
-              <h3 class="settings-group-title">Administrative access</h3>
-            </div>
-            <div class="page-actions">
-              <span class="pill">1 configured</span>
-              <a class="button" href="#system-user-admin-modal">View System User</a>
-            </div>
-          </div>
-
-          <div class="table-wrap">
-            <table class="data-table account-table">
-              <thead>
-                <tr>
-                  <th>User</th>
-                  <th>Role</th>
-                  <th>Access</th>
-                  <th>Permissions</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>
-                    <strong>{{ system_admin_username.raw_value or 'admin' }}</strong>
-                    <div class="muted account-subtext mono">bootstrap-admin</div>
-                  </td>
-                  <td>Administrator</td>
-                  <td><span class="status-badge status-success">enabled</span></td>
-                  <td>
-                    <div class="permission-summary">
-                      <span class="pill">Overview: Read</span>
-                      <span class="pill">Health: Read/Write</span>
-                      <span class="pill">Configuration: Read/Write</span>
-                      <span class="pill">Delivery Reports: Read</span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="table-actions">
-                      <a class="button button-secondary button-small" href="#system-user-admin-modal">View</a>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div id="system-user-admin-modal" class="modal-shell">
-            <a href="#" class="modal-backdrop" aria-label="Close system user dialog"></a>
-            <section class="modal-card">
-              <div class="card-header compact-header">
-                <div>
-                  <p class="eyebrow">System User</p>
-                  <h3 class="settings-group-title">{{ system_admin_username.raw_value or 'admin' }}</h3>
-                </div>
-                <a href="#" class="button button-secondary button-small">Close</a>
-              </div>
-
-              <div class="form-grid">
-                <label class="field-group">
-                  <span class="field-label">Username</span>
-                  <input type="text" value="{{ system_admin_username.raw_value or 'admin' }}" readonly />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Role</span>
-                  <input type="text" value="Administrator" readonly />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Status</span>
-                  <input type="text" value="Enabled" readonly />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Auth Source</span>
-                  <input type="text" value="Bootstrap / Environment" readonly />
-                </label>
-                <label class="field-group field-span-2">
-                  <span class="field-label">Permissions</span>
-                  <select multiple size="8" readonly>
-                    <option selected>Overview — Read</option>
-                    <option selected>Health — Read</option>
-                    <option selected>Health — Write</option>
-                    <option selected>Configuration — Read</option>
-                    <option selected>Configuration — Write</option>
-                    <option selected>Delivery Reports — Read</option>
-                    <option>Delivery Reports — Write</option>
-                    <option>System Users — Write</option>
-                  </select>
-                  <small class="muted">Permissions are shown as multi-select values with explicit Read/Write scope.</small>
-                </label>
-                <label class="field-group field-span-2">
-                  <span class="field-label">Password</span>
-                  <input type="password" value="configured" readonly />
-                </label>
-              </div>
-
-              <div class="form-actions">
-                <a href="#" class="button button-secondary">Close</a>
-              </div>
-            </section>
-          </div>
-        </section>
-      </section>
     </div>
   </div>
-</div>
 {% endif %}
 
 <footer class="card admin-audit-footer">
