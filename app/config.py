@@ -68,9 +68,20 @@ class Settings(BaseSettings):
     asterisk_exten: str = "s"
     asterisk_priority: str = "1"
 
+    # ── Retry policy ──────────────────────────────────────────────────────────
+    delivery_retry_count: int = 2
+    delivery_retry_interval_seconds: int = 60
+
     # ── Redis cache ───────────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
     redis_prefix: str = "sms_gw:"
+
+    # ── SMPP listener ─────────────────────────────────────────────────────────
+    smpp_enabled: bool = False
+    smpp_host: str = "0.0.0.0"
+    smpp_port: int = 7070
+    smpp_username: str = "smpp"
+    smpp_password: str = "smpp_secret"
 
     # ── Rate limiting ─────────────────────────────────────────────────────────
     rate_limit_hourly: int = 3    # max calls per number per hour

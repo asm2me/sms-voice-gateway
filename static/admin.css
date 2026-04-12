@@ -727,13 +727,45 @@ a {
   color: #991b1b;
 }
 
+.inbox-queue-panel {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.inbox-queue-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.inbox-queue-summary-grid {
+  margin-bottom: 0;
+}
+
+.compact-header {
+  margin-bottom: 0.75rem;
+}
+
+.message-preview {
+  max-width: 340px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.inbox-table td,
+.queue-table td {
+  vertical-align: top;
+}
+
 @media (max-width: 900px) {
   .dashboard-grid,
   .metric-grid,
   .form-grid,
   .health-hero,
   .health-service-grid,
-  .health-footer-grid {
+  .health-footer-grid,
+  .inbox-queue-grid {
     grid-template-columns: 1fr;
   }
 

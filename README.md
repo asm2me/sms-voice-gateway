@@ -8,11 +8,9 @@ A FastAPI-based SMS-to-voice gateway that receives incoming SMS webhooks, conver
   - Twilio (`POST /sms/twilio`)
   - Vonage/Nexmo (`POST /sms/vonage`)
   - Generic JSON (`POST /sms/generic`)
+- SMPP listener support for inbound gateway connections on configurable port `7070`
 - Health and debug endpoints
 - Admin JSON endpoints for configuration snapshots and delivery reports
->>>>>>> REPLACE
-
-
 - TTS provider support for:
   - Google Cloud Text-to-Speech
   - AWS Polly
@@ -33,6 +31,7 @@ A FastAPI-based SMS-to-voice gateway that receives incoming SMS webhooks, conver
   - AWS access keys, or
   - OpenAI API key, or
   - ElevenLabs API key
+- Optional SMPP client credentials for inbound gateway bind/login
 
 ## Environment setup
 
@@ -50,6 +49,7 @@ Common settings include:
 - `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID`
 - `AUDIO_CACHE_DIR`, `ASTERISK_SOUNDS_DIR`, `AUDIO_CACHE_TTL`
 - `AMI_HOST`, `AMI_PORT`, `AMI_USERNAME`, `AMI_SECRET`
+- `SMPP_ENABLED`, `SMPP_HOST`, `SMPP_PORT`, `SMPP_USERNAME`, `SMPP_PASSWORD`
 - `SIP_CHANNEL_PREFIX`, `OUTBOUND_CALLER_ID`
 - `ASTERISK_CONTEXT`, `ASTERISK_EXTEN`, `ASTERISK_PRIORITY`
 - `REDIS_URL`, `REDIS_PREFIX`
@@ -66,6 +66,10 @@ AMI_HOST=127.0.0.1
 AMI_PORT=5038
 AMI_USERNAME=manager
 AMI_SECRET=manager_secret
+SMPP_ENABLED=true
+SMPP_PORT=7070
+SMPP_USERNAME=smpp
+SMPP_PASSWORD=smpp_secret
 WEBHOOK_SECRET=change-me
 ```
 
@@ -107,6 +111,7 @@ For the service to work end-to-end, make sure these are reachable:
 
 - Redis at `REDIS_URL`
 - Asterisk AMI at `AMI_HOST:AMI_PORT`
+- SMPP port reachable at `SMPP_HOST:SMPP_PORT` if enabled
 - Asterisk can access the audio cache directory configured by `AUDIO_CACHE_DIR` and `ASTERISK_SOUNDS_DIR`
 
 ## Docker
@@ -158,6 +163,25 @@ docker run --rm -p 8000:8000 --env-file .env sms-voice-gateway
 - `POST /sms/vonage` - Vonage/Nexmo webhook
 - `POST /sms/generic` - generic SMS webhook
 
+## SMPP support
+
+This project now includes a lightweight SMPP listener intended for inbound bind/login verification and future gateway integration.
+
+- Default listen port: `7070`
+- Configurable via:
+  - `SMPP_ENABLED`
+  - `SMPP_HOST`
+  - `SMPP_PORT`
+  - `SMPP_USERNAME`
+  - `SMPP_PASSWORD`
+
+Notes:
+
+- The listener is started when the app boots if `SMPP_ENABLED=true`.
+- The implementation currently supports basic SMPP bind/unbind handling with credential validation.
+- Logs show connection lifecycle events without exposing secrets.
+- If you need a full production SMPP SMSC/ESME feature set, consider replacing the lightweight listener with a dedicated SMPP server package later.
+
 ## Troubleshooting
 
 - **Health check returns `degraded`**: verify Redis and Asterisk AMI are reachable.
@@ -166,6 +190,7 @@ docker run --rm -p 8000:8000 --env-file .env sms-voice-gateway
 - **Audio files are not found by Asterisk**: make sure `AUDIO_CACHE_DIR` and `ASTERISK_SOUNDS_DIR` point to a shared or mounted path.
 - **Wrong TTS voice or language**: verify the selected provider-specific voice settings.
 - **Redis connection errors in Docker**: use the compose-provided `REDIS_URL=redis://redis:6379/0` or point to a reachable Redis instance.
+- **SMPP bind fails**: confirm `SMPP_USERNAME` and `SMPP_PASSWORD` match the connecting gateway credentials, and that the port is exposed if running in Docker.
 
 ## Notes
 

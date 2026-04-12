@@ -399,6 +399,134 @@
   </article>
 </section>
 
+<section class="card inbox-queue-panel">
+  <div class="card-header">
+    <div>
+      <p class="eyebrow">SMS Inbox and Delivery Queue</p>
+      <h2>Inbound messages and outbound voice jobs</h2>
+      <p class="muted">Track incoming SMS traffic, queued call delivery, retry timing, and current job state.</p>
+    </div>
+    <div class="page-actions">
+      <span class="pill">Live monitoring</span>
+    </div>
+  </div>
+
+  <div class="dashboard-grid inbox-queue-summary-grid">
+    <article class="card stat-card stat-card-strong">
+      <span class="stat-label">Inbox</span>
+      <strong>{{ sms_inbox_summary.total }}</strong>
+      <p class="muted">{{ sms_inbox_summary.detail }}</p>
+    </article>
+    <article class="card stat-card stat-card-strong">
+      <span class="stat-label">Queue</span>
+      <strong>{{ queue_summary.total }}</strong>
+      <p class="muted">{{ queue_summary.detail }}</p>
+    </article>
+  </div>
+
+  <div class="inbox-queue-grid">
+    <section class="settings-group">
+      <div class="card-header compact-header">
+        <div>
+          <h3 class="settings-group-title">Recent SMS inbox</h3>
+          <p class="muted">Latest inbound messages captured by the webhook and available for review.</p>
+        </div>
+        <span class="pill">{{ sms_inbox_summary.unread_label or 'Recent' }}</span>
+      </div>
+
+      {% if recent_inbox_messages %}
+      <div class="table-wrap">
+        <table class="data-table inbox-table">
+          <thead>
+            <tr>
+              <th>Received</th>
+              <th>From</th>
+              <th>Destination</th>
+              <th>Provider</th>
+              <th>Status</th>
+              <th>Message Preview</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for message in recent_inbox_messages %}
+            <tr>
+              <td class="mono">{{ message.created_at }}</td>
+              <td class="mono">{{ message.phone_number }}</td>
+              <td class="mono">{{ message.destination or '—' }}</td>
+              <td>{{ message.provider or '—' }}</td>
+              <td>
+                <span class="status-badge status-{{ message.status_class }}">{{ message.status }}</span>
+              </td>
+              <td class="message-preview">{{ message.body_preview }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <h3>No inbox messages yet</h3>
+        <p>Inbound SMS messages will appear here once the webhook receives traffic.</p>
+      </div>
+      {% endif %}
+    </section>
+
+    <section class="settings-group">
+      <div class="card-header compact-header">
+        <div>
+          <h3 class="settings-group-title">Outbound voice queue</h3>
+          <p class="muted">Queued jobs, retry state, and AMI delivery progress for outbound voice calls.</p>
+        </div>
+        <span class="pill">{{ queue_summary.active_label or 'Monitoring' }}</span>
+      </div>
+
+      {% if recent_queue_items %}
+      <div class="table-wrap">
+        <table class="data-table queue-table">
+          <thead>
+            <tr>
+              <th>Created</th>
+              <th>Phone</th>
+              <th>Provider</th>
+              <th>Status</th>
+              <th>Attempts</th>
+              <th>Retry Interval</th>
+              <th>Next Attempt</th>
+              <th>AMI Action ID</th>
+              <th>Body Preview</th>
+              <th>Last Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in recent_queue_items %}
+            <tr>
+              <td class="mono">{{ item.created_at }}</td>
+              <td class="mono">{{ item.phone_number }}</td>
+              <td>{{ item.provider or '—' }}</td>
+              <td>
+                <span class="status-badge status-{{ item.status_class }}">{{ item.status }}</span>
+              </td>
+              <td class="mono">{{ item.attempts }}/{{ item.max_attempts }}</td>
+              <td class="mono">{{ item.retry_interval_seconds }}s</td>
+              <td class="mono">{{ item.next_attempt_at or '—' }}</td>
+              <td class="mono">{{ item.ami_action_id or '—' }}</td>
+              <td class="message-preview">{{ item.body_preview }}</td>
+              <td>{{ item.last_error or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <h3>No outbound queue items yet</h3>
+        <p>Voice delivery jobs will appear here when SMS-triggered calls are queued or retried.</p>
+      </div>
+      {% endif %}
+    </section>
+  </div>
+</section>
+
 <section class="card">
   <div class="card-header">
     <div>
@@ -526,7 +654,7 @@
                     <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
                     <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
                   </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port'] %}
+                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds'] %}
                   <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
                   {% elif field.name in ['tts_speaking_rate'] %}
                   <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
@@ -556,7 +684,7 @@
                     <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
                     <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
                   </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port'] %}
+                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds'] %}
                   <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
                   {% elif field.name in ['tts_speaking_rate'] %}
                   <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
@@ -586,7 +714,7 @@
                     <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
                     <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
                   </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port'] %}
+                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds'] %}
                   <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
                   {% elif field.name in ['tts_speaking_rate'] %}
                   <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
@@ -616,7 +744,7 @@
                     <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
                     <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
                   </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port'] %}
+                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds'] %}
                   <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
                   {% elif field.name in ['tts_speaking_rate'] %}
                   <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
@@ -646,7 +774,7 @@
                     <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
                     <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
                   </select>
-                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port'] %}
+                  {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port', 'delivery_retry_count', 'delivery_retry_interval_seconds'] %}
                   <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
                   {% elif field.name in ['tts_speaking_rate'] %}
                   <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />

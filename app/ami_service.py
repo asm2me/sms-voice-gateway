@@ -14,8 +14,6 @@ from __future__ import annotations
 import logging
 import re
 import socket
-import textwrap
-import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -28,16 +26,15 @@ log = logging.getLogger(__name__)
 _CRLF = "\r\n"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Low-level AMI socket helper
-# ─────────────────────────────────────────────────────────────────────────────
-
 class AMISocket:
     def __init__(self, host: str, port: int, timeout: int = 10):
+        self.host = host
+        self.port = port
+        log.info("AMI TCP connect start → %s:%d", host, port)
         self._sock = socket.create_connection((host, port), timeout=timeout)
         self._buf = ""
-        # Read and discard the Asterisk banner line
-        self._readline()
+        banner = self._readline()
+        log.debug("AMI banner received from %s:%d: %s", host, port, banner)
 
     def send_action(self, fields: dict[str, str]) -> None:
         msg = _CRLF.join(f"{k}: {v}" for k, v in fields.items()) + _CRLF * 2
@@ -49,7 +46,7 @@ class AMISocket:
         lines: list[str] = []
         while True:
             line = self._readline()
-            if line == "":          # blank line → end of packet
+            if line == "":
                 break
             lines.append(line)
         result: dict[str, str] = {}
@@ -58,6 +55,12 @@ class AMISocket:
                 k, _, v = line.partition(": ")
                 result[k.strip()] = v.strip()
         return result
+
+    def close(self) -> None:
+        try:
+            self._sock.close()
+        except Exception:
+            pass
 
     def _readline(self) -> str:
         while _CRLF not in self._buf:
@@ -68,16 +71,6 @@ class AMISocket:
         line, _, self._buf = self._buf.partition(_CRLF)
         return line
 
-    def close(self) -> None:
-        try:
-            self._sock.close()
-        except Exception:
-            pass
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# AMI result dataclass
-# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class OriginateResult:
@@ -87,10 +80,6 @@ class OriginateResult:
     message: str = ""
     raw: dict = field(default_factory=dict)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Public AMI service
-# ─────────────────────────────────────────────────────────────────────────────
 
 class AMIService:
     def __init__(self, settings: Settings):
@@ -103,24 +92,35 @@ class AMIService:
             self.settings.ami_port,
             timeout=self.settings.ami_connection_timeout,
         )
+        logged_in = False
         try:
-            # Login
-            s.send_action({
-                "Action": "Login",
-                "Username": self.settings.ami_username,
-                "Secret": self.settings.ami_secret,
-            })
+            log.info("AMI login start → %s:%d as %s", self.settings.ami_host, self.settings.ami_port, self.settings.ami_username)
+            s.send_action(
+                {
+                    "Action": "Login",
+                    "Username": self.settings.ami_username,
+                    "Secret": self.settings.ami_secret,
+                }
+            )
             resp = s.read_response(timeout=self.settings.ami_connection_timeout)
             if resp.get("Response") != "Success":
-                raise PermissionError(f"AMI login failed: {resp.get('Message', resp)}")
-            log.debug("AMI login OK (%s:%d)", self.settings.ami_host, self.settings.ami_port)
+                message = resp.get("Message", "unknown")
+                log.warning("AMI login failed for %s:%d: %s", self.settings.ami_host, self.settings.ami_port, message)
+                raise PermissionError(f"AMI login failed: {message}")
+            logged_in = True
+            log.info("AMI login succeeded for %s:%d", self.settings.ami_host, self.settings.ami_port)
             yield s
         finally:
             try:
-                s.send_action({"Action": "Logoff"})
-            except Exception:
-                pass
-            s.close()
+                if logged_in:
+                    log.info("AMI logoff start → %s:%d", self.settings.ami_host, self.settings.ami_port)
+                    s.send_action({"Action": "Logoff"})
+                    log.info("AMI logoff completed for %s:%d", self.settings.ami_host, self.settings.ami_port)
+            except Exception as exc:
+                log.debug("AMI logoff issue for %s:%d: %s", self.settings.ami_host, self.settings.ami_port, exc)
+            finally:
+                s.close()
+                log.info("AMI TCP disconnect complete for %s:%d", self.settings.ami_host, self.settings.ami_port)
 
     def ping(self) -> bool:
         """Test AMI connectivity. Returns True on success."""
@@ -134,11 +134,21 @@ class AMIService:
                         log.debug("AMI ping ignoring event packet: %s", event_name)
                         continue
                     if not resp:
-                        break
-                    return resp.get("Response") == "Success"
-                return False
+                        log.warning("AMI ping returned no response for %s:%d", self.settings.ami_host, self.settings.ami_port)
+                        return False
+                    success = resp.get("Response") == "Success"
+                    if success:
+                        log.info("AMI ping response success for %s:%d", self.settings.ami_host, self.settings.ami_port)
+                    else:
+                        log.warning(
+                            "AMI ping response failure for %s:%d: %s",
+                            self.settings.ami_host,
+                            self.settings.ami_port,
+                            resp.get("Message", "unknown"),
+                        )
+                    return success
         except Exception as exc:
-            log.warning("AMI ping failed: %s", exc)
+            log.warning("AMI ping failed for %s:%d: %s", self.settings.ami_host, self.settings.ami_port, exc)
             return False
 
     def originate_playback(
@@ -157,13 +167,11 @@ class AMIService:
         action_id = f"sms_{uuid.uuid4().hex[:12]}"
         channel = f"{self.settings.sip_channel_prefix}/{_e164(phone_number)}"
 
-        # Build variable list for the dialplan context
         vars_dict: dict[str, str] = {
             "OTP_SOUND": asterisk_sound_ref,
         }
         if extra_vars:
             vars_dict.update(extra_vars)
-        # AMI encodes multiple Variable fields as repeated keys
         variable_str = ",".join(f"{k}={v}" for k, v in vars_dict.items())
 
         action: dict[str, str] = {
@@ -175,19 +183,15 @@ class AMIService:
             "Context": self.settings.asterisk_context,
             "Exten": self.settings.asterisk_exten,
             "Priority": self.settings.asterisk_priority,
-            "Async": "true",          # non-blocking originate
+            "Async": "true",
             "Variable": variable_str,
         }
 
-        log.info(
-            "AMI Originate → %s via %s (sound=%s)",
-            phone_number, channel, asterisk_sound_ref,
-        )
+        log.info("AMI originate start → %s via %s (action=%s)", phone_number, channel, action_id)
 
         try:
             with self._connection() as s:
                 s.send_action(action)
-                # With Async=true Asterisk immediately returns "Response: Success"
                 while True:
                     resp = s.read_response(timeout=self.settings.ami_response_timeout)
                     if resp.get("Event"):
@@ -203,13 +207,17 @@ class AMIService:
                     raw=resp,
                 )
                 if success:
-                    log.info("Originate queued for %s (action=%s)", phone_number, action_id)
+                    log.info("AMI originate response success for %s (action=%s)", phone_number, action_id)
                 else:
-                    log.error("Originate failed for %s: %s", phone_number, resp)
+                    log.warning(
+                        "AMI originate response failure for %s (action=%s): %s",
+                        phone_number,
+                        action_id,
+                        resp.get("Message", "unknown"),
+                    )
                 return result
-
         except Exception as exc:
-            log.exception("AMI originate exception for %s", phone_number)
+            log.exception("AMI originate exception for %s (action=%s)", phone_number, action_id)
             return OriginateResult(
                 action_id=action_id,
                 success=False,
@@ -233,15 +241,12 @@ class AMIService:
                         break
                     elif not resp:
                         break
+                log.info("AMI active channels query completed for %s:%d count=%d", self.settings.ami_host, self.settings.ami_port, len(channels))
                 return channels
         except Exception as exc:
-            log.warning("get_active_channels error: %s", exc)
+            log.warning("AMI active channels query failed for %s:%d: %s", self.settings.ami_host, self.settings.ami_port, exc)
             return []
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Utility
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _e164(number: str) -> str:
     """Strip everything except digits and leading +."""

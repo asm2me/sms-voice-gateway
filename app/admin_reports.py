@@ -30,6 +30,41 @@ def _safe_json_loads(text: str) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+def _coerce_text(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
+def _clean_preview(value: Any, limit: int = 160) -> str:
+    text = " ".join(_coerce_text(value).split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _status_class(status: str) -> str:
+    mapping = {
+        "success": "success",
+        "delivered": "success",
+        "received": "success",
+        "queued": "pending",
+        "processing": "pending",
+        "retry_scheduled": "warning",
+        "pending": "pending",
+        "failed": "error",
+        "error": "error",
+    }
+    return mapping.get((status or "").lower(), "unknown")
+
+
 @dataclass(slots=True)
 class DeliveryReport:
     timestamp: str
@@ -46,7 +81,91 @@ class DeliveryReport:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["timestamp"] = self.timestamp
+        payload["status_class"] = _status_class(self.status)
+        payload["message_excerpt"] = _clean_preview(self.message)
+        payload["destination"] = self.phone_number
+        payload["source"] = self.provider
         return payload
+
+
+@dataclass(slots=True)
+class InboxMessage:
+    id: str
+    created_at: str
+    updated_at: str
+    from_number: str
+    to_number: str
+    provider: str
+    body: str
+    body_preview: str
+    source: str = ""
+    status: str = "received"
+    last_error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["phone_number"] = self.from_number
+        payload["destination"] = self.to_number
+        payload["status_class"] = _status_class(self.status)
+        return payload
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "InboxMessage":
+        return cls(
+            id=_coerce_text(data.get("id")),
+            created_at=_coerce_text(data.get("created_at")) or _isoformat(_utc_now()),
+            updated_at=_coerce_text(data.get("updated_at")) or _coerce_text(data.get("created_at")) or _isoformat(_utc_now()),
+            from_number=_coerce_text(data.get("from_number") or data.get("phone_number")),
+            to_number=_coerce_text(data.get("to_number") or data.get("destination")),
+            provider=_coerce_text(data.get("provider") or data.get("source")),
+            body=_coerce_text(data.get("body")),
+            body_preview=_clean_preview(data.get("body_preview") or data.get("body")),
+            source=_coerce_text(data.get("source")),
+            status=_coerce_text(data.get("status")) or "received",
+            last_error=_coerce_text(data.get("last_error")),
+        )
+
+
+@dataclass(slots=True)
+class QueueItem:
+    id: str
+    created_at: str
+    updated_at: str
+    phone_number: str
+    provider: str
+    body: str
+    body_preview: str
+    status: str = "queued"
+    attempts: int = 0
+    max_attempts: int = 0
+    retry_interval_seconds: int = 0
+    next_attempt_at: str | None = None
+    last_error: str = ""
+    ami_action_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["status_class"] = _status_class(self.status)
+        return payload
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any]) -> "QueueItem":
+        return cls(
+            id=_coerce_text(data.get("id")),
+            created_at=_coerce_text(data.get("created_at")) or _isoformat(_utc_now()),
+            updated_at=_coerce_text(data.get("updated_at")) or _coerce_text(data.get("created_at")) or _isoformat(_utc_now()),
+            phone_number=_coerce_text(data.get("phone_number")),
+            provider=_coerce_text(data.get("provider")),
+            body=_coerce_text(data.get("body")),
+            body_preview=_clean_preview(data.get("body_preview") or data.get("body")),
+            status=_coerce_text(data.get("status")) or "queued",
+            attempts=_coerce_int(data.get("attempts")),
+            max_attempts=_coerce_int(data.get("max_attempts")),
+            retry_interval_seconds=_coerce_int(data.get("retry_interval_seconds")),
+            next_attempt_at=_coerce_text(data.get("next_attempt_at")) or None,
+            last_error=_coerce_text(data.get("last_error")),
+            ami_action_id=_coerce_text(data.get("ami_action_id")) or None,
+        )
 
 
 class DeliveryReportCollector:
@@ -71,7 +190,7 @@ class InMemoryDeliveryReportCollector(DeliveryReportCollector):
 
     def list_reports(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._lock:
-            items = list(self._items)[-max(limit, 0):]
+            items = list(self._items)[-max(limit, 0) :]
         return [item.to_dict() for item in reversed(items)]
 
     def summary(self) -> dict[str, Any]:
@@ -131,7 +250,112 @@ class FileBackedDeliveryReportCollector(DeliveryReportCollector):
         return self._memory.summary()
 
 
+class FileBackedInboxStore:
+    def __init__(self, path: str, max_items: int = 1000) -> None:
+        self.path = Path(path)
+        self.max_items = max_items
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = Lock()
+        self._items: Deque[InboxMessage] = deque(maxlen=max_items)
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            self.path.write_text("[]", encoding="utf-8")
+            return
+        try:
+            for item in _safe_json_loads(self.path.read_text(encoding="utf-8")):
+                self._items.append(InboxMessage.from_mapping(item))
+        except Exception as exc:
+            log.warning("Failed to load inbox store %s: %s", self.path, exc)
+
+    def _persist_unlocked(self) -> None:
+        items = [item.to_dict() for item in self._items]
+        self.path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def append(self, message: InboxMessage) -> InboxMessage:
+        with self._lock:
+            self._items.append(message)
+            self._persist_unlocked()
+        return message
+
+    def list_messages(self, limit: int = 50) -> list[InboxMessage]:
+        with self._lock:
+            items = list(self._items)[-max(limit, 0) :]
+        return list(reversed(items))
+
+    def summary(self) -> dict[str, Any]:
+        with self._lock:
+            items = list(self._items)
+        counts = Counter(item.status for item in items)
+        return {
+            "total": len(items),
+            "by_status": dict(sorted(counts.items())),
+            "latest_timestamp": items[-1].created_at if items else None,
+        }
+
+
+class FileBackedQueueStore:
+    def __init__(self, path: str, max_items: int = 1000) -> None:
+        self.path = Path(path)
+        self.max_items = max_items
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = Lock()
+        self._items: Deque[QueueItem] = deque(maxlen=max_items)
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.exists():
+            self.path.write_text("[]", encoding="utf-8")
+            return
+        try:
+            for item in _safe_json_loads(self.path.read_text(encoding="utf-8")):
+                self._items.append(QueueItem.from_mapping(item))
+        except Exception as exc:
+            log.warning("Failed to load queue store %s: %s", self.path, exc)
+
+    def _persist_unlocked(self) -> None:
+        items = [item.to_dict() for item in self._items]
+        self.path.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def append(self, item: QueueItem) -> QueueItem:
+        with self._lock:
+            self._items.append(item)
+            self._persist_unlocked()
+        return item
+
+    def upsert(self, item: QueueItem) -> QueueItem:
+        with self._lock:
+            replaced = False
+            for index, existing in enumerate(self._items):
+                if existing.id == item.id:
+                    self._items[index] = item
+                    replaced = True
+                    break
+            if not replaced:
+                self._items.append(item)
+            self._persist_unlocked()
+        return item
+
+    def list_items(self, limit: int = 50) -> list[QueueItem]:
+        with self._lock:
+            items = list(self._items)[-max(limit, 0) :]
+        return list(reversed(items))
+
+    def summary(self) -> dict[str, Any]:
+        with self._lock:
+            items = list(self._items)
+        counts = Counter(item.status for item in items)
+        return {
+            "total": len(items),
+            "by_status": dict(sorted(counts.items())),
+            "latest_timestamp": items[-1].created_at if items else None,
+        }
+
+
 _report_collector: Optional[DeliveryReportCollector] = None
+_inbox_store: FileBackedInboxStore | None = None
+_queue_store: FileBackedQueueStore | None = None
 
 
 def get_delivery_report_collector(settings: Settings) -> DeliveryReportCollector:
@@ -143,6 +367,125 @@ def get_delivery_report_collector(settings: Settings) -> DeliveryReportCollector
         else:
             _report_collector = InMemoryDeliveryReportCollector()
     return _report_collector
+
+
+def _default_inbox_path(settings: Settings) -> str:
+    path = getattr(settings, "sms_inbox_store_path", "") or ""
+    return path or str(Path("data") / "sms_inbox.json")
+
+
+def _default_queue_path(settings: Settings) -> str:
+    path = getattr(settings, "voice_queue_store_path", "") or ""
+    return path or str(Path("data") / "voice_queue.json")
+
+
+def get_inbox_store(settings: Settings) -> FileBackedInboxStore:
+    global _inbox_store
+    if _inbox_store is None:
+        _inbox_store = FileBackedInboxStore(_default_inbox_path(settings))
+    return _inbox_store
+
+
+def get_queue_store(settings: Settings) -> FileBackedQueueStore:
+    global _queue_store
+    if _queue_store is None:
+        _queue_store = FileBackedQueueStore(_default_queue_path(settings))
+    return _queue_store
+
+
+def record_inbox_message(
+    settings: Settings,
+    *,
+    from_number: str,
+    to_number: str,
+    provider: str,
+    body: str,
+    source: str = "",
+    status: str = "received",
+    last_error: str = "",
+) -> InboxMessage:
+    now = _isoformat(_utc_now())
+    message = InboxMessage(
+        id=now,
+        created_at=now,
+        updated_at=now,
+        from_number=from_number,
+        to_number=to_number,
+        provider=provider,
+        body=body,
+        body_preview=_clean_preview(body),
+        source=source,
+        status=status,
+        last_error=last_error,
+    )
+    return get_inbox_store(settings).append(message)
+
+
+def record_queue_item(
+    settings: Settings,
+    *,
+    phone_number: str,
+    provider: str,
+    body: str,
+    status: str = "queued",
+    attempts: int = 0,
+    max_attempts: int | None = None,
+    retry_interval_seconds: int | None = None,
+    next_attempt_at: str | None = None,
+    last_error: str = "",
+    ami_action_id: str | None = None,
+    item_id: str | None = None,
+) -> QueueItem:
+    now = _isoformat(_utc_now())
+    item = QueueItem(
+        id=item_id or now,
+        created_at=now,
+        updated_at=now,
+        phone_number=phone_number,
+        provider=provider,
+        body=body,
+        body_preview=_clean_preview(body),
+        status=status,
+        attempts=attempts,
+        max_attempts=max_attempts if max_attempts is not None else getattr(settings, "delivery_retry_count", 3) + 1,
+        retry_interval_seconds=retry_interval_seconds if retry_interval_seconds is not None else getattr(settings, "delivery_retry_interval_seconds", 60),
+        next_attempt_at=next_attempt_at,
+        last_error=last_error,
+        ami_action_id=ami_action_id,
+    )
+    return get_queue_store(settings).upsert(item)
+
+
+def list_inbox_messages(settings: Settings, limit: int = 10) -> list[dict[str, Any]]:
+    return [item.to_dict() for item in get_inbox_store(settings).list_messages(limit=limit)]
+
+
+def list_queue_items(settings: Settings, limit: int = 10) -> list[dict[str, Any]]:
+    return [item.to_dict() for item in get_queue_store(settings).list_items(limit=limit)]
+
+
+def summarize_inbox(settings: Settings) -> dict[str, Any]:
+    summary = get_inbox_store(settings).summary()
+    return {
+        "total": summary.get("total", 0),
+        "detail": f"{summary.get('total', 0)} received messages stored",
+        "latest_timestamp": summary.get("latest_timestamp"),
+        "by_status": summary.get("by_status", {}),
+        "unread_label": "Recent",
+    }
+
+
+def summarize_queue(settings: Settings) -> dict[str, Any]:
+    summary = get_queue_store(settings).summary()
+    by_status = summary.get("by_status", {})
+    active_count = sum(by_status.get(key, 0) for key in ("queued", "processing", "retry_scheduled"))
+    return {
+        "total": summary.get("total", 0),
+        "detail": f"{active_count} active jobs, {by_status.get('delivered', 0)} delivered, {by_status.get('failed', 0)} failed",
+        "latest_timestamp": summary.get("latest_timestamp"),
+        "by_status": by_status,
+        "active_label": f"{active_count} active",
+    }
 
 
 def record_delivery_report(

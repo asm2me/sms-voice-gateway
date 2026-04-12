@@ -24,6 +24,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Event, Thread
 from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
@@ -39,6 +40,7 @@ from .cache import AudioCache, RateLimiter, get_redis
 from .config import Settings, get_settings
 from .config_store import load_settings_from_store, save_settings_to_store
 from .sms_handler import IncomingSMS, SMSGateway
+from .smpp_service import SMPPService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,17 +54,58 @@ STATIC_DIR = BASE_DIR / "static"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 security = HTTPBasic()
 
+_retry_worker_stop = Event()
+_retry_worker_thread: Thread | None = None
 
-# ─────────────────────────────────────────────────────────────────────────────
-# App lifecycle
-# ─────────────────────────────────────────────────────────────────────────────
+
+def _retry_worker_loop() -> None:
+    while not _retry_worker_stop.is_set():
+        try:
+            settings = get_settings()
+            collector = get_delivery_report_collector(settings)
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            if hasattr(collector, "list_reports"):
+                pass
+        except Exception as exc:
+            log.debug("Retry worker loop issue: %s", exc)
+        _retry_worker_stop.wait(5)
+
+
+def _start_retry_worker() -> None:
+    global _retry_worker_thread
+    if _retry_worker_thread and _retry_worker_thread.is_alive():
+        return
+    _retry_worker_stop.clear()
+    _retry_worker_thread = Thread(target=_retry_worker_loop, name="retry-worker", daemon=True)
+    _retry_worker_thread.start()
+    log.info("Retry worker started")
+
+
+def _stop_retry_worker() -> None:
+    _retry_worker_stop.set()
+    if _retry_worker_thread and _retry_worker_thread.is_alive():
+        _retry_worker_thread.join(timeout=2)
+    log.info("Retry worker stopped")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    log.info("SMS Voice Gateway starting (TTS=%s, AMI=%s:%d)",
-             settings.tts_provider, settings.ami_host, settings.ami_port)
+    smpp_service = SMPPService(settings)
+    app.state.smpp_service = smpp_service
+    log.info("SMS Voice Gateway starting (TTS=%s, AMI=%s:%d, SMPP=%s:%d enabled=%s)",
+             settings.tts_provider, settings.ami_host, settings.ami_port, settings.smpp_host, settings.smpp_port, settings.smpp_enabled)
+    try:
+        smpp_service.start()
+    except Exception:
+        log.exception("Failed to start SMPP listener")
+    _start_retry_worker()
     yield
+    _stop_retry_worker()
+    try:
+        smpp_service.stop()
+    except Exception:
+        log.exception("Failed to stop SMPP listener")
     log.info("SMS Voice Gateway stopped")
 
 
@@ -76,10 +119,6 @@ app = FastAPI(
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Dependency helpers
-# ─────────────────────────────────────────────────────────────────────────────
 
 def dep_settings() -> Settings:
     return load_settings_from_store()
@@ -149,8 +188,15 @@ def _settings_sections(settings: Settings) -> dict[str, list[dict[str, str]]]:
         ("asterisk_context", "Asterisk Context"),
         ("asterisk_exten", "Asterisk Exten"),
         ("asterisk_priority", "Asterisk Priority"),
+        ("delivery_retry_count", "Delivery Retry Count"),
+        ("delivery_retry_interval_seconds", "Delivery Retry Interval Seconds"),
         ("redis_url", "Redis URL"),
         ("redis_prefix", "Redis Prefix"),
+        ("smpp_enabled", "SMPP Enabled"),
+        ("smpp_host", "SMPP Host"),
+        ("smpp_port", "SMPP Port"),
+        ("smpp_username", "SMPP Username"),
+        ("smpp_password", "SMPP Password"),
         ("rate_limit_hourly", "Rate Limit Hourly"),
         ("rate_limit_daily", "Rate Limit Daily"),
         ("delivery_report_store_path", "Delivery Report Store Path"),
@@ -207,6 +253,11 @@ def _config_items(settings: Settings) -> list[dict[str, str]]:
         {"label": "Audio Encoding", "display_value": settings.tts_audio_encoding, "visibility": "public"},
         {"label": "AMI Host", "display_value": settings.ami_host, "visibility": "public"},
         {"label": "AMI Port", "display_value": str(settings.ami_port), "visibility": "public"},
+        {"label": "Retry Count", "display_value": str(settings.delivery_retry_count), "visibility": "public"},
+        {"label": "Retry Interval (s)", "display_value": str(settings.delivery_retry_interval_seconds), "visibility": "public"},
+        {"label": "SMPP Host", "display_value": settings.smpp_host, "visibility": "public"},
+        {"label": "SMPP Port", "display_value": str(settings.smpp_port), "visibility": "public"},
+        {"label": "SMPP Enabled", "display_value": "enabled" if settings.smpp_enabled else "disabled", "visibility": "public"},
         {"label": "SIP Channel Prefix", "display_value": settings.sip_channel_prefix, "visibility": "public"},
         {"label": "Outbound Caller ID", "display_value": settings.outbound_caller_id, "visibility": "public"},
         {"label": "Redis URL", "display_value": settings.redis_url, "visibility": "public"},
@@ -214,6 +265,16 @@ def _config_items(settings: Settings) -> list[dict[str, str]]:
         {"label": "Asterisk Sounds Directory", "display_value": settings.asterisk_sounds_dir, "visibility": "public"},
         {"label": "Webhook Secret", "display_value": "configured" if settings.webhook_secret else "not configured", "visibility": "protected"},
     ]
+
+def _build_queue_context(settings: Settings) -> tuple[dict, list[dict], dict, list[dict]]:
+    from .admin_reports import get_inbox_store, get_queue_store
+    inbox_store = get_inbox_store(settings)
+    queue_store = get_queue_store(settings)
+    inbox_summary = inbox_store.summary()
+    queue_summary = queue_store.summary()
+    recent_inbox_messages = inbox_store.list_items(limit=10)
+    recent_queue_items = queue_store.list_items(limit=10)
+    return inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items
 
 
 def _record_gateway_result(provider: str, result, *, phone_number: str = "", message: str = "") -> None:
@@ -256,12 +317,17 @@ def _admin_context(
 ) -> dict:
     settings_sections = _settings_sections(settings)
     report_summary, recent_reports = _report_context(settings)
+    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items = _build_queue_context(settings)
     context = {
         "request": request,
         "active_section": active_section,
         "config_snapshot": {"source": "saved settings" if success_message else "runtime settings", "items": _config_items(settings)},
         "report_summary": report_summary,
         "recent_reports": recent_reports,
+        "sms_inbox_summary": sms_inbox_summary,
+        "recent_inbox_messages": recent_inbox_messages,
+        "queue_summary": queue_summary,
+        "recent_queue_items": recent_queue_items,
         "basic_settings": settings_sections["basic"],
         "advanced_settings": settings_sections["advanced"],
         "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
@@ -270,7 +336,6 @@ def _admin_context(
     if success_message:
         context["success_message"] = success_message
     return context
-
 
 def _ami_debug_probe(settings: Settings) -> dict:
     result = {
@@ -289,7 +354,7 @@ def _ami_debug_probe(settings: Settings) -> dict:
         with service._connection() as conn:
             conn.send_action({"Action": "Ping"})
             ping_resp = conn.read_response(timeout=settings.ami_response_timeout)
-            result["details"].append(f"Login response: success")
+            result["details"].append("Login response: success")
             result["details"].append(f"Ping response: {ping_resp.get('Response', 'unknown')}")
             if ping_resp.get("Message"):
                 result["details"].append(f"Ping message: {ping_resp.get('Message')}")
@@ -303,7 +368,6 @@ def _ami_debug_probe(settings: Settings) -> dict:
     except Exception as exc:
         result["details"].append(f"Error: {type(exc).__name__}: {exc}")
         return result
-
 
 def _build_health_context(settings: Settings) -> dict:
     checked_at = time.time()
@@ -392,6 +456,25 @@ def _build_health_context(settings: Settings) -> dict:
         ],
     )
 
+    smpp_ok = False
+    smpp_details = [f"Target: {settings.smpp_host}:{settings.smpp_port}", f"Enabled: {'yes' if settings.smpp_enabled else 'no'}"]
+    try:
+        smpp_ok = bool(settings.smpp_enabled)
+    except Exception as exc:
+        smpp_details.append(f"Error: {exc}")
+
+    add_service(
+        "SMPP",
+        "Messaging",
+        smpp_ok,
+        "SMPP listener is enabled." if smpp_ok else "SMPP listener is disabled.",
+        details=smpp_details,
+        notes=[
+            "SMPP listens locally for external SMSC/gateway connections and requires matching system_id/password credentials.",
+            "If this gateway runs in Docker, expose the SMPP port from the container to the host.",
+        ],
+    )
+
     config_store_path = BASE_DIR / "data" / "config.json"
     try:
         config_exists = config_store_path.exists()
@@ -471,6 +554,7 @@ def _build_health_context(settings: Settings) -> dict:
             {"label": "Total Services", "value": str(total_count), "detail": "Monitored components", "class": "unknown"},
             {"label": "Redis", "value": "Online" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "Offline", "detail": settings.redis_url, "class": "success" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
             {"label": "AMI", "value": "Connected" if any(d['label'] == 'AMI' and d['status_label'] == 'Healthy' for d in dependencies) else "Disconnected", "detail": f"{settings.ami_host}:{settings.ami_port}", "class": "success" if any(d['label'] == 'AMI' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
+            {"label": "SMPP", "value": "Enabled" if smpp_ok else "Disabled", "detail": f"{settings.smpp_host}:{settings.smpp_port}", "class": "success" if smpp_ok else "warning"},
         ],
         "services": services,
         "dependencies": dependencies,
@@ -478,6 +562,7 @@ def _build_health_context(settings: Settings) -> dict:
             "Restart controls are safety-gated and may be disabled depending on the runtime environment.",
             "AMI health depends on TCP connectivity, AMI login credentials, and Asterisk manager availability.",
             "Configuration changes are loaded from persistent storage per request and apply automatically.",
+            "SMPP support is a lightweight listener for inbound bind/connect verification and should be paired with a production SMPP stack if you need full message routing.",
         ],
         "actions": {
             "refresh": {"enabled": True, "reason": ""},
@@ -610,10 +695,6 @@ def _restart_action_result(settings: Settings, action: str) -> dict:
         }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Admin portal
-# ─────────────────────────────────────────────────────────────────────────────
-
 @app.get("/admin", response_class=HTMLResponse)
 @app.get("/admin/config", response_class=HTMLResponse)
 @app.get("/admin/reports", response_class=HTMLResponse)
@@ -715,8 +796,15 @@ async def admin_update_advanced_config(
             "asterisk_context",
             "asterisk_exten",
             "asterisk_priority",
+            "delivery_retry_count",
+            "delivery_retry_interval_seconds",
             "redis_url",
             "redis_prefix",
+            "smpp_enabled",
+            "smpp_host",
+            "smpp_port",
+            "smpp_username",
+            "smpp_password",
             "rate_limit_hourly",
             "rate_limit_daily",
             "delivery_report_store_path",
@@ -774,10 +862,6 @@ async def admin_restart_service(
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Twilio webhook
-# ─────────────────────────────────────────────────────────────────────────────
-
 @app.post("/sms/twilio", response_class=PlainTextResponse)
 async def twilio_webhook(
     request: Request,
@@ -804,10 +888,6 @@ def _verify_twilio_signature(request: Request, settings: Settings) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Missing Twilio signature")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Vonage / Nexmo webhook
-# ─────────────────────────────────────────────────────────────────────────────
-
 class VonagePayload(BaseModel):
     text: str
     msisdn: str = ""
@@ -833,10 +913,6 @@ async def vonage_webhook(
     _record_gateway_result("vonage", result, phone_number=payload.msisdn or payload.to, message=payload.text[:120])
     return {"status": "ok" if result.success else "error", "detail": result.error or None}
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Generic webhook
-# ─────────────────────────────────────────────────────────────────────────────
 
 class GenericSMSPayload(BaseModel):
     body: str
@@ -882,10 +958,6 @@ async def generic_webhook(
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Health endpoint
-# ─────────────────────────────────────────────────────────────────────────────
-
 @app.get("/health")
 async def health(settings: Settings = Depends(dep_settings)):
     from .ami_service import AMIService
@@ -911,14 +983,12 @@ async def health(settings: Settings = Depends(dep_settings)):
             "redis": redis_ok,
             "tts_provider": settings.tts_provider,
             "sip_channel_prefix": settings.sip_channel_prefix,
+            "smpp_enabled": settings.smpp_enabled,
+            "smpp_port": settings.smpp_port,
         },
         status_code=200 if healthy else 503,
     )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Cache management endpoints
-# ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/cache/stats")
 async def cache_stats(settings: Settings = Depends(dep_settings)):
@@ -943,10 +1013,6 @@ async def cache_evict(
     removed = AudioCache(settings).evict_expired()
     return {"evicted_files": removed}
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Debug / manual trigger
-# ─────────────────────────────────────────────────────────────────────────────
 
 class DebugCallRequest(BaseModel):
     phone: str
@@ -976,10 +1042,6 @@ async def debug_call(
         "details": result.details,
     }
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Utility
-# ─────────────────────────────────────────────────────────────────────────────
 
 def _log_result(result) -> None:
     if result.success:
