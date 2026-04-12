@@ -835,89 +835,11 @@
               <p class="eyebrow">SIP Trunks</p>
               <h3 class="settings-group-title">SIP trunks</h3>
             </div>
-            <span class="pill">{{ sip_accounts|length }} configured</span>
+            <div class="page-actions">
+              <span class="pill">{{ sip_accounts|length }} configured</span>
+              <a class="button" href="#sip-trunk-add-modal">Add SIP Trunk</a>
+            </div>
           </div>
-
-          <form method="post" action="/admin/config/sip-accounts" class="admin-form">
-            <div class="form-grid">
-              <label class="field-group">
-                <span class="field-label">Account ID</span>
-                <input type="text" name="account_id" placeholder="optional-auto-generated-id" />
-              </label>
-              <label class="field-group">
-                <span class="field-label">Label</span>
-                <input type="text" name="label" placeholder="Primary SIP Trunk" />
-              </label>
-              <label class="field-group">
-                <span class="field-label">Host</span>
-                <input type="text" name="host" placeholder="sip.example.com" />
-              </label>
-              <label class="field-group">
-                <span class="field-label">Port</span>
-                <input type="number" step="1" name="port" value="5060" />
-              </label>
-              <label class="field-group">
-                <span class="field-label">Username</span>
-                <input type="text" name="username" placeholder="sip-user" />
-              </label>
-              <label class="field-group">
-                <span class="field-label">Password</span>
-                <input type="password" name="password" placeholder="SIP password" />
-              </label>
-              <label class="field-group">
-                <span class="field-label">Transport</span>
-                <select name="transport">
-                  <option value="udp">udp</option>
-                  <option value="tcp">tcp</option>
-                  <option value="tls">tls</option>
-                </select>
-              </label>
-              <label class="field-group">
-                <span class="field-label">Domain</span>
-                <input type="text" name="domain" placeholder="example.com" />
-              </label>
-              <label class="field-group">
-                <span class="field-label">Display Name</span>
-                <input type="text" name="display_name" placeholder="Gateway Caller" />
-              </label>
-              <label class="field-group">
-                <span class="field-label">From User</span>
-                <input type="text" name="from_user" placeholder="gateway" />
-              </label>
-              <label class="field-group">
-                <span class="field-label">From Domain</span>
-                <input type="text" name="from_domain" placeholder="example.com" />
-              </label>
-              <label class="field-group field-span-2">
-                <span class="field-label">Outbound Proxy</span>
-                <input type="text" name="outbound_proxy" placeholder="sip:proxy.example.com;transport=udp" />
-              </label>
-              <label class="field-group">
-                <span class="field-label">Enabled</span>
-                <select name="enabled">
-                  <option value="true" selected>True</option>
-                  <option value="false">False</option>
-                </select>
-              </label>
-              <label class="field-group">
-                <span class="field-label">Register</span>
-                <select name="register">
-                  <option value="true" selected>True</option>
-                  <option value="false">False</option>
-                </select>
-              </label>
-              <label class="field-group">
-                <span class="field-label">Default Outbound</span>
-                <select name="default_for_outbound">
-                  <option value="false" selected>False</option>
-                  <option value="true">True</option>
-                </select>
-              </label>
-            </div>
-            <div class="form-actions">
-              <button type="submit" class="button">Save SIP Trunk</button>
-            </div>
-          </form>
 
           {% if sip_accounts %}
           <div class="table-wrap">
@@ -931,6 +853,7 @@
                   <th>Enabled</th>
                   <th>Default</th>
                   <th>Registration</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -946,60 +869,14 @@
                   <td><span class="status-badge status-{% if account.enabled %}success{% else %}danger{% endif %}">{% if account.enabled %}enabled{% else %}disabled{% endif %}</span></td>
                   <td><span class="status-badge status-{% if account.default_for_outbound %}success{% else %}unknown{% endif %}">{% if account.default_for_outbound %}default{% else %}secondary{% endif %}</span></td>
                   <td><span class="status-badge status-{% if account.register %}pending{% else %}unknown{% endif %}">{% if account.register %}register{% else %}no-register{% endif %}</span></td>
-                </tr>
-                <tr>
-                  <td colspan="7">
-                    <form method="post" action="/admin/config/sip-accounts" class="admin-form inline-edit-form">
-                      <div class="form-grid">
+                  <td>
+                    <div class="table-actions">
+                      <a class="button button-secondary button-small" href="#sip-trunk-edit-{{ account.id }}">Edit</a>
+                      <form method="post" action="/admin/config/sip-accounts/delete" class="inline-form">
                         <input type="hidden" name="account_id" value="{{ account.id }}" />
-                        <label class="field-group"><span class="field-label">Label</span><input type="text" name="label" value="{{ account.label or '' }}" /></label>
-                        <label class="field-group"><span class="field-label">Host</span><input type="text" name="host" value="{{ account.host or '' }}" /></label>
-                        <label class="field-group"><span class="field-label">Port</span><input type="number" step="1" name="port" value="{{ account.port or 5060 }}" /></label>
-                        <label class="field-group"><span class="field-label">Username</span><input type="text" name="username" value="{{ account.username or '' }}" /></label>
-                        <label class="field-group"><span class="field-label">Password</span><input type="password" name="password" value="{{ account.password or '' }}" /></label>
-                        <label class="field-group">
-                          <span class="field-label">Transport</span>
-                          <select name="transport">
-                            <option value="udp" {% if account.transport == 'udp' %}selected{% endif %}>udp</option>
-                            <option value="tcp" {% if account.transport == 'tcp' %}selected{% endif %}>tcp</option>
-                            <option value="tls" {% if account.transport == 'tls' %}selected{% endif %}>tls</option>
-                          </select>
-                        </label>
-                        <label class="field-group"><span class="field-label">Domain</span><input type="text" name="domain" value="{{ account.domain or '' }}" /></label>
-                        <label class="field-group"><span class="field-label">Display Name</span><input type="text" name="display_name" value="{{ account.display_name or '' }}" /></label>
-                        <label class="field-group"><span class="field-label">From User</span><input type="text" name="from_user" value="{{ account.from_user or '' }}" /></label>
-                        <label class="field-group"><span class="field-label">From Domain</span><input type="text" name="from_domain" value="{{ account.from_domain or '' }}" /></label>
-                        <label class="field-group field-span-2"><span class="field-label">Outbound Proxy</span><input type="text" name="outbound_proxy" value="{{ account.outbound_proxy or '' }}" /></label>
-                        <label class="field-group">
-                          <span class="field-label">Enabled</span>
-                          <select name="enabled">
-                            <option value="true" {% if account.enabled %}selected{% endif %}>True</option>
-                            <option value="false" {% if not account.enabled %}selected{% endif %}>False</option>
-                          </select>
-                        </label>
-                        <label class="field-group">
-                          <span class="field-label">Register</span>
-                          <select name="register">
-                            <option value="true" {% if account.register %}selected{% endif %}>True</option>
-                            <option value="false" {% if not account.register %}selected{% endif %}>False</option>
-                          </select>
-                        </label>
-                        <label class="field-group">
-                          <span class="field-label">Default Outbound</span>
-                          <select name="default_for_outbound">
-                            <option value="true" {% if account.default_for_outbound %}selected{% endif %}>True</option>
-                            <option value="false" {% if not account.default_for_outbound %}selected{% endif %}>False</option>
-                          </select>
-                        </label>
-                      </div>
-                      <div class="form-actions">
-                        <button type="submit" class="button button-secondary">Update SIP Trunk</button>
-                      </div>
-                    </form>
-                    <form method="post" action="/admin/config/sip-accounts/delete" class="inline-form">
-                      <input type="hidden" name="account_id" value="{{ account.id }}" />
-                      <button type="submit" class="button button-danger">Delete SIP Trunk</button>
-                    </form>
+                        <button type="submit" class="button button-danger button-small">Delete</button>
+                      </form>
+                    </div>
                   </td>
                 </tr>
                 {% endfor %}
@@ -1012,6 +889,165 @@
             <p>Create at least one SIP account so inbound SMPP users can route voice delivery through it.</p>
           </div>
           {% endif %}
+
+          <div id="sip-trunk-add-modal" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close add SIP trunk dialog"></a>
+            <section class="modal-card">
+              <div class="card-header compact-header">
+                <div>
+                  <p class="eyebrow">Add</p>
+                  <h3 class="settings-group-title">Add SIP trunk</h3>
+                </div>
+                <a href="#" class="button button-secondary button-small">Close</a>
+              </div>
+
+              <form method="post" action="/admin/config/sip-accounts" class="admin-form">
+                <div class="form-grid">
+                  <label class="field-group">
+                    <span class="field-label">Account ID</span>
+                    <input type="text" name="account_id" placeholder="optional-auto-generated-id" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Label</span>
+                    <input type="text" name="label" placeholder="Primary SIP Trunk" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Host</span>
+                    <input type="text" name="host" placeholder="sip.example.com" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Port</span>
+                    <input type="number" step="1" name="port" value="5060" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Username</span>
+                    <input type="text" name="username" placeholder="sip-user" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Password</span>
+                    <input type="password" name="password" placeholder="SIP password" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Transport</span>
+                    <select name="transport">
+                      <option value="udp">udp</option>
+                      <option value="tcp">tcp</option>
+                      <option value="tls">tls</option>
+                    </select>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Domain</span>
+                    <input type="text" name="domain" placeholder="example.com" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Display Name</span>
+                    <input type="text" name="display_name" placeholder="Gateway Caller" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">From User</span>
+                    <input type="text" name="from_user" placeholder="gateway" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">From Domain</span>
+                    <input type="text" name="from_domain" placeholder="example.com" />
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Outbound Proxy</span>
+                    <input type="text" name="outbound_proxy" placeholder="sip:proxy.example.com;transport=udp" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Enabled</span>
+                    <select name="enabled">
+                      <option value="true" selected>True</option>
+                      <option value="false">False</option>
+                    </select>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Register</span>
+                    <select name="register">
+                      <option value="true" selected>True</option>
+                      <option value="false">False</option>
+                    </select>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Default Outbound</span>
+                    <select name="default_for_outbound">
+                      <option value="false" selected>False</option>
+                      <option value="true">True</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <a href="#" class="button button-secondary">Cancel</a>
+                  <button type="submit" class="button">Save SIP Trunk</button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          {% for account in sip_accounts %}
+          <div id="sip-trunk-edit-{{ account.id }}" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close edit SIP trunk dialog"></a>
+            <section class="modal-card">
+              <div class="card-header compact-header">
+                <div>
+                  <p class="eyebrow">Edit</p>
+                  <h3 class="settings-group-title">{{ account.label or account.id }}</h3>
+                </div>
+                <a href="#" class="button button-secondary button-small">Close</a>
+              </div>
+
+              <form method="post" action="/admin/config/sip-accounts" class="admin-form">
+                <div class="form-grid">
+                  <input type="hidden" name="account_id" value="{{ account.id }}" />
+                  <label class="field-group"><span class="field-label">Label</span><input type="text" name="label" value="{{ account.label or '' }}" /></label>
+                  <label class="field-group"><span class="field-label">Host</span><input type="text" name="host" value="{{ account.host or '' }}" /></label>
+                  <label class="field-group"><span class="field-label">Port</span><input type="number" step="1" name="port" value="{{ account.port or 5060 }}" /></label>
+                  <label class="field-group"><span class="field-label">Username</span><input type="text" name="username" value="{{ account.username or '' }}" /></label>
+                  <label class="field-group"><span class="field-label">Password</span><input type="password" name="password" value="{{ account.password or '' }}" /></label>
+                  <label class="field-group">
+                    <span class="field-label">Transport</span>
+                    <select name="transport">
+                      <option value="udp" {% if account.transport == 'udp' %}selected{% endif %}>udp</option>
+                      <option value="tcp" {% if account.transport == 'tcp' %}selected{% endif %}>tcp</option>
+                      <option value="tls" {% if account.transport == 'tls' %}selected{% endif %}>tls</option>
+                    </select>
+                  </label>
+                  <label class="field-group"><span class="field-label">Domain</span><input type="text" name="domain" value="{{ account.domain or '' }}" /></label>
+                  <label class="field-group"><span class="field-label">Display Name</span><input type="text" name="display_name" value="{{ account.display_name or '' }}" /></label>
+                  <label class="field-group"><span class="field-label">From User</span><input type="text" name="from_user" value="{{ account.from_user or '' }}" /></label>
+                  <label class="field-group"><span class="field-label">From Domain</span><input type="text" name="from_domain" value="{{ account.from_domain or '' }}" /></label>
+                  <label class="field-group field-span-2"><span class="field-label">Outbound Proxy</span><input type="text" name="outbound_proxy" value="{{ account.outbound_proxy or '' }}" /></label>
+                  <label class="field-group">
+                    <span class="field-label">Enabled</span>
+                    <select name="enabled">
+                      <option value="true" {% if account.enabled %}selected{% endif %}>True</option>
+                      <option value="false" {% if not account.enabled %}selected{% endif %}>False</option>
+                    </select>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Register</span>
+                    <select name="register">
+                      <option value="true" {% if account.register %}selected{% endif %}>True</option>
+                      <option value="false" {% if not account.register %}selected{% endif %}>False</option>
+                    </select>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Default Outbound</span>
+                    <select name="default_for_outbound">
+                      <option value="true" {% if account.default_for_outbound %}selected{% endif %}>True</option>
+                      <option value="false" {% if not account.default_for_outbound %}selected{% endif %}>False</option>
+                    </select>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <a href="#" class="button button-secondary">Cancel</a>
+                  <button type="submit" class="button">Update SIP Trunk</button>
+                </div>
+              </form>
+            </section>
+          </div>
+          {% endfor %}
         </section>
       </section>
 
