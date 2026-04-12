@@ -305,13 +305,12 @@ a {
   transition: all 0.18s ease;
 }
 
-#config-tab-basic:checked ~ .config-tab-nav label[for="config-tab-basic"],
-#config-tab-security:checked ~ .config-tab-nav label[for="config-tab-security"],
-#config-tab-providers:checked ~ .config-tab-nav label[for="config-tab-providers"],
+#config-tab-voice:checked ~ .config-tab-nav label[for="config-tab-voice"],
+#config-tab-web-security:checked ~ .config-tab-nav label[for="config-tab-web-security"],
 #config-tab-telephony:checked ~ .config-tab-nav label[for="config-tab-telephony"],
 #config-tab-storage:checked ~ .config-tab-nav label[for="config-tab-storage"],
-#config-tab-system:checked ~ .config-tab-nav label[for="config-tab-system"],
-#config-tab-smpp-users:checked ~ .config-tab-nav label[for="config-tab-smpp-users"] {
+#config-tab-smpp:checked ~ .config-tab-nav label[for="config-tab-smpp"],
+#config-tab-system:checked ~ .config-tab-nav label[for="config-tab-system"] {
   background: var(--accent);
   color: #fff;
   box-shadow: 0 10px 18px rgba(36, 87, 214, 0.18);
@@ -329,23 +328,21 @@ a {
   display: block;
 }
 
-#config-tab-basic:checked ~ .config-tab-panels .config-panel:nth-child(1),
-#config-tab-security:checked ~ .config-tab-panels .config-panel:nth-child(2),
-#config-tab-providers:checked ~ .config-tab-panels .config-panel:nth-child(3),
-#config-tab-telephony:checked ~ .config-tab-panels .config-panel:nth-child(4),
-#config-tab-storage:checked ~ .config-tab-panels .config-panel:nth-child(5),
-#config-tab-system:checked ~ .config-tab-panels .config-panel:nth-child(6),
-#config-tab-smpp-users:checked ~ .config-tab-panels .config-panel:nth-child(7) {
+#config-tab-voice:checked ~ .config-tab-panels .config-panel:nth-child(1),
+#config-tab-web-security:checked ~ .config-tab-panels .config-panel:nth-child(2),
+#config-tab-telephony:checked ~ .config-tab-panels .config-panel:nth-child(3),
+#config-tab-storage:checked ~ .config-tab-panels .config-panel:nth-child(4),
+#config-tab-smpp:checked ~ .config-tab-panels .config-panel:nth-child(5),
+#config-tab-system:checked ~ .config-tab-panels .config-panel:nth-child(6) {
   display: block;
 }
 
-#config-tab-basic:checked ~ .config-tab-panels .config-panel:not(:nth-child(1)),
-#config-tab-security:checked ~ .config-tab-panels .config-panel:not(:nth-child(2)),
-#config-tab-providers:checked ~ .config-tab-panels .config-panel:not(:nth-child(3)),
-#config-tab-telephony:checked ~ .config-tab-panels .config-panel:not(:nth-child(4)),
-#config-tab-storage:checked ~ .config-tab-panels .config-panel:not(:nth-child(5)),
-#config-tab-system:checked ~ .config-tab-panels .config-panel:not(:nth-child(6)),
-#config-tab-smpp-users:checked ~ .config-tab-panels .config-panel:not(:nth-child(7)) {
+#config-tab-voice:checked ~ .config-tab-panels .config-panel:not(:nth-child(1)),
+#config-tab-web-security:checked ~ .config-tab-panels .config-panel:not(:nth-child(2)),
+#config-tab-telephony:checked ~ .config-tab-panels .config-panel:not(:nth-child(3)),
+#config-tab-storage:checked ~ .config-tab-panels .config-panel:not(:nth-child(4)),
+#config-tab-smpp:checked ~ .config-tab-panels .config-panel:not(:nth-child(5)),
+#config-tab-system:checked ~ .config-tab-panels .config-panel:not(:nth-child(6)) {
   display: none;
 }
 
