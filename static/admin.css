@@ -310,7 +310,8 @@ a {
 #config-tab-providers:checked ~ .config-tab-nav label[for="config-tab-providers"],
 #config-tab-telephony:checked ~ .config-tab-nav label[for="config-tab-telephony"],
 #config-tab-storage:checked ~ .config-tab-nav label[for="config-tab-storage"],
-#config-tab-system:checked ~ .config-tab-nav label[for="config-tab-system"] {
+#config-tab-system:checked ~ .config-tab-nav label[for="config-tab-system"],
+#config-tab-smpp-users:checked ~ .config-tab-nav label[for="config-tab-smpp-users"] {
   background: var(--accent);
   color: #fff;
   box-shadow: 0 10px 18px rgba(36, 87, 214, 0.18);
@@ -333,7 +334,8 @@ a {
 #config-tab-providers:checked ~ .config-tab-panels .config-panel:nth-child(3),
 #config-tab-telephony:checked ~ .config-tab-panels .config-panel:nth-child(4),
 #config-tab-storage:checked ~ .config-tab-panels .config-panel:nth-child(5),
-#config-tab-system:checked ~ .config-tab-panels .config-panel:nth-child(6) {
+#config-tab-system:checked ~ .config-tab-panels .config-panel:nth-child(6),
+#config-tab-smpp-users:checked ~ .config-tab-panels .config-panel:nth-child(7) {
   display: block;
 }
 
@@ -342,7 +344,8 @@ a {
 #config-tab-providers:checked ~ .config-tab-panels .config-panel:not(:nth-child(3)),
 #config-tab-telephony:checked ~ .config-tab-panels .config-panel:not(:nth-child(4)),
 #config-tab-storage:checked ~ .config-tab-panels .config-panel:not(:nth-child(5)),
-#config-tab-system:checked ~ .config-tab-panels .config-panel:not(:nth-child(6)) {
+#config-tab-system:checked ~ .config-tab-panels .config-panel:not(:nth-child(6)),
+#config-tab-smpp-users:checked ~ .config-tab-panels .config-panel:not(:nth-child(7)) {
   display: none;
 }
 
