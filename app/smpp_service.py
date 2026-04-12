@@ -18,6 +18,20 @@ _SMPP_COMMAND_NAMES = {
     0x00000006: "unbind",
     0x00000009: "bind_transceiver",
     0x00000015: "enquire_link",
+    0x80000000: "generic_nack",
+    0x80000001: "bind_receiver_resp",
+    0x80000002: "bind_transmitter_resp",
+    0x80000004: "submit_sm_resp",
+    0x80000005: "deliver_sm_resp",
+    0x80000006: "unbind_resp",
+    0x80000009: "bind_transceiver_resp",
+    0x80000015: "enquire_link_resp",
+}
+
+_SMPP_STATUS_NAMES = {
+    0x00000000: "ESME_ROK",
+    0x00000003: "ESME_RINVCMDID",
+    0x0000000E: "ESME_RINVPASWD",
 }
 
 _SM_PP_BIND_RESP = 0x80000002
@@ -120,11 +134,12 @@ class SMPPService:
                 sequence = int.from_bytes(header[12:16], "big")
                 body = self._recv_exact(conn, length - 16) if length > 16 else b""
                 log.info(
-                    "SMPP PDU from %s:%s command=%s(0x%08x) status=0x%08x seq=%d length=%d body_hex=%s",
+                    "SMPP PDU from %s:%s command=%s(0x%08x) status=%s(0x%08x) seq=%d length=%d body_hex=%s",
                     addr[0],
                     addr[1],
                     _SMPP_COMMAND_NAMES.get(command_id, "unknown"),
                     command_id,
+                    _SMPP_STATUS_NAMES.get(command_status, "unknown_status"),
                     command_status,
                     sequence,
                     length,
@@ -143,11 +158,12 @@ class SMPPService:
                         break
                 else:
                     log.debug(
-                        "SMPP unhandled PDU from %s:%s command=%s(0x%08x) status=0x%08x seq=%d body_hex=%s",
+                        "SMPP unhandled PDU from %s:%s command=%s(0x%08x) status=%s(0x%08x) seq=%d body_hex=%s",
                         addr[0],
                         addr[1],
                         _SMPP_COMMAND_NAMES.get(command_id, "unknown"),
                         command_id,
+                        _SMPP_STATUS_NAMES.get(command_status, "unknown_status"),
                         command_status,
                         sequence,
                         body[:200].hex(),
