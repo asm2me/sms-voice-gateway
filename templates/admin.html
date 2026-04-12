@@ -771,15 +771,15 @@
     <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-voice" checked>
     <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-telephony">
     <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-storage">
-    <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-smpp">
     <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-system">
+    <input class="config-tab-input" type="radio" name="config-tab" id="config-tab-smpp">
 
     <div class="config-tab-nav">
       <label for="config-tab-voice" class="config-tab-label">VOICE</label>
       <label for="config-tab-telephony" class="config-tab-label">Telephone and Gateway</label>
       <label for="config-tab-storage" class="config-tab-label">Storage & Persistence</label>
-      <label for="config-tab-smpp" class="config-tab-label">SMPP</label>
       <label for="config-tab-system" class="config-tab-label">System Bootstrap</label>
+      <label for="config-tab-smpp" class="config-tab-label">SMPP</label>
     </div>
 
     <div class="config-tab-panels">
@@ -1343,7 +1343,7 @@
         <div class="card-header">
           <div>
             <p class="eyebrow">Storage and Persistence</p>
-            <h2>Cache, Redis, reports, and retry persistence</h2>
+            <h2>Cache, Redis, reports, retry persistence, and SMPP users</h2>
           </div>
           <span class="pill">/admin/config/advanced</span>
         </div>
@@ -1362,13 +1362,79 @@
             <button type="submit" class="button">Save Storage Settings</button>
           </div>
         </form>
+
+        <section class="settings-group settings-group-spaced">
+          <div class="card-header compact-header">
+            <div>
+              <p class="eyebrow">SMPP Users</p>
+              <h3 class="settings-group-title">SMPP users</h3>
+            </div>
+            <div class="page-actions">
+              <span class="pill">{{ smpp_accounts|length }} configured</span>
+              <a class="button" href="#smpp-user-add-modal">Add SMPP User</a>
+            </div>
+          </div>
+
+          {% if smpp_accounts %}
+          <div class="table-wrap">
+            <table class="data-table account-table">
+              <thead>
+                <tr>
+                  <th>Label</th>
+                  <th>Username</th>
+                  <th>Enabled</th>
+                  <th>Default</th>
+                  <th>Default SIP</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for account in smpp_accounts %}
+                <tr>
+                  <td>
+                    <strong>{{ account.label or account.username or account.id or '—' }}</strong>
+                    <div class="muted account-subtext">ID: <span class="mono">{{ account.id or '—' }}</span></div>
+                  </td>
+                  <td class="mono">{{ account.username or '—' }}</td>
+                  <td>
+                    <span class="status-badge status-{% if account.enabled %}success{% else %}danger{% endif %}">
+                      {% if account.enabled %}enabled{% else %}disabled{% endif %}
+                    </span>
+                  </td>
+                  <td>
+                    <span class="status-badge status-{% if account.default_for_inbound %}success{% else %}unknown{% endif %}">
+                      {% if account.default_for_inbound %}default{% else %}secondary{% endif %}
+                    </span>
+                  </td>
+                  <td class="mono">{{ account.default_sip_account_id or '—' }}</td>
+                  <td>
+                    <div class="table-actions">
+                      <a class="button button-secondary button-small" href="#smpp-user-edit-{{ account.id }}">Edit</a>
+                      <form method="post" action="/admin/config/smpp-accounts/delete" class="inline-form">
+                        <input type="hidden" name="account_id" value="{{ account.id }}" />
+                        <button type="submit" class="button button-danger button-small">Delete</button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <div class="empty-state">
+            <h3>No SMPP users configured yet</h3>
+            <p>Create an SMPP account to map authenticated message traffic to a SIP trunk.</p>
+          </div>
+          {% endif %}
+        </section>
       </section>
 
       <section class="card config-card config-panel">
         <div class="card-header">
           <div>
             <p class="eyebrow">SMPP</p>
-            <h2>SMPP service, bind info, and users</h2>
+            <h2>SMPP service, bind info, routing assignments, and system bootstrap dependencies</h2>
           </div>
           <span class="pill">SMPP console</span>
         </div>
@@ -1399,193 +1465,6 @@
             </div>
           </form>
         </section>
-
-        <section class="settings-group settings-group-spaced">
-          <div class="card-header compact-header">
-            <div>
-              <p class="eyebrow">SMPP Users</p>
-              <h3 class="settings-group-title">SMPP users</h3>
-            </div>
-            <div class="page-actions">
-              <span class="pill">{{ smpp_accounts|length }} configured</span>
-              <a class="button" href="#smpp-user-add-modal">Add SMPP User</a>
-            </div>
-          </div>
-
-        {% if smpp_accounts %}
-        <div class="table-wrap">
-          <table class="data-table account-table">
-            <thead>
-              <tr>
-                <th>Label</th>
-                <th>Username</th>
-                <th>Enabled</th>
-                <th>Default</th>
-                <th>Default SIP</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for account in smpp_accounts %}
-              <tr>
-                <td>
-                  <strong>{{ account.label or account.username or account.id or '—' }}</strong>
-                  <div class="muted account-subtext">ID: <span class="mono">{{ account.id or '—' }}</span></div>
-                </td>
-                <td class="mono">{{ account.username or '—' }}</td>
-                <td>
-                  <span class="status-badge status-{% if account.enabled %}success{% else %}danger{% endif %}">
-                    {% if account.enabled %}enabled{% else %}disabled{% endif %}
-                  </span>
-                </td>
-                <td>
-                  <span class="status-badge status-{% if account.default_for_inbound %}success{% else %}unknown{% endif %}">
-                    {% if account.default_for_inbound %}default{% else %}secondary{% endif %}
-                  </span>
-                </td>
-                <td class="mono">{{ account.default_sip_account_id or '—' }}</td>
-                <td>
-                  <div class="table-actions">
-                    <a class="button button-secondary button-small" href="#smpp-user-edit-{{ account.id }}">Edit</a>
-                    <form method="post" action="/admin/config/smpp-accounts/delete" class="inline-form">
-                      <input type="hidden" name="account_id" value="{{ account.id }}" />
-                      <button type="submit" class="button button-danger button-small">Delete</button>
-                    </form>
-                  </div>
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-        {% else %}
-        <div class="empty-state">
-          <h3>No SMPP users configured yet</h3>
-          <p>Create an SMPP account to map authenticated message traffic to a SIP trunk.</p>
-        </div>
-        {% endif %}
-
-        <div id="smpp-user-add-modal" class="modal-shell">
-          <a href="#" class="modal-backdrop" aria-label="Close add SMPP user dialog"></a>
-          <section class="modal-card">
-            <div class="card-header compact-header">
-              <div>
-                <p class="eyebrow">Add</p>
-                <h3 class="settings-group-title">Add SMPP user</h3>
-              </div>
-              <a href="#" class="button button-secondary button-small">Close</a>
-            </div>
-
-            <form method="post" action="/admin/config/smpp-accounts" class="admin-form">
-              <div class="form-grid">
-                <label class="field-group">
-                  <span class="field-label">Account ID</span>
-                  <input type="text" name="account_id" placeholder="optional-auto-generated-id" />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Label</span>
-                  <input type="text" name="label" placeholder="Main SMPP Client" />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Username</span>
-                  <input type="text" name="username" placeholder="smpp-user" />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Password</span>
-                  <input type="password" name="password" placeholder="SMPP password" />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Enabled</span>
-                  <select name="enabled">
-                    <option value="true" selected>True</option>
-                    <option value="false">False</option>
-                  </select>
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Default Inbound</span>
-                  <select name="default_for_inbound">
-                    <option value="false" selected>False</option>
-                    <option value="true">True</option>
-                  </select>
-                </label>
-                <label class="field-group field-span-2">
-                  <span class="field-label">Default SIP Account</span>
-                  <select name="default_sip_account_id">
-                    <option value="">Select SIP account</option>
-                    {% for account in sip_accounts %}
-                    <option value="{{ account.id }}">{{ account.label or account.id }}</option>
-                    {% endfor %}
-                  </select>
-                </label>
-              </div>
-              <div class="form-actions">
-                <a href="#" class="button button-secondary">Cancel</a>
-                <button type="submit" class="button">Save SMPP User</button>
-              </div>
-            </form>
-          </section>
-        </div>
-
-        {% for account in smpp_accounts %}
-        <div id="smpp-user-edit-{{ account.id }}" class="modal-shell">
-          <a href="#" class="modal-backdrop" aria-label="Close edit SMPP user dialog"></a>
-          <section class="modal-card">
-            <div class="card-header compact-header">
-              <div>
-                <p class="eyebrow">Edit</p>
-                <h3 class="settings-group-title">{{ account.label or account.username or account.id }}</h3>
-              </div>
-              <a href="#" class="button button-secondary button-small">Close</a>
-            </div>
-
-            <form method="post" action="/admin/config/smpp-accounts" class="admin-form">
-              <div class="form-grid">
-                <input type="hidden" name="account_id" value="{{ account.id }}" />
-                <label class="field-group">
-                  <span class="field-label">Label</span>
-                  <input type="text" name="label" value="{{ account.label or '' }}" />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Username</span>
-                  <input type="text" name="username" value="{{ account.username or '' }}" />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Password</span>
-                  <input type="password" name="password" value="{{ account.password or '' }}" />
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Enabled</span>
-                  <select name="enabled">
-                    <option value="true" {% if account.enabled %}selected{% endif %}>True</option>
-                    <option value="false" {% if not account.enabled %}selected{% endif %}>False</option>
-                  </select>
-                </label>
-                <label class="field-group">
-                  <span class="field-label">Default Inbound</span>
-                  <select name="default_for_inbound">
-                    <option value="true" {% if account.default_for_inbound %}selected{% endif %}>True</option>
-                    <option value="false" {% if not account.default_for_inbound %}selected{% endif %}>False</option>
-                  </select>
-                </label>
-                <label class="field-group field-span-2">
-                  <span class="field-label">Default SIP Account</span>
-                  <select name="default_sip_account_id">
-                    <option value="">Select SIP account</option>
-                    {% for sip_account in sip_accounts %}
-                    <option value="{{ sip_account.id }}" {% if account.default_sip_account_id == sip_account.id %}selected{% endif %}>{{ sip_account.label or sip_account.id }}</option>
-                    {% endfor %}
-                  </select>
-                </label>
-              </div>
-              <div class="form-actions">
-                <a href="#" class="button button-secondary">Cancel</a>
-                <button type="submit" class="button">Update SMPP User</button>
-              </div>
-            </form>
-          </section>
-        </div>
-        {% endfor %}
-      </section>
 
         <section class="settings-group settings-group-spaced">
           <div class="card-header compact-header">
@@ -1652,10 +1531,131 @@
           </div>
           {% else %}
           <div class="empty-state">
-            <h3>No SMPP to SIP assignments yet</h3>
-            <p>Create at least one assignment so authenticated SMPP users route through the correct SIP trunk.</p>
+            <h3>No SMPP users configured yet</h3>
+            <p>Create an SMPP account to map authenticated message traffic to a SIP trunk.</p>
           </div>
           {% endif %}
+
+          <div id="smpp-user-add-modal" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close add SMPP user dialog"></a>
+            <section class="modal-card">
+              <div class="card-header compact-header">
+                <div>
+                  <p class="eyebrow">Add</p>
+                  <h3 class="settings-group-title">Add SMPP user</h3>
+                </div>
+                <a href="#" class="button button-secondary button-small">Close</a>
+              </div>
+
+              <form method="post" action="/admin/config/smpp-accounts" class="admin-form">
+                <div class="form-grid">
+                  <label class="field-group">
+                    <span class="field-label">Account ID</span>
+                    <input type="text" name="account_id" placeholder="optional-auto-generated-id" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Label</span>
+                    <input type="text" name="label" placeholder="Main SMPP Client" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Username</span>
+                    <input type="text" name="username" placeholder="smpp-user" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Password</span>
+                    <input type="password" name="password" placeholder="SMPP password" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Enabled</span>
+                    <select name="enabled">
+                      <option value="true" selected>True</option>
+                      <option value="false">False</option>
+                    </select>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Default Inbound</span>
+                    <select name="default_for_inbound">
+                      <option value="false" selected>False</option>
+                      <option value="true">True</option>
+                    </select>
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Default SIP Account</span>
+                    <select name="default_sip_account_id">
+                      <option value="">Select SIP account</option>
+                      {% for account in sip_accounts %}
+                      <option value="{{ account.id }}">{{ account.label or account.id }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <a href="#" class="button button-secondary">Cancel</a>
+                  <button type="submit" class="button">Save SMPP User</button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          {% for account in smpp_accounts %}
+          <div id="smpp-user-edit-{{ account.id }}" class="modal-shell">
+            <a href="#" class="modal-backdrop" aria-label="Close edit SMPP user dialog"></a>
+            <section class="modal-card">
+              <div class="card-header compact-header">
+                <div>
+                  <p class="eyebrow">Edit</p>
+                  <h3 class="settings-group-title">{{ account.label or account.username or account.id }}</h3>
+                </div>
+                <a href="#" class="button button-secondary button-small">Close</a>
+              </div>
+
+              <form method="post" action="/admin/config/smpp-accounts" class="admin-form">
+                <div class="form-grid">
+                  <input type="hidden" name="account_id" value="{{ account.id }}" />
+                  <label class="field-group">
+                    <span class="field-label">Label</span>
+                    <input type="text" name="label" value="{{ account.label or '' }}" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Username</span>
+                    <input type="text" name="username" value="{{ account.username or '' }}" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Password</span>
+                    <input type="password" name="password" value="{{ account.password or '' }}" />
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Enabled</span>
+                    <select name="enabled">
+                      <option value="true" {% if account.enabled %}selected{% endif %}>True</option>
+                      <option value="false" {% if not account.enabled %}selected{% endif %}>False</option>
+                    </select>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Default Inbound</span>
+                    <select name="default_for_inbound">
+                      <option value="true" {% if account.default_for_inbound %}selected{% endif %}>True</option>
+                      <option value="false" {% if not account.default_for_inbound %}selected{% endif %}>False</option>
+                    </select>
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Default SIP Account</span>
+                    <select name="default_sip_account_id">
+                      <option value="">Select SIP account</option>
+                      {% for sip_account in sip_accounts %}
+                      <option value="{{ sip_account.id }}" {% if account.default_sip_account_id == sip_account.id %}selected{% endif %}>{{ sip_account.label or sip_account.id }}</option>
+                      {% endfor %}
+                    </select>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <a href="#" class="button button-secondary">Cancel</a>
+                  <button type="submit" class="button">Update SMPP User</button>
+                </div>
+              </form>
+            </section>
+          </div>
+          {% endfor %}
         </section>
       </section>
 
@@ -1682,6 +1682,7 @@
             <span class="pill">Read-only</span>
           </div>
 
+          {% if system_settings %}
           <div class="form-grid">
             {% for field in system_settings %}
             <label class="field-group {% if field.name in ['host'] %}field-span-2{% endif %}">
@@ -1691,6 +1692,12 @@
             </label>
             {% endfor %}
           </div>
+          {% else %}
+          <div class="empty-state">
+            <h3>No bootstrap settings available</h3>
+            <p>Bootstrap values are not currently exposed by the runtime. Configure them in <span class="mono">.env</span> and reload the service.</p>
+          </div>
+          {% endif %}
         </section>
 
         <section class="settings-group settings-group-spaced">
