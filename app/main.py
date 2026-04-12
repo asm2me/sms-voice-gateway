@@ -252,17 +252,19 @@ def _save_admin_config(form, keys: list[str]) -> Settings:
         if key not in form:
             continue
 
-        raw = str(form.get(key, "")).strip()
+        raw = str(form.get(key, ""))
         annotation = field_types.get(key)
 
         if annotation is bool:
-            data[key] = raw.lower() in {"1", "true", "yes", "on"}
+            data[key] = raw.strip().lower() in {"1", "true", "yes", "on"}
         elif annotation is int:
-            if raw != "":
-                data[key] = int(raw)
+            stripped = raw.strip()
+            if stripped != "":
+                data[key] = int(stripped)
         elif annotation is float:
-            if raw != "":
-                data[key] = float(raw)
+            stripped = raw.strip()
+            if stripped != "":
+                data[key] = float(stripped)
         elif raw != "":
             data[key] = raw
 

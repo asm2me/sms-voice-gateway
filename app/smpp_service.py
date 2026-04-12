@@ -134,9 +134,21 @@ class SMPPService:
         if not self.settings.smpp_username and not self.settings.smpp_password:
             return True
         parts = body.split(b"\x00")
-        system_id = parts[0].decode("utf-8", "ignore") if parts else ""
-        password = parts[1].decode("utf-8", "ignore") if len(parts) > 1 else ""
-        return system_id == self.settings.smpp_username and password == self.settings.smpp_password
+        system_id = parts[0].decode("utf-8", "ignore").strip() if parts else ""
+        password = parts[1].decode("utf-8", "ignore").strip() if len(parts) > 1 else ""
+        expected_system_id = (self.settings.smpp_username or "").strip()
+        expected_password = (self.settings.smpp_password or "").strip()
+
+        auth_ok = system_id == expected_system_id and password == expected_password
+        if not auth_ok:
+            log.warning(
+                "SMPP bind auth mismatch from client: system_id=%r expected_system_id=%r password_len=%d expected_password_len=%d",
+                system_id,
+                expected_system_id,
+                len(password),
+                len(expected_password),
+            )
+        return auth_ok
 
     def _send_pdu(self, conn: socket.socket, command_id: int, command_status: int, sequence: int, body: bytes) -> None:
         length = 16 + len(body)
