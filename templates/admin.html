@@ -9,7 +9,7 @@
   </div>
 
   <div class="hero-actions">
-    <a class="button button-secondary" href="/health">Health</a>
+    <a class="button button-secondary" href="/admin/health">Health</a>
     <a class="button button-secondary" href="/docs">API Docs</a>
     <a class="button button-secondary" href="/admin/reports">Reports</a>
   </div>
@@ -17,12 +17,11 @@
 
 <nav class="subnav" aria-label="Admin navigation">
   <a href="/admin" class="{% if active_section == 'overview' %}active{% endif %}">Overview</a>
+  <a href="/admin/health" class="{% if active_section == 'health' %}active{% endif %}">Health</a>
   <a href="/admin/config" class="{% if active_section == 'config' %}active{% endif %}">Configuration</a>
   <a href="/admin/reports" class="{% if active_section == 'reports' %}active{% endif %}">Delivery Reports</a>
   <a href="/admin/ami-debug" class="{% if active_section == 'ami-debug' %}active{% endif %}">AMI Debug</a>
 </nav>
->>>>>>> REPLACE
-
 
 {% if success_message %}
 <div class="notice notice-success">
@@ -30,10 +29,160 @@
 </div>
 {% endif %}
 
+{% if active_section == 'health' %}
+<section class="card health-dashboard-card">
+  <div class="card-header">
+    <div>
+      <p class="eyebrow">Operational Health</p>
+      <h2>Service readiness and restart controls</h2>
+      <p class="muted">Track the current runtime, persistence layers, and telephony dependencies in one place.</p>
+    </div>
+    <div class="page-actions">
+      <a class="button button-secondary" href="/admin/health">Refresh</a>
+      <span class="pill pill-{{ health.overall_class }}">{{ health.overall_label }}</span>
+    </div>
+  </div>
+
+  <section class="health-hero">
+    <div class="health-hero-main">
+      <p class="eyebrow">Overall status</p>
+      <h3>{{ health.summary.title }}</h3>
+      <p class="muted">{{ health.summary.detail }}</p>
+    </div>
+
+    <div class="health-hero-metrics">
+      <div class="stat-card stat-card-strong">
+        <span class="stat-label">Status</span>
+        <strong class="status-inline status-{{ health.overall_class }}">{{ health.overall_label }}</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Checked</span>
+        <strong>{{ health.checked_at_display }}</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Uptime</span>
+        <strong>{{ health.runtime.uptime_display }}</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Last restart</span>
+        <strong>{{ health.runtime.last_restart_display }}</strong>
+      </div>
+    </div>
+  </section>
+
+  <div class="health-actions-panel">
+    <div>
+      <h3>Actions</h3>
+      <p class="muted">Safe restart controls are shown only when the runtime explicitly allows them.</p>
+    </div>
+    <div class="health-actions">
+      {% if health.actions.refresh.enabled %}
+      <a class="button" href="/admin/health">Refresh health data</a>
+      {% else %}
+      <button class="button" type="button" disabled title="{{ health.actions.refresh.reason }}">Refresh health data unavailable</button>
+      {% endif %}
+
+      {% if health.actions.restart_app.enabled %}
+      <form method="post" action="/admin/health/restart/app" class="inline-form">
+        <button type="submit" class="button button-danger">Restart app</button>
+      </form>
+      {% else %}
+      <button type="button" class="button button-danger" disabled title="{{ health.actions.restart_app.reason }}">Restart app disabled</button>
+      {% endif %}
+
+      {% if health.actions.restart_compose.enabled %}
+      <form method="post" action="/admin/health/restart/compose" class="inline-form">
+        <button type="submit" class="button button-secondary">Restart compose services</button>
+      </form>
+      {% else %}
+      <button type="button" class="button button-secondary" disabled title="{{ health.actions.restart_compose.reason }}">Restart compose disabled</button>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if health.message %}
+  <div class="notice {% if health.message_class %}notice-{{ health.message_class }}{% endif %}">
+    <strong>{{ health.message_title }}</strong> {{ health.message }}
+  </div>
+  {% endif %}
+
+  <div class="status-grid health-summary-grid">
+    {% for item in health.summary_cards %}
+    <div class="stat-card stat-card-{{ item.class }}">
+      <span class="stat-label">{{ item.label }}</span>
+      <strong>{{ item.value }}</strong>
+      <p class="muted">{{ item.detail }}</p>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="health-service-grid">
+    {% for service in health.services %}
+    <article class="health-service-card">
+      <div class="health-service-header">
+        <div>
+          <p class="eyebrow">{{ service.category }}</p>
+          <h3>{{ service.name }}</h3>
+        </div>
+        <span class="status-badge status-{{ service.status_class }}">{{ service.status_label }}</span>
+      </div>
+
+      <p class="muted">{{ service.summary }}</p>
+
+      <dl class="health-service-details">
+        {% for detail in service.details %}
+        <div>
+          <dt>{{ detail.label }}</dt>
+          <dd class="{% if detail.mono %}mono{% endif %}">{{ detail.value }}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+
+      {% if service.notes %}
+      <div class="health-service-notes">
+        {% for note in service.notes %}
+        <p class="muted">{{ note }}</p>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+
+  <div class="health-footer-grid">
+    <section class="settings-group">
+      <h3 class="settings-group-title">Service dependencies</h3>
+      <div class="table-wrap">
+        <table class="data-table">
+          <tbody>
+            {% for dependency in health.dependencies %}
+            <tr>
+              <td>{{ dependency.label }}</td>
+              <td>
+                <span class="status-badge status-{{ dependency.status_class }}">{{ dependency.status_label }}</span>
+              </td>
+              <td>{{ dependency.detail }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="settings-group">
+      <h3 class="settings-group-title">Operational notes</h3>
+      <ul class="health-notes-list">
+        {% for note in health.notes %}
+        <li>{{ note }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  </div>
+</section>
+{% endif %}
+
 {% if active_section == 'reports' %}
 <section class="card reports-panel">
->>>>>>> REPLACE
-
   <div class="card-header">
     <div>
       <p class="eyebrow">Delivery Reports</p>
@@ -190,7 +339,6 @@
 {% endif %}
 
 {% if active_section == 'overview' %}
->>>>>>> REPLACE
 <section class="dashboard-grid">
   <article class="card dashboard-card">
     <div class="card-header">

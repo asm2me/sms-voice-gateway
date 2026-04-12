@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
+import os
+import subprocess
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -247,6 +251,7 @@ def _admin_context(
     *,
     active_section: str,
     success_message: str | None = None,
+    health_context: dict | None = None,
 ) -> dict:
     settings_sections = _settings_sections(settings)
     report_summary, recent_reports = _report_context(settings)
@@ -259,10 +264,193 @@ def _admin_context(
         "basic_settings": settings_sections["basic"],
         "advanced_settings": settings_sections["advanced"],
         "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
+        "health": health_context or _build_health_context(settings),
     }
     if success_message:
         context["success_message"] = success_message
     return context
+
+
+def _build_health_context(settings: Settings) -> dict:
+    from .ami_service import AMIService
+
+    now = time.time()
+    checks = []
+    overall_ok = True
+
+    def add_check(key: str, label: str, status_value: str, details: str, *, restart_supported: bool = False, restart_disabled_reason: str = "") -> None:
+        nonlocal overall_ok
+        if status_value != "healthy":
+            overall_ok = False
+        checks.append(
+            {
+                "key": key,
+                "label": label,
+                "status": status_value,
+                "details": details,
+                "restart_supported": restart_supported,
+                "restart_disabled_reason": restart_disabled_reason,
+            }
+        )
+
+    add_check("api", "API / App", "healthy", "FastAPI process is serving requests.", restart_supported=False, restart_disabled_reason="This runtime does not support in-process app restarts.")
+    try:
+        redis_ok = get_redis(settings).ping()
+        add_check("redis", "Redis", "healthy" if redis_ok else "degraded", "Redis ping succeeded." if redis_ok else "Redis ping failed.", restart_supported=False, restart_disabled_reason="Redis is managed externally and cannot be restarted safely from the app.")
+    except Exception as exc:
+        add_check("redis", "Redis", "degraded", f"Redis ping failed: {exc}", restart_supported=False, restart_disabled_reason="Redis is managed externally and cannot be restarted safely from the app.")
+
+    try:
+        ami_ok = AMIService(settings).ping()
+        add_check("ami", "AMI", "healthy" if ami_ok else "degraded", "AMI ping succeeded." if ami_ok else "AMI ping failed.", restart_supported=False, restart_disabled_reason="AMI is managed by Asterisk and cannot be restarted safely from the app.")
+    except Exception as exc:
+        add_check("ami", "AMI", "degraded", f"AMI ping failed: {exc}", restart_supported=False, restart_disabled_reason="AMI is managed by Asterisk and cannot be restarted safely from the app.")
+
+    try:
+        Path(settings.delivery_report_store_path).parent.mkdir(parents=True, exist_ok=True)
+        add_check("config_store", "Config Store", "healthy", "Settings store is writable and reachable.", restart_supported=False, restart_disabled_reason="Config storage is file-based and does not have a restart action.")
+    except Exception as exc:
+        add_check("config_store", "Config Store", "degraded", f"Config store access failed: {exc}", restart_supported=False, restart_disabled_reason="Config storage is file-based and does not have a restart action.")
+
+    try:
+        collector = get_delivery_report_collector(settings)
+        collector.summary()
+        add_check("report_store", "Report Store", "healthy", "Report storage is reachable.", restart_supported=False, restart_disabled_reason="Report storage is file-based and does not have a restart action.")
+    except Exception as exc:
+        add_check("report_store", "Report Store", "degraded", f"Report store access failed: {exc}", restart_supported=False, restart_disabled_reason="Report storage is file-based and does not have a restart action.")
+
+    tts_ready = bool(settings.tts_provider)
+    add_check("tts", "TTS Provider Readiness", "healthy" if tts_ready else "degraded", f"TTS provider configured as {settings.tts_provider}." if tts_ready else "No TTS provider configured.", restart_supported=False, restart_disabled_reason="TTS providers are configured at runtime and do not expose restart controls.")
+
+    restart_actions = _restart_actions(settings)
+    return {
+        "generated_at": now,
+        "overall_status": "healthy" if overall_ok else "degraded",
+        "checks": checks,
+        "restart_actions": restart_actions,
+    }
+
+
+def _runtime_command_available(command: str) -> bool:
+    from shutil import which
+
+    return which(command) is not None
+
+
+def _running_in_container() -> bool:
+    return Path("/.dockerenv").exists() or "container" in os.environ.get("RUNNING_IN_CONTAINER", "").lower()
+
+
+def _restart_actions(settings: Settings) -> list[dict]:
+    actions: list[dict] = []
+    available = _runtime_command_available("docker") and _runtime_command_available("docker-compose")
+    compose_path = BASE_DIR / "docker-compose.yml"
+    if available and compose_path.exists():
+        actions.append(
+            {
+                "key": "gateway",
+                "label": "Restart Gateway Container",
+                "description": "Uses docker-compose restart gateway from the project root.",
+                "supported": True,
+                "disabled_reason": "",
+                "safety": "Requires docker-compose CLI access and local project checkout.",
+            }
+        )
+        actions.append(
+            {
+                "key": "redis",
+                "label": "Restart Redis Container",
+                "description": "Uses docker-compose restart redis from the project root.",
+                "supported": True,
+                "disabled_reason": "",
+                "safety": "Requires docker-compose CLI access and local project checkout.",
+            }
+        )
+    else:
+        reason = "docker-compose CLI is unavailable or docker-compose.yml was not found."
+        actions.append(
+            {
+                "key": "gateway",
+                "label": "Restart Gateway Container",
+                "description": "Not available in this runtime.",
+                "supported": False,
+                "disabled_reason": reason,
+                "safety": "Disabled for safety.",
+            }
+        )
+        actions.append(
+            {
+                "key": "redis",
+                "label": "Restart Redis Container",
+                "description": "Not available in this runtime.",
+                "supported": False,
+                "disabled_reason": reason,
+                "safety": "Disabled for safety.",
+            }
+        )
+
+    actions.append(
+        {
+            "key": "app",
+            "label": "Restart App Process",
+            "description": "In-process restart is intentionally disabled.",
+            "supported": False,
+            "disabled_reason": "Restarting the running ASGI process from inside the request handler is not safe in this deployment.",
+            "safety": "Disabled for safety.",
+        }
+    )
+    return actions
+
+
+def _restart_action_result(settings: Settings, action: str) -> dict:
+    if action not in {"gateway", "redis", "app"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown restart action")
+
+    if action == "app":
+        return {
+            "ok": False,
+            "action": action,
+            "message": "App restart is disabled in this runtime.",
+            "disabled": True,
+            "reason": "Restarting the running ASGI process from inside the request handler is not safe.",
+        }
+
+    if not (_runtime_command_available("docker") and _runtime_command_available("docker-compose") and (BASE_DIR / "docker-compose.yml").exists()):
+        return {
+            "ok": False,
+            "action": action,
+            "message": "docker-compose restart is unavailable in this runtime.",
+            "disabled": True,
+            "reason": "docker-compose CLI is unavailable or docker-compose.yml was not found.",
+        }
+
+    cmd = ["docker-compose", "restart", action]
+    try:
+        completed = subprocess.run(cmd, cwd=str(BASE_DIR), capture_output=True, text=True, timeout=90, check=True)
+        return {
+            "ok": True,
+            "action": action,
+            "message": f"Restart command completed for {action}.",
+            "disabled": False,
+            "stdout": completed.stdout[-1000:] if completed.stdout else "",
+            "stderr": completed.stderr[-1000:] if completed.stderr else "",
+        }
+    except subprocess.CalledProcessError as exc:
+        return {
+            "ok": False,
+            "action": action,
+            "message": f"Restart command failed for {action}.",
+            "disabled": False,
+            "reason": (exc.stderr or exc.stdout or str(exc))[-1000:],
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "action": action,
+            "message": f"Restart command could not run for {action}.",
+            "disabled": False,
+            "reason": str(exc),
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -272,6 +460,7 @@ def _admin_context(
 @app.get("/admin", response_class=HTMLResponse)
 @app.get("/admin/config", response_class=HTMLResponse)
 @app.get("/admin/reports", response_class=HTMLResponse)
+@app.get("/admin/health", response_class=HTMLResponse)
 async def admin_portal(
     request: Request,
     _: None = Depends(dep_admin_credentials),
@@ -282,6 +471,8 @@ async def admin_portal(
         section = "config"
     elif request.url.path.endswith("/reports"):
         section = "reports"
+    elif request.url.path.endswith("/health"):
+        section = "health"
 
     return templates.TemplateResponse(request, "admin.html", _admin_context(request, settings, active_section=section))
 
@@ -382,6 +573,29 @@ async def admin_clear_old_reports(
         request,
         "admin.html",
         _admin_context(request, settings, active_section="reports", success_message="Old reports cleared."),
+    )
+
+
+@app.post("/admin/health/restart")
+async def admin_restart_service(
+    request: Request,
+    action: str = "",
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    result = _restart_action_result(settings, action.strip())
+    health_context = _build_health_context(settings)
+    health_context["restart_result"] = result
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(
+            request,
+            settings,
+            active_section="health",
+            success_message=result["message"],
+            health_context=health_context,
+        ),
     )
 
 
