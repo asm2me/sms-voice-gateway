@@ -20,12 +20,63 @@
   <a href="/admin/health" class="{% if active_section == 'health' %}active{% endif %}">Health</a>
   <a href="/admin/config" class="{% if active_section == 'config' %}active{% endif %}">Configuration</a>
   <a href="/admin/reports" class="{% if active_section == 'reports' %}active{% endif %}">Delivery Reports</a>
+  <a href="/admin/tools" class="{% if active_section == 'tools' %}active{% endif %}">Tools</a>
 </nav>
 
 {% if success_message %}
 <div class="notice notice-{{ message_level or 'success' }}">
   <strong>{% if (message_level or 'success') == 'danger' %}Error:{% elif (message_level or 'success') == 'warning' %}Warning:{% else %}Success:{% endif %}</strong> {{ success_message }}
 </div>
+{% endif %}
+
+{% if active_section == 'tools' %}
+<section class="card tools-panel" id="tools">
+  <div class="card-header">
+    <div>
+      <p class="eyebrow">Tools</p>
+      <h2>Test message simulator</h2>
+      <p class="muted">Send a synthetic SMPP-originated message through the normal queue → TTS → SIP trunk delivery flow.</p>
+    </div>
+    <span class="pill">Flow simulation</span>
+  </div>
+
+  <form method="post" action="/admin/tools/test-send" class="admin-form tools-form">
+    <div class="form-grid">
+      <label class="field-group">
+        <span class="field-label">SMPP Username</span>
+        <select name="smpp_username" required>
+          <option value="">Select SMPP user</option>
+          {% for account in smpp_accounts %}
+          <option value="{{ account.username }}">{{ account.label or account.username or account.id }}</option>
+          {% endfor %}
+        </select>
+        <small class="muted">The message will be routed using this SMPP identity.</small>
+      </label>
+
+      <label class="field-group">
+        <span class="field-label">Destination Phone Number</span>
+        <input type="text" name="phone_number" placeholder="+966123456789" required />
+        <small class="muted">This becomes the destination for the simulated delivery job.</small>
+      </label>
+
+      <label class="field-group field-span-2">
+        <span class="field-label">Message Body</span>
+        <textarea name="body" rows="5" placeholder="Your OTP is 123456" required></textarea>
+        <small class="muted">The body is enqueued, synthesized to speech, and delivered through the assigned SIP trunk.</small>
+      </label>
+
+      <label class="field-group">
+        <span class="field-label">Provider Label</span>
+        <input type="text" name="provider" value="admin-test" />
+        <small class="muted">Optional label for queue/report tracking.</small>
+      </label>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="button">Send Test Message</button>
+    </div>
+  </form>
+</section>
 {% endif %}
 
 {% if active_section == 'health' %}

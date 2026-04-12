@@ -23,6 +23,7 @@ import subprocess
 import sys
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
 from typing import Annotated, Optional
@@ -57,7 +58,7 @@ from .config_store import (
     load_settings_from_store,
     save_settings_to_store,
 )
-from .pjsua2_service import build_pjsua2_service
+from .pjsua2_service import SipAccountProfile, build_pjsua2_service
 from .sms_handler import IncomingSMS, SMSGateway, _utc_now_iso
 from .smpp_service import SMPPService
 
@@ -448,7 +449,23 @@ def _build_queue_item_from_form(form, *, provider: str = "admin") -> dict[str, s
     }
 
 
-def _simulate_test_send(settings: Settings, *, phone_number: str, body: str, provider: str = "admin-test") -> dict:
+def _simulate_smpp_test_send(
+    settings: Settings,
+    *,
+    smpp_username: str,
+    phone_number: str,
+    body: str,
+    provider: str = "admin-test",
+) -> dict:
+    current = ensure_default_accounts(load_settings_from_store())
+    smpp_account = next((account for account in current.smpp_accounts if account.username == smpp_username), None)
+    if smpp_account is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown SMPP username")
+    if not smpp_account.enabled:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Selected SMPP user is disabled")
+
+    queue_store = get_queue_store(settings)
+    now = _utc_now_iso()
     queue_item = record_queue_item(
         settings,
         phone_number=phone_number,
@@ -456,28 +473,28 @@ def _simulate_test_send(settings: Settings, *, phone_number: str, body: str, pro
         body=body,
         status="queued",
     )
+    current_queue_item = queue_store.get(queue_item.id)
+    if current_queue_item is not None:
+        current_queue_item.updated_at = now
+        current_queue_item.status = "queued"
+        current_queue_item.phone_number = phone_number
+        current_queue_item.provider = provider
+        current_queue_item.body = body
+        current_queue_item.body_preview = body[:160]
+        queue_store.upsert(current_queue_item)
+
     gateway = SMSGateway(settings)
-    sms = IncomingSMS(body=body, destination=phone_number, provider=provider)
+    sms = IncomingSMS(body=body, destination=phone_number, provider=provider, smpp_username=smpp_username)
     result = gateway.process(sms)
 
-    if result.success:
-        queue_store = get_queue_store(settings)
-        current = queue_store.get(queue_item.id)
-        if current is not None:
-            current.status = "delivered"
-            current.updated_at = _utc_now_iso()
-            current.last_error = ""
-            current.ami_action_id = result.ami_action_id or current.ami_action_id
-            queue_store.upsert(current)
-    else:
-        queue_store = get_queue_store(settings)
-        current = queue_store.get(queue_item.id)
-        if current is not None:
-            current.status = "failed"
-            current.updated_at = _utc_now_iso()
-            current.last_error = result.error or "Test send failed"
-            current.ami_action_id = result.ami_action_id or current.ami_action_id
-            queue_store.upsert(current)
+    current_queue_item = queue_store.get(queue_item.id)
+    if current_queue_item is not None:
+        current_queue_item.updated_at = _utc_now_iso()
+        current_queue_item.status = "delivered" if result.success else "failed"
+        current_queue_item.last_error = "" if result.success else result.error or "Test send failed"
+        current_queue_item.ami_action_id = result.ami_action_id or current_queue_item.ami_action_id
+        current_queue_item.sip_account_id = result.sip_account_id or current_queue_item.sip_account_id
+        queue_store.upsert(current_queue_item)
 
     return {
         "queue_item": (get_queue_item(settings, queue_item.id) or queue_item.to_dict()),
@@ -493,56 +510,6 @@ def _simulate_test_send(settings: Settings, *, phone_number: str, body: str, pro
             "error": result.error,
             "details": result.details,
         },
-    }
-
-
-def _build_sip_test_payload(account: SIPAccount, result) -> dict[str, str | int | bool]:
-    status_class = "success" if result.success else "danger"
-    status_label = "Connected" if result.success else "Failed"
-    status_parts = []
-    if getattr(result, "status_code", 0):
-        status_parts.append(str(result.status_code))
-    if getattr(result, "status_text", ""):
-        status_parts.append(str(result.status_text))
-    summary = " ".join(part for part in status_parts if part).strip()
-    detail_parts = [
-        f"Account: {account.label or account.id}",
-        f"Host: {account.host or account.domain or '—'}",
-        f"Transport: {(account.transport or 'udp').upper()}",
-        f"Username: {account.username or '—'}",
-    ]
-    if summary:
-        detail_parts.append(f"Registrar: {summary}")
-    if getattr(result, "message", ""):
-        detail_parts.append(f"Message: {result.message}")
-    if getattr(result, "error", ""):
-        detail_parts.append(f"Error: {result.error}")
-    return {
-        "success": bool(result.success),
-        "status_class": status_class,
-        "status_label": status_label,
-        "summary": summary or ("Connection established" if result.success else "Connection failed"),
-        "tooltip": " | ".join(detail_parts),
-    }
-
-
-def _build_sip_profile_from_account(account: SIPAccount) -> dict[str, str | bool | int | dict]:
-    domain = account.domain or account.host
-    proxy_uri = account.outbound_proxy.strip()
-    if proxy_uri and not proxy_uri.startswith("sip:"):
-        proxy_uri = f"sip:{proxy_uri}"
-    return {
-        "id": account.id,
-        "display_name": account.display_name or account.label,
-        "domain": domain,
-        "username": account.username,
-        "password": account.password,
-        "registrar_uri": f"sip:{domain}" if domain else "",
-        "proxy_uri": proxy_uri,
-        "transport": (account.transport or "udp").upper(),
-        "caller_id": account.from_user or account.display_name or account.label,
-        "enabled": account.enabled,
-        "extra": dict(account.extra or {}),
     }
 
 
@@ -712,7 +679,7 @@ def _admin_context(
         "recent_inbox_messages": recent_inbox_messages,
         "queue_summary": queue_summary,
         "recent_queue_items": recent_queue_items,
-        "queue_filters": queue_filters if 'queue_filters' in locals() else {"search": "", "status": "", "provider": "", "has_filters": False},
+        "queue_filters": queue_filters,
         "live_calls": live_calls,
         "basic_settings": _build_setting_items(
             settings,
@@ -1038,8 +1005,8 @@ def _build_health_context(settings: Settings) -> dict:
         "summary_cards": [
             {"label": "Healthy Services", "value": str(healthy_count), "detail": "Passing checks", "class": "success"},
             {"label": "Total Services", "value": str(total_count), "detail": "Monitored components", "class": "unknown"},
-            {"label": "Redis", "value": "Online" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "Offline", "detail": settings.redis_url, "class": "success" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
-            {"label": "Direct SIP UA", "value": "Registered" if any(d['label'] == 'Direct SIP UA' and d['status_label'] == 'Healthy' for d in dependencies) else "Not Registered", "detail": next((d["detail"] for d in dependencies if d["label"] == "Direct SIP UA"), "PJSUA2"), "class": "success" if any(d['label'] == 'Direct SIP UA' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
+            {"label": "Redis", "value": "Online" if any(d["label"] == "Redis" and d["status_label"] == "Healthy" for d in dependencies) else "Offline", "detail": settings.redis_url, "class": "success" if any(d["label"] == "Redis" and d["status_label"] == "Healthy" for d in dependencies) else "danger"},
+            {"label": "Direct SIP UA", "value": "Registered" if any(d["label"] == "Direct SIP UA" and d["status_label"] == "Healthy" for d in dependencies) else "Not Registered", "detail": next((d["detail"] for d in dependencies if d["label"] == "Direct SIP UA"), "PJSUA2"), "class": "success" if any(d["label"] == "Direct SIP UA" and d["status_label"] == "Healthy" for d in dependencies) else "danger"},
             {"label": "SMPP", "value": "Listening" if smpp_ok else "Enabled / Not Listening" if smpp_enabled else "Disabled", "detail": f"{settings.smpp_host}:{settings.smpp_port}", "class": "success" if smpp_ok else "warning" if smpp_enabled else "danger"},
             {"label": "SIP Trunks", "value": f"{sip_trunk_context.get('summary', {}).get('enabled', 0)} enabled", "detail": f"{sip_trunk_context.get('summary', {}).get('registered', 0)} registered of {sip_trunk_context.get('summary', {}).get('total', 0)} configured", "class": "success" if sip_trunk_context.get("registered") else "warning" if sip_trunk_context.get("available") else "danger"},
         ],
@@ -1243,6 +1210,7 @@ def _restart_action_result(settings: Settings, action: str) -> dict:
 @app.get("/admin/config", response_class=HTMLResponse)
 @app.get("/admin/reports", response_class=HTMLResponse)
 @app.get("/admin/health", response_class=HTMLResponse)
+@app.get("/admin/tools", response_class=HTMLResponse)
 async def admin_portal(
     request: Request,
     _: None = Depends(dep_admin_credentials),
@@ -1255,6 +1223,8 @@ async def admin_portal(
         section = "reports"
     elif request.url.path.endswith("/health"):
         section = "health"
+    elif request.url.path.endswith("/tools"):
+        section = "tools"
 
     context = _admin_context(request, settings, active_section=section)
     return templates.TemplateResponse(request, "admin.html", context)
@@ -1370,6 +1340,91 @@ async def admin_update_advanced_config(
     )
 
 
+def _append_admin_log(message: str) -> None:
+    log_file = BASE_DIR / "logs" / "admin-tools.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write(f"[{timestamp}] {message}\n")
+
+
+def _read_admin_log(limit: int = 80) -> list[str]:
+    log_file = BASE_DIR / "logs" / "admin-tools.log"
+    if not log_file.exists():
+        return []
+    lines = log_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+    return lines[-limit:]
+
+
+def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
+    domain = (account.domain or account.host or "").strip()
+    username = (account.username or "").strip()
+    caller_id = (account.from_user or account.display_name or username or account.id).strip()
+    sip_uri = f"sip:{username}@{domain}" if username and domain else ""
+    registrar_uri = f"sip:{domain}" if domain else ""
+    proxy_uri = (account.outbound_proxy or "").strip()
+
+    return SipAccountProfile(
+        id=account.id,
+        display_name=(account.display_name or account.label or account.id).strip(),
+        sip_uri=sip_uri,
+        domain=domain,
+        username=username,
+        password=(account.password or "").strip(),
+        registrar_uri=registrar_uri,
+        proxy_uri=proxy_uri,
+        transport=(account.transport or "UDP").upper(),
+        caller_id=caller_id,
+        enabled=bool(account.enabled),
+        auth_realm="*",
+        extra={
+            "host": (account.host or "").strip(),
+            "port": account.port,
+            "from_domain": (account.from_domain or "").strip(),
+            "register": bool(account.register),
+        },
+    )
+
+
+def _build_sip_test_payload(account: SIPAccount, result) -> dict:
+    status_class = "success" if result.success else "danger"
+    status_label = "Connected" if result.success else "Failed"
+    status_code = getattr(result, "status_code", 0) or 0
+    status_text = getattr(result, "status_text", "") or ""
+    message = getattr(result, "message", "") or ""
+    error = getattr(result, "error", "") or ""
+    summary = message if result.success else error or message or "Connection test failed"
+    tooltip_parts = [
+        f"account={account.id}",
+        f"host={account.host or account.domain or '—'}",
+    ]
+    if status_code:
+        tooltip_parts.append(f"status={status_code}")
+    if status_text:
+        tooltip_parts.append(status_text)
+    if error:
+        tooltip_parts.append(error)
+
+    return {
+        "success": bool(result.success),
+        "account_id": account.id,
+        "status_class": status_class,
+        "status_label": status_label,
+        "summary": summary,
+        "tooltip": " | ".join(part for part in tooltip_parts if part),
+        "details": {
+            "message": message,
+            "error": error,
+            "status_code": status_code,
+            "status_text": status_text,
+            "host": account.host or "",
+            "domain": account.domain or "",
+            "transport": account.transport,
+            "username": account.username,
+        },
+    }
+
+
 @app.post("/admin/config/sip-accounts/test")
 async def admin_test_sip_account_connection(
     payload: dict = Body(...),
@@ -1395,8 +1450,13 @@ async def admin_test_sip_account_connection(
         register=str(payload.get("register", "true")).strip().lower() in {"1", "true", "yes", "on"},
         outbound_proxy=str(payload.get("outbound_proxy", "")).strip(),
     )
-    service = build_pjsua2_service(dep_settings())
+    settings = dep_settings()
+    service = build_pjsua2_service(settings)
+    _append_admin_log(f"SIP trunk test started for account={account.id} host={account.host or account.domain or '—'}")
     result = service.register_account(_build_sip_profile_from_account(account))
+    _append_admin_log(
+        f"SIP trunk test finished account={account.id} success={result.success} registered={getattr(result, 'registered', '')} call_id={getattr(result, 'sip_call_id', '')} error={getattr(result, 'error', '')}"
+    )
     return JSONResponse(_build_sip_test_payload(account, result))
 
 
@@ -1562,21 +1622,45 @@ async def admin_delete_system_user(
     )
 
 
-@app.post("/admin/queue/test-send")
-async def admin_queue_test_send(
+@app.get("/admin/tools/logs")
+async def admin_tools_logs(
+    _: None = Depends(dep_admin_credentials),
+):
+    return JSONResponse({"lines": _read_admin_log()})
+
+
+@app.post("/admin/tools/test-send")
+async def admin_tools_test_send(
     request: Request,
     _: None = Depends(dep_admin_credentials),
     settings: Settings = Depends(dep_settings),
 ):
     form = await request.form()
-    payload = _build_queue_item_from_form(form, provider="admin-test")
-    if not payload["phone_number"] or not payload["body"]:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "phone_number and body are required")
-    outcome = _simulate_test_send(
+    smpp_username = str(form.get("smpp_username", "")).strip()
+    phone_number = str(form.get("phone_number", "")).strip()
+    body = str(form.get("body", "")).strip()
+    provider = str(form.get("provider", "admin-test")).strip() or "admin-test"
+
+    if not smpp_username or not phone_number or not body:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "smpp_username, phone_number and body are required")
+
+    _append_admin_log(
+        f"Tools test-send queued smpp_username={smpp_username} phone_number={phone_number} provider={provider} body={body[:80]!r}"
+    )
+    outcome = _simulate_smpp_test_send(
         settings,
-        phone_number=payload["phone_number"],
-        body=payload["body"],
-        provider=payload["provider"] or "admin-test",
+        smpp_username=smpp_username,
+        phone_number=phone_number,
+        body=body,
+        provider=provider,
+    )
+    _append_admin_log(
+        f"Tools test-send finished success={outcome['result']['success']} sip_call_id={outcome['result']['sip_call_id'] or ''} sip_account_id={outcome['result']['sip_account_id'] or ''} error={outcome['result']['error'] or ''}"
+    )
+    message = (
+        f"Test message queued and delivered for {phone_number} using SMPP user '{smpp_username}'."
+        if outcome["result"]["success"]
+        else f"Test message failed for {phone_number} using SMPP user '{smpp_username}': {outcome['result']['error'] or 'Unknown error'}"
     )
     return templates.TemplateResponse(
         request,
@@ -1584,12 +1668,8 @@ async def admin_queue_test_send(
         _admin_context(
             request,
             settings,
-            active_section="overview",
-            success_message=(
-                f"Test send completed for {payload['phone_number']}."
-                if outcome["result"]["success"]
-                else f"Test send failed for {payload['phone_number']}: {outcome['result']['error'] or 'Unknown error'}"
-            ),
+            active_section="tools",
+            success_message=message,
         ),
     )
 
