@@ -267,13 +267,12 @@ def _config_items(settings: Settings) -> list[dict[str, str]]:
     ]
 
 def _build_queue_context(settings: Settings) -> tuple[dict, list[dict], dict, list[dict]]:
-    from .admin_reports import get_inbox_store, get_queue_store
-    inbox_store = get_inbox_store(settings)
-    queue_store = get_queue_store(settings)
-    inbox_summary = inbox_store.summary()
-    queue_summary = queue_store.summary()
-    recent_inbox_messages = inbox_store.list_items(limit=10)
-    recent_queue_items = queue_store.list_items(limit=10)
+    from .admin_reports import list_inbox_messages, list_queue_items, summarize_inbox, summarize_queue
+
+    inbox_summary = summarize_inbox(settings)
+    queue_summary = summarize_queue(settings)
+    recent_inbox_messages = list_inbox_messages(settings, limit=10)
+    recent_queue_items = list_queue_items(settings, limit=10)
     return inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items
 
 
