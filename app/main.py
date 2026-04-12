@@ -27,7 +27,7 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Annotated, Optional
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import Body, Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -496,6 +496,36 @@ def _simulate_test_send(settings: Settings, *, phone_number: str, body: str, pro
     }
 
 
+def _build_sip_test_payload(account: SIPAccount, result) -> dict[str, str | int | bool]:
+    status_class = "success" if result.success else "danger"
+    status_label = "Connected" if result.success else "Failed"
+    status_parts = []
+    if getattr(result, "status_code", 0):
+        status_parts.append(str(result.status_code))
+    if getattr(result, "status_text", ""):
+        status_parts.append(str(result.status_text))
+    summary = " ".join(part for part in status_parts if part).strip()
+    detail_parts = [
+        f"Account: {account.label or account.id}",
+        f"Host: {account.host or account.domain or '—'}",
+        f"Transport: {(account.transport or 'udp').upper()}",
+        f"Username: {account.username or '—'}",
+    ]
+    if summary:
+        detail_parts.append(f"Registrar: {summary}")
+    if getattr(result, "message", ""):
+        detail_parts.append(f"Message: {result.message}")
+    if getattr(result, "error", ""):
+        detail_parts.append(f"Error: {result.error}")
+    return {
+        "success": bool(result.success),
+        "status_class": status_class,
+        "status_label": status_label,
+        "summary": summary or ("Connection established" if result.success else "Connection failed"),
+        "tooltip": " | ".join(detail_parts),
+    }
+
+
 def _build_sip_profile_from_account(account: SIPAccount) -> dict[str, str | bool | int | dict]:
     domain = account.domain or account.host
     proxy_uri = account.outbound_proxy.strip()
@@ -654,6 +684,7 @@ def _admin_context(
     *,
     active_section: str,
     success_message: str | None = None,
+    message_level: str = "success",
     health_context: dict | None = None,
 ) -> dict:
     report_summary, recent_reports = _report_context(settings)
@@ -792,6 +823,7 @@ def _admin_context(
     }
     if success_message:
         context["success_message"] = success_message
+        context["message_level"] = message_level
     return context
 
 
@@ -1338,6 +1370,36 @@ async def admin_update_advanced_config(
     )
 
 
+@app.post("/admin/config/sip-accounts/test")
+async def admin_test_sip_account_connection(
+    payload: dict = Body(...),
+    _: None = Depends(dep_admin_credentials),
+):
+    account = SIPAccount(
+        id=str(payload.get("account_id", "")).strip() or _slugify_identifier(
+            str(payload.get("label", "")).strip() or str(payload.get("username", "")).strip() or str(payload.get("host", "")).strip(),
+            "sip-account",
+        ),
+        label=str(payload.get("label", "")).strip() or str(payload.get("account_id", "")).strip() or "SIP trunk",
+        host=str(payload.get("host", "")).strip(),
+        username=str(payload.get("username", "")).strip(),
+        password=str(payload.get("password", "")).strip(),
+        transport=str(payload.get("transport", "udp")).strip() or "udp",
+        port=int(str(payload.get("port", "5060")).strip() or "5060"),
+        domain=str(payload.get("domain", "")).strip(),
+        display_name=str(payload.get("display_name", "")).strip(),
+        from_user=str(payload.get("from_user", "")).strip(),
+        from_domain=str(payload.get("from_domain", "")).strip(),
+        enabled=str(payload.get("enabled", "true")).strip().lower() in {"1", "true", "yes", "on"},
+        default_for_outbound=str(payload.get("default_for_outbound", "false")).strip().lower() in {"1", "true", "yes", "on"},
+        register=str(payload.get("register", "true")).strip().lower() in {"1", "true", "yes", "on"},
+        outbound_proxy=str(payload.get("outbound_proxy", "")).strip(),
+    )
+    service = build_pjsua2_service(dep_settings())
+    result = service.register_account(_build_sip_profile_from_account(account))
+    return JSONResponse(_build_sip_test_payload(account, result))
+
+
 @app.post("/admin/config/sip-accounts")
 async def admin_add_sip_account(
     request: Request,
@@ -1349,22 +1411,16 @@ async def admin_add_sip_account(
     action = str(form.get("form_action", "save")).strip().lower()
 
     if action == "test":
-        service = build_pjsua2_service(current)
-        result = service.register_account(_build_sip_profile_from_account(new_account))
-        status_suffix = (
-            f" Registrar status: {result.status_code} {result.status_text}."
-            if getattr(result, "status_code", 0) or getattr(result, "status_text", "")
-            else ""
-        )
-        message = (
-            f"SIP trunk test succeeded for '{new_account.label}'.{status_suffix}"
-            if result.success
-            else f"SIP trunk test failed for '{new_account.label}': {result.error or result.message or 'Unknown error'}.{status_suffix}"
-        )
         return templates.TemplateResponse(
             request,
             "admin.html",
-            _admin_context(request, current, active_section="config", success_message=message),
+            _admin_context(
+                request,
+                current,
+                active_section="config",
+                success_message="Use the inline Test Connect action from the SIP trunk table for in-place connection checks.",
+                message_level="warning",
+            ),
         )
 
     sip_accounts = [account for account in current.sip_accounts if account.id != new_account.id]

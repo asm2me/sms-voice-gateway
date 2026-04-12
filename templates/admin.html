@@ -23,8 +23,8 @@
 </nav>
 
 {% if success_message %}
-<div class="notice notice-success">
-  <strong>Success:</strong> {{ success_message }}
+<div class="notice notice-{{ message_level or 'success' }}">
+  <strong>{% if (message_level or 'success') == 'danger' %}Error:{% elif (message_level or 'success') == 'warning' %}Warning:{% else %}Success:{% endif %}</strong> {{ success_message }}
 </div>
 {% endif %}
 
@@ -1153,12 +1153,24 @@
                   <td>
                     <div class="table-actions">
                       <a class="button button-secondary button-small" href="#sip-trunk-edit-{{ account.id }}">Edit</a>
-                      <a class="button button-secondary button-small" href="#sip-trunk-edit-{{ account.id }}">Test Connect</a>
+                      <button
+                        type="button"
+                        class="button button-secondary button-small js-sip-test-trigger"
+                        data-target-form="sip-test-form-{{ account.id }}"
+                        data-target-status="sip-test-status-{{ account.id }}"
+                      >
+                        Test Connect
+                      </button>
                       <form method="post" action="/admin/config/sip-accounts/delete" class="inline-form">
                         <input type="hidden" name="account_id" value="{{ account.id }}" />
                         <button type="submit" class="button button-danger button-small">Delete</button>
                       </form>
                     </div>
+                    <div
+                      id="sip-test-status-{{ account.id }}"
+                      class="inline-test-status"
+                      aria-live="polite"
+                    ></div>
                   </td>
                 </tr>
                 {% endfor %}
@@ -1183,7 +1195,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/sip-accounts" class="admin-form">
+              <form method="post" action="/admin/config/sip-accounts" class="admin-form js-sip-test-form" id="sip-test-form-new">
                 <div class="form-grid">
                   <label class="field-group">
                     <span class="field-label">Account ID</span>
@@ -1284,7 +1296,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/sip-accounts" class="admin-form">
+              <form method="post" action="/admin/config/sip-accounts" class="admin-form js-sip-test-form" id="sip-test-form-{{ account.id }}">
                 <div class="form-grid">
                   <input type="hidden" name="account_id" value="{{ account.id }}" />
                   <label class="field-group"><span class="field-label">Label</span><input type="text" name="label" value="{{ account.label or '' }}" /></label>
@@ -1900,6 +1912,79 @@
     </div>
   </div>
 {% endif %}
+
+<script>
+  (function () {
+    const triggers = document.querySelectorAll(".js-sip-test-trigger");
+
+    function setStatus(target, payload, loading) {
+      if (!target) return;
+      if (loading) {
+        target.innerHTML = '<span class="status-badge status-pending" title="Testing SIP trunk connection">Testing…</span>';
+        return;
+      }
+      const statusClass = payload && payload.status_class ? payload.status_class : "unknown";
+      const statusLabel = payload && payload.status_label ? payload.status_label : "Unknown";
+      const summary = payload && payload.summary ? payload.summary : "";
+      const tooltip = payload && payload.tooltip ? payload.tooltip : "";
+      target.innerHTML =
+        '<span class="status-badge status-' + statusClass + '" title="' + tooltip + '">' +
+        statusLabel +
+        '</span>' +
+        (summary ? '<div class="inline-test-status__summary">' + summary + "</div>" : "");
+    }
+
+    async function runTest(trigger) {
+      const formId = trigger.getAttribute("data-target-form");
+      const statusId = trigger.getAttribute("data-target-status");
+      const form = document.getElementById(formId);
+      const status = document.getElementById(statusId);
+      if (!form || !status) return;
+
+      const formData = new FormData(form);
+      const payload = Object.fromEntries(formData.entries());
+
+      setStatus(status, null, true);
+      trigger.disabled = true;
+
+      try {
+        const response = await fetch("/admin/config/sip-accounts/test", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+          credentials: "same-origin",
+        });
+
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.detail || "Connection test failed");
+        }
+        setStatus(status, result, false);
+      } catch (error) {
+        setStatus(
+          status,
+          {
+            status_class: "danger",
+            status_label: "Failed",
+            summary: error && error.message ? error.message : "Connection test failed",
+            tooltip: error && error.message ? error.message : "Connection test failed",
+          },
+          false
+        );
+      } finally {
+        trigger.disabled = false;
+      }
+    }
+
+    triggers.forEach((trigger) => {
+      trigger.addEventListener("click", function () {
+        runTest(trigger);
+      });
+    });
+  })();
+</script>
 
 <footer class="card admin-audit-footer">
   <div class="card-header compact-header">
