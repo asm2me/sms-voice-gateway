@@ -829,10 +829,37 @@ async def admin_update_advanced_config(
             "admin_password",
         ],
     )
+
+    smpp_message = ""
+    smpp_service = getattr(app.state, "smpp_service", None)
+    if smpp_service is not None:
+        try:
+            smpp_service.stop()
+        except Exception as exc:
+            log.warning("Failed stopping SMPP listener during config apply: %s", exc)
+
+        try:
+            new_smpp_service = SMPPService(settings)
+            if settings.smpp_enabled:
+                new_smpp_service.start()
+                if new_smpp_service.is_listening:
+                    smpp_message = f" SMPP listener is now listening on {settings.smpp_host}:{settings.smpp_port}."
+                else:
+                    detail = new_smpp_service.last_error or "listener did not enter listening state"
+                    smpp_message = f" SMPP listener could not start: {detail}."
+            else:
+                smpp_message = " SMPP listener is disabled."
+            app.state.smpp_service = new_smpp_service
+        except Exception as exc:
+            failed_service = SMPPService(settings)
+            failed_service._last_error = str(exc)
+            app.state.smpp_service = failed_service
+            smpp_message = f" SMPP listener could not start: {exc}."
+
     return templates.TemplateResponse(
         request,
         "admin.html",
-        _admin_context(request, settings, active_section="config", success_message="Advanced settings saved and applied immediately."),
+        _admin_context(request, settings, active_section="config", success_message=f"Advanced settings saved and applied immediately.{smpp_message}"),
     )
 
 
