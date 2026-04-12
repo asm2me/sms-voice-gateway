@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from .admin_reports import QueueItem, get_queue_store
+from .ami_service import AMIService
 from .cache import AudioCache, RateLimiter
 from .config import SIPAccount, Settings
 from .config_store import get_sip_account_for_smpp_username
@@ -147,6 +148,7 @@ class SMSGateway:
         self.audio_cache = AudioCache(settings)
         self.tts = TTSService(settings, self.audio_cache)
         self.sip_ua = build_pjsua2_service(settings)
+        self.ami = AMIService(settings)
         self.rate_limiter = RateLimiter(settings)
 
     def _resolve_sip_account(self, sms: IncomingSMS) -> Optional[SIPAccount]:
@@ -203,61 +205,113 @@ class SMSGateway:
                 },
             )
 
+        pjsua_status = self.sip_ua.status_detail()
+        use_ami_fallback = not bool(pjsua_status.get("available"))
+        fallback_reason = pjsua_status.get("import_error") or "PJSUA2 bindings are unavailable"
+
         for attempt in range(1, max_attempts + 1):
-            sip_result = self.sip_ua.place_outbound_call(
-                SipCallRequest(
-                    destination_number=phone,
-                    audio_path=audio_path,
-                    account_id=sip_account.id,
-                    display_name=sip_account.display_name or sip_account.label,
-                    caller_id=sip_account.from_user or self.settings.outbound_caller_id,
-                    timeout_seconds=self.settings.call_answer_timeout,
-                    playback_repeats=self.settings.playback_repeats,
-                    playback_pause_ms=self.settings.playback_pause_ms,
+            if use_ami_fallback:
+                asterisk_sound_ref = self.audio_cache.to_asterisk_sound_ref(audio_path)
+                ami_result = self.ami.originate_playback(
+                    phone,
+                    asterisk_sound_ref,
                     extra_vars={
                         "OTP_TEXT": spoken_text[:80],
                         "SIP_ACCOUNT_ID": sip_account.id,
                         "SMPP_USERNAME": sms.smpp_username or "",
                     },
-                ),
-                profile={
-                    "id": sip_account.id,
-                    "display_name": sip_account.display_name or sip_account.label,
-                    "domain": sip_account.domain or sip_account.host,
-                    "username": sip_account.username,
-                    "password": sip_account.password,
-                    "transport": (sip_account.transport or "udp").upper(),
-                    "caller_id": sip_account.from_user or self.settings.outbound_caller_id,
-                    "enabled": sip_account.enabled,
-                    "proxy_uri": sip_account.outbound_proxy,
-                },
-            )
-            sip_call_id = sip_result.call_id or sip_call_id
+                )
+                ami_action_id = ami_result.action_id or ami_action_id
 
-            if sip_result.success:
-                return GatewayResult(
-                    success=True,
-                    phone_number=phone,
-                    text_spoken=spoken_text,
-                    audio_path=audio_path,
-                    was_cached=was_cached,
-                    sip_call_id=sip_call_id,
-                    sip_account_id=sip_account_id,
-                    details={
-                        "sip_result": sip_result.details,
-                        "tts_cached": was_cached,
-                        "hash": hkey,
-                        "rate_counts": self.rate_limiter.get_counts(phone),
-                        "attempts": attempt,
-                        "max_attempts": max_attempts,
-                        "retry_interval_seconds": retry_interval_seconds,
-                        "sip_account_id": sip_account_id,
-                        "smpp_username": sms.smpp_username or "",
+                if ami_result.success:
+                    return GatewayResult(
+                        success=True,
+                        phone_number=phone,
+                        text_spoken=spoken_text,
+                        audio_path=audio_path,
+                        was_cached=was_cached,
+                        ami_action_id=ami_action_id,
+                        sip_account_id=sip_account_id,
+                        details={
+                            "transport": "ami-fallback",
+                            "fallback_reason": fallback_reason,
+                            "ami_result": ami_result.raw,
+                            "tts_cached": was_cached,
+                            "hash": hkey,
+                            "rate_counts": self.rate_limiter.get_counts(phone),
+                            "attempts": attempt,
+                            "max_attempts": max_attempts,
+                            "retry_interval_seconds": retry_interval_seconds,
+                            "sip_account_id": sip_account_id,
+                            "smpp_username": sms.smpp_username or "",
+                        },
+                    )
+
+                last_error = ami_result.message or "AMI originate failed"
+                log.warning(
+                    "AMI fallback attempt %d/%d failed for %s via %s: %s",
+                    attempt,
+                    max_attempts,
+                    phone,
+                    sip_account_id,
+                    last_error,
+                )
+            else:
+                sip_result = self.sip_ua.place_outbound_call(
+                    SipCallRequest(
+                        destination_number=phone,
+                        audio_path=audio_path,
+                        account_id=sip_account.id,
+                        display_name=sip_account.display_name or sip_account.label,
+                        caller_id=sip_account.from_user or self.settings.outbound_caller_id,
+                        timeout_seconds=self.settings.call_answer_timeout,
+                        playback_repeats=self.settings.playback_repeats,
+                        playback_pause_ms=self.settings.playback_pause_ms,
+                        extra_vars={
+                            "OTP_TEXT": spoken_text[:80],
+                            "SIP_ACCOUNT_ID": sip_account.id,
+                            "SMPP_USERNAME": sms.smpp_username or "",
+                        },
+                    ),
+                    profile={
+                        "id": sip_account.id,
+                        "display_name": sip_account.display_name or sip_account.label,
+                        "domain": sip_account.domain or sip_account.host,
+                        "username": sip_account.username,
+                        "password": sip_account.password,
+                        "transport": (sip_account.transport or "udp").upper(),
+                        "caller_id": sip_account.from_user or self.settings.outbound_caller_id,
+                        "enabled": sip_account.enabled,
+                        "proxy_uri": sip_account.outbound_proxy,
                     },
                 )
+                sip_call_id = sip_result.call_id or sip_call_id
 
-            last_error = sip_result.error or sip_result.message or "Direct SIP call failed"
-            log.warning("Direct SIP attempt %d/%d failed for %s via %s: %s", attempt, max_attempts, phone, sip_account_id, last_error)
+                if sip_result.success:
+                    return GatewayResult(
+                        success=True,
+                        phone_number=phone,
+                        text_spoken=spoken_text,
+                        audio_path=audio_path,
+                        was_cached=was_cached,
+                        sip_call_id=sip_call_id,
+                        sip_account_id=sip_account_id,
+                        details={
+                            "transport": "pjsua2",
+                            "sip_result": sip_result.details,
+                            "tts_cached": was_cached,
+                            "hash": hkey,
+                            "rate_counts": self.rate_limiter.get_counts(phone),
+                            "attempts": attempt,
+                            "max_attempts": max_attempts,
+                            "retry_interval_seconds": retry_interval_seconds,
+                            "sip_account_id": sip_account_id,
+                            "smpp_username": sms.smpp_username or "",
+                        },
+                    )
+
+                last_error = sip_result.error or sip_result.message or "Direct SIP call failed"
+                log.warning("Direct SIP attempt %d/%d failed for %s via %s: %s", attempt, max_attempts, phone, sip_account_id, last_error)
 
             if attempt < max_attempts:
                 retry_snapshot = _queue_retry(
