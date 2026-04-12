@@ -24,6 +24,7 @@ from typing import Annotated, Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -42,6 +43,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+security = HTTPBasic()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -80,6 +82,21 @@ def dep_gateway(settings: Annotated[Settings, Depends(dep_settings)]) -> SMSGate
     return SMSGateway(settings)
 
 
+def dep_admin_credentials(
+    credentials: Annotated[HTTPBasicCredentials, Depends(security)],
+    settings: Settings = Depends(dep_settings),
+) -> None:
+    if not (
+        credentials.username == settings.admin_username
+        and credentials.password == settings.admin_password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid admin credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Admin portal
 # ─────────────────────────────────────────────────────────────────────────────
@@ -87,7 +104,11 @@ def dep_gateway(settings: Annotated[Settings, Depends(dep_settings)]) -> SMSGate
 @app.get("/admin", response_class=HTMLResponse)
 @app.get("/admin/config", response_class=HTMLResponse)
 @app.get("/admin/reports", response_class=HTMLResponse)
-async def admin_portal(request: Request, settings: Settings = Depends(dep_settings)):
+async def admin_portal(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
     section = "overview"
     if request.url.path.endswith("/config"):
         section = "config"

@@ -88,6 +88,8 @@ class Settings(BaseSettings):
     playback_pause_ms: int = 1500  # silence between repeats (ms)
 
     # ── Admin / reporting ─────────────────────────────────────────────────────
+    admin_username: str = "admin"
+    admin_password: str = "change-me"
     delivery_report_store_path: Optional[str] = None
     delivery_report_max_items: int = 1000
 
