@@ -29,8 +29,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+from .admin_reports import get_delivery_report_collector, record_delivery_report
 from .cache import AudioCache, RateLimiter, get_redis
 from .config import Settings, get_settings
+from .config_store import load_settings_from_store, save_settings_to_store
 from .sms_handler import IncomingSMS, SMSGateway
 
 logging.basicConfig(
@@ -75,7 +77,7 @@ if STATIC_DIR.exists():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def dep_settings() -> Settings:
-    return get_settings()
+    return load_settings_from_store()
 
 
 def dep_gateway(settings: Annotated[Settings, Depends(dep_settings)]) -> SMSGateway:
@@ -97,6 +99,136 @@ def dep_admin_credentials(
         )
 
 
+def _is_secret_field(name: str) -> bool:
+    lowered = name.lower()
+    return any(token in lowered for token in ("secret", "password", "token", "key", "credential"))
+
+
+def _settings_sections(settings: Settings) -> dict[str, list[dict[str, str]]]:
+    basic_fields = [
+        ("tts_provider", "TTS Provider"),
+        ("tts_language", "TTS Language"),
+        ("tts_voice", "TTS Voice"),
+        ("tts_speaking_rate", "Speaking Rate"),
+        ("tts_audio_encoding", "Audio Encoding"),
+        ("phone_regex", "Phone Regex"),
+        ("strip_call_prefix", "Strip Call Prefix"),
+        ("playback_repeats", "Playback Repeats"),
+        ("playback_pause_ms", "Playback Pause (ms)"),
+    ]
+    advanced_fields = [
+        ("webhook_secret", "Webhook Secret"),
+        ("google_credentials_json", "Google Credentials JSON"),
+        ("aws_access_key_id", "AWS Access Key ID"),
+        ("aws_secret_access_key", "AWS Secret Access Key"),
+        ("aws_region", "AWS Region"),
+        ("aws_polly_voice_id", "AWS Polly Voice ID"),
+        ("aws_polly_engine", "AWS Polly Engine"),
+        ("openai_api_key", "OpenAI API Key"),
+        ("openai_tts_model", "OpenAI TTS Model"),
+        ("openai_tts_voice", "OpenAI TTS Voice"),
+        ("elevenlabs_api_key", "ElevenLabs API Key"),
+        ("elevenlabs_voice_id", "ElevenLabs Voice ID"),
+        ("audio_cache_dir", "Audio Cache Directory"),
+        ("asterisk_sounds_dir", "Asterisk Sounds Directory"),
+        ("audio_cache_ttl", "Audio Cache TTL"),
+        ("ami_host", "AMI Host"),
+        ("ami_port", "AMI Port"),
+        ("ami_username", "AMI Username"),
+        ("ami_secret", "AMI Secret"),
+        ("ami_connection_timeout", "AMI Connection Timeout"),
+        ("ami_response_timeout", "AMI Response Timeout"),
+        ("sip_channel_prefix", "SIP Channel Prefix"),
+        ("outbound_caller_id", "Outbound Caller ID"),
+        ("call_answer_timeout", "Call Answer Timeout"),
+        ("asterisk_context", "Asterisk Context"),
+        ("asterisk_exten", "Asterisk Exten"),
+        ("asterisk_priority", "Asterisk Priority"),
+        ("redis_url", "Redis URL"),
+        ("redis_prefix", "Redis Prefix"),
+        ("rate_limit_hourly", "Rate Limit Hourly"),
+        ("rate_limit_daily", "Rate Limit Daily"),
+        ("delivery_report_store_path", "Delivery Report Store Path"),
+        ("delivery_report_max_items", "Delivery Report Max Items"),
+        ("host", "Host"),
+        ("port", "Port"),
+        ("debug", "Debug"),
+        ("admin_username", "Admin Username"),
+        ("admin_password", "Admin Password"),
+    ]
+
+    def build_items(field_specs: list[tuple[str, str]]) -> list[dict[str, str]]:
+        items: list[dict[str, str]] = []
+        for name, label in field_specs:
+            value = getattr(settings, name)
+            items.append(
+                {
+                    "name": name,
+                    "label": label,
+                    "value": "••••••" if _is_secret_field(name) and value else "" if value is None else str(value),
+                    "raw_value": "" if value is None else str(value),
+                    "type": type(value).__name__,
+                    "is_secret": _is_secret_field(name),
+                }
+            )
+        return items
+
+    return {"basic": build_items(basic_fields), "advanced": build_items(advanced_fields)}
+
+
+def _report_context(settings: Settings) -> tuple[dict, list[dict]]:
+    collector = get_delivery_report_collector(settings)
+    summary = collector.summary()
+    recent_reports = collector.list_reports(limit=10)
+    status_counts = {item["status"]: item["count"] for item in summary.get("status_counts", [])}
+    report_summary = {
+        "total": summary.get("total", 0),
+        "status_counts": [
+            {"status": "success", "count": status_counts.get("success", 0)},
+            {"status": "error", "count": status_counts.get("error", 0)},
+            {"status": "pending", "count": status_counts.get("pending", 0)},
+            {"status": "unknown", "count": status_counts.get("unknown", 0)},
+        ],
+    }
+    return report_summary, recent_reports
+
+
+def _config_items(settings: Settings) -> list[dict[str, str]]:
+    return [
+        {"label": "TTS Provider", "display_value": settings.tts_provider, "visibility": "public"},
+        {"label": "TTS Language", "display_value": settings.tts_language, "visibility": "public"},
+        {"label": "TTS Voice", "display_value": settings.tts_voice, "visibility": "public"},
+        {"label": "Speaking Rate", "display_value": str(settings.tts_speaking_rate), "visibility": "public"},
+        {"label": "Audio Encoding", "display_value": settings.tts_audio_encoding, "visibility": "public"},
+        {"label": "AMI Host", "display_value": settings.ami_host, "visibility": "public"},
+        {"label": "AMI Port", "display_value": str(settings.ami_port), "visibility": "public"},
+        {"label": "SIP Channel Prefix", "display_value": settings.sip_channel_prefix, "visibility": "public"},
+        {"label": "Outbound Caller ID", "display_value": settings.outbound_caller_id, "visibility": "public"},
+        {"label": "Redis URL", "display_value": settings.redis_url, "visibility": "public"},
+        {"label": "Audio Cache Directory", "display_value": settings.audio_cache_dir, "visibility": "public"},
+        {"label": "Asterisk Sounds Directory", "display_value": settings.asterisk_sounds_dir, "visibility": "public"},
+        {"label": "Webhook Secret", "display_value": "configured" if settings.webhook_secret else "not configured", "visibility": "protected"},
+    ]
+
+
+def _record_gateway_result(provider: str, result, *, phone_number: str = "", message: str = "") -> None:
+    try:
+        record_delivery_report(
+            dep_settings(),
+            status="success" if result.success else "error",
+            provider=provider,
+            phone_number=result.phone_number or phone_number,
+            message=message,
+            error=result.error or None,
+            ami_action_id=result.ami_action_id or None,
+            audio_cached=result.was_cached if hasattr(result, "was_cached") else None,
+            text_spoken=result.text_spoken or None,
+            details=result.details or None,
+        )
+    except Exception as exc:
+        log.debug("Unable to persist delivery report: %s", exc)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Admin portal
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,32 +247,9 @@ async def admin_portal(
     elif request.url.path.endswith("/reports"):
         section = "reports"
 
-    config_items = [
-        {"label": "TTS Provider", "display_value": settings.tts_provider, "visibility": "public"},
-        {"label": "TTS Language", "display_value": settings.tts_language, "visibility": "public"},
-        {"label": "TTS Voice", "display_value": settings.tts_voice, "visibility": "public"},
-        {"label": "Speaking Rate", "display_value": str(settings.tts_speaking_rate), "visibility": "public"},
-        {"label": "Audio Encoding", "display_value": settings.tts_audio_encoding, "visibility": "public"},
-        {"label": "AMI Host", "display_value": settings.ami_host, "visibility": "public"},
-        {"label": "AMI Port", "display_value": str(settings.ami_port), "visibility": "public"},
-        {"label": "SIP Channel Prefix", "display_value": settings.sip_channel_prefix, "visibility": "public"},
-        {"label": "Outbound Caller ID", "display_value": settings.outbound_caller_id, "visibility": "public"},
-        {"label": "Redis URL", "display_value": settings.redis_url, "visibility": "public"},
-        {"label": "Audio Cache Directory", "display_value": settings.audio_cache_dir, "visibility": "public"},
-        {"label": "Asterisk Sounds Directory", "display_value": settings.asterisk_sounds_dir, "visibility": "public"},
-        {"label": "Webhook Secret", "display_value": "configured" if settings.webhook_secret else "not configured", "visibility": "protected"},
-    ]
-
-    report_summary = {
-        "total": 0,
-        "status_counts": [
-            {"status": "success", "count": 0},
-            {"status": "error", "count": 0},
-            {"status": "pending", "count": 0},
-            {"status": "unknown", "count": 0},
-        ],
-    }
-    recent_reports = []
+    settings_sections = _settings_sections(settings)
+    report_summary, recent_reports = _report_context(settings)
+    config_items = _config_items(settings)
 
     context = {
         "request": request,
@@ -148,6 +257,149 @@ async def admin_portal(
         "config_snapshot": {"source": "runtime settings", "items": config_items},
         "report_summary": report_summary,
         "recent_reports": recent_reports,
+        "basic_settings": settings_sections["basic"],
+        "advanced_settings": settings_sections["advanced"],
+        "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
+    }
+    return templates.TemplateResponse(request, "admin.html", context)
+
+
+@app.post("/admin/config/basic")
+async def admin_update_basic_config(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+):
+    form = await request.form()
+    current = load_settings_from_store()
+    data = current.model_dump()
+    for key in [
+        "tts_provider",
+        "tts_language",
+        "tts_voice",
+        "tts_speaking_rate",
+        "tts_audio_encoding",
+        "phone_regex",
+        "strip_call_prefix",
+        "playback_repeats",
+        "playback_pause_ms",
+    ]:
+        if key in form:
+            raw = str(form.get(key, "")).strip()
+            data[key] = raw if raw != "" else data.get(key)
+    updated = Settings(**data)
+    save_settings_to_store(updated)
+
+    settings = load_settings_from_store()
+    report_summary, recent_reports = _report_context(settings)
+    settings_sections = _settings_sections(settings)
+    config_items = _config_items(settings)
+    context = {
+        "request": request,
+        "active_section": "config",
+        "config_snapshot": {"source": "saved settings", "items": config_items},
+        "report_summary": report_summary,
+        "recent_reports": recent_reports,
+        "basic_settings": settings_sections["basic"],
+        "advanced_settings": settings_sections["advanced"],
+        "success_message": "Basic settings saved.",
+        "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
+    }
+    return templates.TemplateResponse(request, "admin.html", context)
+
+
+@app.post("/admin/config/advanced")
+async def admin_update_advanced_config(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+):
+    form = await request.form()
+    current = load_settings_from_store()
+    data = current.model_dump()
+    for key in [
+        "webhook_secret",
+        "google_credentials_json",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_region",
+        "aws_polly_voice_id",
+        "aws_polly_engine",
+        "openai_api_key",
+        "openai_tts_model",
+        "openai_tts_voice",
+        "elevenlabs_api_key",
+        "elevenlabs_voice_id",
+        "audio_cache_dir",
+        "asterisk_sounds_dir",
+        "audio_cache_ttl",
+        "ami_host",
+        "ami_port",
+        "ami_username",
+        "ami_secret",
+        "ami_connection_timeout",
+        "ami_response_timeout",
+        "sip_channel_prefix",
+        "outbound_caller_id",
+        "call_answer_timeout",
+        "asterisk_context",
+        "asterisk_exten",
+        "asterisk_priority",
+        "redis_url",
+        "redis_prefix",
+        "rate_limit_hourly",
+        "rate_limit_daily",
+        "delivery_report_store_path",
+        "delivery_report_max_items",
+        "host",
+        "port",
+        "debug",
+        "admin_username",
+        "admin_password",
+    ]:
+        if key in form:
+            raw = str(form.get(key, "")).strip()
+            data[key] = raw if raw != "" else data.get(key)
+    updated = Settings(**data)
+    save_settings_to_store(updated)
+
+    settings = load_settings_from_store()
+    report_summary, recent_reports = _report_context(settings)
+    settings_sections = _settings_sections(settings)
+    config_items = _config_items(settings)
+    context = {
+        "request": request,
+        "active_section": "config",
+        "config_snapshot": {"source": "saved settings", "items": config_items},
+        "report_summary": report_summary,
+        "recent_reports": recent_reports,
+        "basic_settings": settings_sections["basic"],
+        "advanced_settings": settings_sections["advanced"],
+        "success_message": "Advanced settings saved.",
+        "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
+    }
+    return templates.TemplateResponse(request, "admin.html", context)
+
+
+@app.post("/admin/reports/clear")
+async def admin_clear_old_reports(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    collector = get_delivery_report_collector(settings)
+    if hasattr(collector, "clear_old_reports"):
+        collector.clear_old_reports()
+    report_summary, recent_reports = _report_context(settings)
+    settings_sections = _settings_sections(settings)
+    context = {
+        "request": request,
+        "active_section": "reports",
+        "config_snapshot": {"source": "runtime settings", "items": _config_items(settings)},
+        "report_summary": report_summary,
+        "recent_reports": recent_reports,
+        "basic_settings": settings_sections["basic"],
+        "advanced_settings": settings_sections["advanced"],
+        "success_message": "Old reports cleared.",
+        "report_clear_supported": True,
     }
     return templates.TemplateResponse(request, "admin.html", context)
 
@@ -170,15 +422,13 @@ async def twilio_webhook(
     log.info("Twilio SMS from=%s body=%r", From, Body[:80])
     result = gateway.process(sms)
     _log_result(result)
-    # Twilio expects an empty TwiML response (or a <Response/> body)
+    _record_gateway_result("twilio", result, phone_number=From or To, message=Body[:120])
     return '<?xml version="1.0" encoding="UTF-8"?><Response/>'
 
 
 def _verify_twilio_signature(request: Request, settings: Settings) -> None:
     if not settings.webhook_secret:
         return
-    # Twilio signs requests with X-Twilio-Signature (HMAC-SHA1 of URL+params)
-    # For full production use, install twilio library and use RequestValidator.
     sig = request.headers.get("X-Twilio-Signature", "")
     if not sig:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Missing Twilio signature")
@@ -190,8 +440,8 @@ def _verify_twilio_signature(request: Request, settings: Settings) -> None:
 
 class VonagePayload(BaseModel):
     text: str
-    msisdn: str = ""        # sender
-    to: str = ""            # receiver
+    msisdn: str = ""
+    to: str = ""
     messageId: str = ""
 
 
@@ -199,6 +449,7 @@ class VonagePayload(BaseModel):
 async def vonage_webhook(
     payload: VonagePayload,
     gateway: SMSGateway = Depends(dep_gateway),
+    settings: Settings = Depends(dep_settings),
 ):
     sms = IncomingSMS(
         body=payload.text,
@@ -209,6 +460,7 @@ async def vonage_webhook(
     log.info("Vonage SMS from=%s body=%r", payload.msisdn, payload.text[:80])
     result = gateway.process(sms)
     _log_result(result)
+    _record_gateway_result("vonage", result, phone_number=payload.msisdn or payload.to, message=payload.text[:120])
     return {"status": "ok" if result.success else "error", "detail": result.error or None}
 
 
@@ -220,8 +472,8 @@ class GenericSMSPayload(BaseModel):
     body: str
     from_number: str = ""
     to_number: str = ""
-    destination: str = ""   # explicit override for the call destination
-    secret: str = ""        # optional per-request secret
+    destination: str = ""
+    secret: str = ""
 
 
 @app.post("/sms/generic")
@@ -245,6 +497,7 @@ async def generic_webhook(
     log.info("Generic SMS body=%r dest=%s", payload.body[:80], payload.destination)
     result = gateway.process(sms)
     _log_result(result)
+    _record_gateway_result("generic", result, phone_number=payload.destination or payload.from_number or payload.to_number, message=payload.body[:120])
 
     if not result.success:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, result.error)
@@ -299,7 +552,6 @@ async def health(settings: Settings = Depends(dep_settings)):
 
 @app.get("/cache/stats")
 async def cache_stats(settings: Settings = Depends(dep_settings)):
-    from pathlib import Path
     cache_dir = Path(settings.audio_cache_dir)
     files = list(cache_dir.glob("*.wav"))
     total_bytes = sum(f.stat().st_size for f in files)
@@ -343,6 +595,7 @@ async def debug_call(
 
     sms = IncomingSMS(body=req.text, destination=req.phone, provider="debug")
     result = gateway.process(sms)
+    _record_gateway_result("debug", result, phone_number=req.phone, message=req.text[:120])
     return {
         "success": result.success,
         "phone_number": result.phone_number,

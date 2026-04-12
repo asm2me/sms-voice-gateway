@@ -19,6 +19,95 @@
   <a href="/admin/reports" class="{% if active_section == 'reports' %}active{% endif %}">Delivery Reports</a>
 </nav>
 
+{% if success_message %}
+<div class="empty-state">
+  <h3>{{ success_message }}</h3>
+</div>
+{% endif %}
+
+{% if active_section == 'reports' %}
+<section class="card reports-panel">
+  <div class="card-header">
+    <div>
+      <p class="eyebrow">Delivery Reports</p>
+      <h2>Recent delivery activity</h2>
+      <p class="muted">Persisted attempts, statuses, destinations, and AMI actions.</p>
+    </div>
+    <div class="page-actions">
+      <a class="button button-secondary" href="/admin/reports">Refresh</a>
+      {% if report_clear_supported %}
+      <form method="post" action="/admin/reports/clear" class="inline-form">
+        <button type="submit" class="button button-secondary">Clear Old Reports</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="status-grid report-summary-grid">
+    <div class="stat-card">
+      <span class="stat-label">Success</span>
+      <strong>{{ report_summary.success }}</strong>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Error</span>
+      <strong>{{ report_summary.error }}</strong>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Pending</span>
+      <strong>{{ report_summary.pending }}</strong>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Unknown</span>
+      <strong>{{ report_summary.unknown }}</strong>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Total</span>
+      <strong>{{ report_summary.total }}</strong>
+    </div>
+  </div>
+
+  {% if recent_reports %}
+  <div class="table-wrap">
+    <table class="data-table report-table">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Phone Number</th>
+          <th>Status</th>
+          <th>Destination</th>
+          <th>Message Excerpt</th>
+          <th>AMI Action ID</th>
+          <th>Provider</th>
+          <th>Error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for report in recent_reports %}
+        <tr>
+          <td class="mono">{{ report.timestamp }}</td>
+          <td class="mono">{{ report.phone_number }}</td>
+          <td>
+            <span class="status-badge status-{{ report.status_class }}">{{ report.status }}</span>
+          </td>
+          <td class="mono">{{ report.destination }}</td>
+          <td>{{ report.message_excerpt }}</td>
+          <td class="mono">{{ report.ami_action_id }}</td>
+          <td>{{ report.source }}</td>
+          <td>{{ report.error or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h3>No delivery reports yet</h3>
+    <p>Reports will appear here once SMS messages are processed and calls are initiated.</p>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
 <div class="admin-grid">
   <section class="card">
     <div class="card-header">
@@ -48,56 +137,77 @@
       </tbody>
     </table>
   </section>
+</div>
+
+{% if active_section == 'config' %}
+<div class="admin-grid">
+  <section class="card">
+    <div class="card-header">
+      <div>
+        <p class="eyebrow">Basic Settings</p>
+        <h2>Editable operational settings</h2>
+      </div>
+      <span class="pill">/admin/config/basic</span>
+    </div>
+
+    <form method="post" action="/admin/config/basic" class="admin-form">
+      {% for field in basic_settings %}
+      <label class="field-group">
+        <span class="field-label">{{ field.label }}</span>
+        {% if field.type == 'bool' %}
+        <select name="{{ field.name }}">
+          <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
+          <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
+        </select>
+        {% elif field.name in ['tts_provider', 'tts_audio_encoding'] %}
+        <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
+        {% elif field.name in ['tts_speaking_rate'] %}
+        <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
+        {% elif field.name in ['playback_repeats', 'playback_pause_ms'] %}
+        <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
+        {% else %}
+        <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
+        {% endif %}
+        <small class="muted">{{ field.name }}</small>
+      </label>
+      {% endfor %}
+      <button type="submit" class="button">Save Basic Settings</button>
+    </form>
+  </section>
 
   <section class="card">
     <div class="card-header">
       <div>
-        <p class="eyebrow">Delivery Reports</p>
-        <h2>Recent status summary</h2>
+        <p class="eyebrow">Advanced Settings</p>
+        <h2>Secrets, AMI, Redis, and storage</h2>
       </div>
-      <span class="pill">{{ report_summary.total }} total</span>
+      <span class="pill">/admin/config/advanced</span>
     </div>
 
-    <div class="status-grid">
-      {% for stat in report_summary["status_counts"] %}
-      <div class="stat-card">
-        <span class="stat-label">{{ stat.status }}</span>
-        <strong>{{ stat.count }}</strong>
-      </div>
+    <form method="post" action="/admin/config/advanced" class="admin-form">
+      {% for field in advanced_settings %}
+      <label class="field-group">
+        <span class="field-label">{{ field.label }}</span>
+        {% if field.is_secret %}
+        <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
+        {% elif field.type == 'bool' %}
+        <select name="{{ field.name }}">
+          <option value="true" {% if field.raw_value == 'True' or field.raw_value == 'true' %}selected{% endif %}>True</option>
+          <option value="false" {% if field.raw_value == 'False' or field.raw_value == 'false' %}selected{% endif %}>False</option>
+        </select>
+        {% elif field.name in ['ami_port', 'ami_connection_timeout', 'ami_response_timeout', 'audio_cache_ttl', 'call_answer_timeout', 'rate_limit_hourly', 'rate_limit_daily', 'delivery_report_max_items', 'port'] %}
+        <input type="number" step="1" name="{{ field.name }}" value="{{ field.raw_value }}" />
+        {% elif field.name in ['tts_speaking_rate'] %}
+        <input type="number" step="0.01" name="{{ field.name }}" value="{{ field.raw_value }}" />
+        {% else %}
+        <input type="text" name="{{ field.name }}" value="{{ field.raw_value }}" />
+        {% endif %}
+        <small class="muted">{{ field.name }}</small>
+      </label>
       {% endfor %}
-    </div>
-
-    {% if recent_reports %}
-    <table class="data-table report-table">
-      <thead>
-        <tr>
-          <th>Timestamp</th>
-          <th>Phone</th>
-          <th>Status</th>
-          <th>Destination</th>
-          <th>Message</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for report in recent_reports %}
-        <tr>
-          <td>{{ report.timestamp }}</td>
-          <td class="mono">{{ report.phone_number }}</td>
-          <td>
-            <span class="status-badge status-{{ report.status_class }}">{{ report.status }}</span>
-          </td>
-          <td class="mono">{{ report.destination }}</td>
-          <td>{{ report.message_excerpt }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <div class="empty-state">
-      <h3>No delivery reports yet</h3>
-      <p>Reports will appear here once SMS messages are processed and calls are initiated.</p>
-    </div>
-    {% endif %}
+      <button type="submit" class="button">Save Advanced Settings</button>
+    </form>
   </section>
 </div>
+{% endif %}
 {% endblock %}
