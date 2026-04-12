@@ -5,7 +5,7 @@
   <div class="hero-copy">
     <p class="eyebrow">Administration</p>
     <h1>SMS Voice Gateway Control Center</h1>
-    <p class="muted">Manage configuration, inspect delivery activity, and keep the gateway secure.</p>
+    <p class="muted">Manage configuration, inspect delivery activity, and operate direct SIP delivery securely.</p>
   </div>
 
   <div class="hero-actions">
@@ -20,7 +20,6 @@
   <a href="/admin/health" class="{% if active_section == 'health' %}active{% endif %}">Health</a>
   <a href="/admin/config" class="{% if active_section == 'config' %}active{% endif %}">Configuration</a>
   <a href="/admin/reports" class="{% if active_section == 'reports' %}active{% endif %}">Delivery Reports</a>
-  <a href="/admin/ami-debug" class="{% if active_section == 'ami-debug' %}active{% endif %}">AMI Debug</a>
 </nav>
 
 {% if success_message %}
@@ -187,7 +186,7 @@
     <div>
       <p class="eyebrow">Delivery Reports</p>
       <h2>Recent delivery activity</h2>
-      <p class="muted">Persisted attempts, statuses, destinations, and AMI actions.</p>
+      <p class="muted">Persisted attempts, statuses, destinations, and direct SIP delivery details.</p>
     </div>
     <div class="page-actions">
       <span class="pill live-indicator"><span class="live-dot"></span> Live auto-refresh</span>
@@ -237,7 +236,7 @@
           <th>Status</th>
           <th>Destination</th>
           <th>Message Excerpt</th>
-          <th>AMI Action ID</th>
+          <th>SIP/Call Reference</th>
           <th>Provider</th>
           <th>Error</th>
         </tr>
@@ -252,7 +251,7 @@
           </td>
           <td class="mono">{{ report.destination }}</td>
           <td>{{ report.message_excerpt }}</td>
-          <td class="mono">{{ report.ami_action_id }}</td>
+          <td class="mono">{{ report.sip_call_id or report.sip_account_id or report.ami_action_id or '—' }}</td>
           <td>{{ report.source }}</td>
           <td>{{ report.error or '—' }}</td>
         </tr>
@@ -273,7 +272,7 @@
     <div>
       <p class="eyebrow">Delivery Queue</p>
       <h2>Outbound voice delivery queue and status</h2>
-      <p class="muted">Track queued jobs, retry state, AMI action IDs, and current delivery outcome from the reports page.</p>
+      <p class="muted">Track queued jobs, retry state, SIP call references, and current delivery outcome from the reports page.</p>
     </div>
     <div class="page-actions">
       <span class="pill">{{ queue_summary.active_label or 'Monitoring' }}</span>
@@ -311,7 +310,7 @@
           <th>Attempts</th>
           <th>Retry Interval</th>
           <th>Next Attempt</th>
-          <th>AMI Action ID</th>
+          <th>SIP/Call Reference</th>
           <th>Message</th>
           <th>Last Error</th>
         </tr>
@@ -328,7 +327,7 @@
           <td class="mono">{{ item.attempts }}/{{ item.max_attempts }}</td>
           <td class="mono">{{ item.retry_interval_seconds }}s</td>
           <td class="mono">{{ item.next_attempt_at or '—' }}</td>
-          <td class="mono">{{ item.ami_action_id or '—' }}</td>
+          <td class="mono">{{ item.sip_call_id or item.sip_account_id or item.ami_action_id or '—' }}</td>
           <td class="message-preview">{{ item.body_preview or item.body or '—' }}</td>
           <td>{{ item.last_error or '—' }}</td>
         </tr>
@@ -348,8 +347,8 @@
   <div class="card-header">
     <div>
       <p class="eyebrow">Live Call Tracking</p>
-      <h2>Current active channels from Asterisk</h2>
-      <p class="muted">This section auto-refreshes and shows active calls in near real time from AMI channel data.</p>
+      <h2>Current direct SIP activity</h2>
+      <p class="muted">This section auto-refreshes and shows current direct SIP runtime activity from the gateway process.</p>
     </div>
     <div class="page-actions">
       <span class="pill" id="live-calls-count">{{ live_calls.active_count }} active</span>
@@ -357,7 +356,7 @@
     </div>
   </div>
 
-  {% if live_calls.items %}
+  {% if live_calls["items"] %}
   <div class="table-wrap">
     <table class="data-table live-calls-table">
       <thead>
@@ -373,7 +372,7 @@
         </tr>
       </thead>
       <tbody id="live-calls-body">
-        {% for call in live_calls.items %}
+        {% for call in live_calls["items"] %}
         <tr>
           <td class="mono">{{ call.channel or '—' }}</td>
           <td class="mono">{{ call.caller_id_num or call.caller_id_name or '—' }}</td>
@@ -450,80 +449,6 @@
 </section>
 {% endif %}
 
-{% if active_section == 'ami-debug' %}
-<section class="card ami-debug-card">
-  <div class="card-header">
-    <div>
-      <p class="eyebrow">AMI Debug</p>
-      <h2>Connection and credentials check</h2>
-      <p class="muted">Verify the current AMI target and test connectivity using the configured manager credentials.</p>
-    </div>
-    <div class="page-actions">
-      <a class="button button-secondary" href="/admin/ami-debug">Refresh</a>
-      <span class="pill">Admin protected</span>
-    </div>
-  </div>
-
-  <div class="status-grid ami-debug-summary">
-    <div class="stat-card">
-      <span class="stat-label">Target</span>
-      <strong class="mono">{{ ami_debug.target }}</strong>
-    </div>
-    <div class="stat-card">
-      <span class="stat-label">Credentials</span>
-      <strong>{{ ami_debug.credentials_status }}</strong>
-    </div>
-    <div class="stat-card">
-      <span class="stat-label">Ping</span>
-      <strong>{{ ami_debug.ping_ok }}</strong>
-    </div>
-    <div class="stat-card">
-      <span class="stat-label">Active Channels</span>
-      <strong>{{ ami_debug.active_channels_count if ami_debug.active_channels_count != '' else '—' }}</strong>
-    </div>
-  </div>
-
-  <div class="settings-group">
-    <h3 class="settings-group-title">Connection details</h3>
-    <div class="table-wrap">
-      <table class="data-table">
-        <tbody>
-          <tr>
-            <td>AMI target</td>
-            <td class="mono">{{ ami_debug.target }}</td>
-          </tr>
-          <tr>
-            <td>Username/secret</td>
-            <td>{{ ami_debug.credentials_status }}</td>
-          </tr>
-          <tr>
-            <td>Connection timeout</td>
-            <td class="mono">{{ ami_debug.connection_timeout }}s</td>
-          </tr>
-          <tr>
-            <td>Response timeout</td>
-            <td class="mono">{{ ami_debug.response_timeout }}s</td>
-          </tr>
-          <tr>
-            <td>Test status</td>
-            <td>
-              <span class="status-badge status-{{ 'success' if ami_debug.status == 'connected' else 'error' if ami_debug.status == 'error' else 'unknown' }}">
-                {{ ami_debug.status }}
-              </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="settings-group">
-    <h3 class="settings-group-title">Debug result</h3>
-    <p class="muted">{{ ami_debug.detail }}</p>
-  </div>
-</section>
-{% endif %}
-
 {% if active_section == 'overview' %}
 <section class="dashboard-grid">
   <article class="card dashboard-card">
@@ -541,7 +466,7 @@
         <strong>{{ config_snapshot["items"][0].display_value }}</strong>
       </div>
       <div class="metric">
-        <span class="metric-label">AMI Host</span>
+        <span class="metric-label">TTS Language</span>
         <strong class="mono">{{ config_snapshot["items"][1].display_value }}</strong>
       </div>
       <div class="metric">
@@ -661,7 +586,7 @@
       <div class="card-header compact-header">
         <div>
           <h3 class="settings-group-title">Outbound voice queue</h3>
-          <p class="muted">Queued jobs, retry state, and AMI delivery progress for outbound voice calls.</p>
+          <p class="muted">Queued jobs, retry state, and direct SIP delivery progress for outbound voice calls.</p>
         </div>
         <span class="pill">{{ queue_summary.active_label or 'Monitoring' }}</span>
       </div>
@@ -678,7 +603,7 @@
               <th>Attempts</th>
               <th>Retry Interval</th>
               <th>Next Attempt</th>
-              <th>AMI Action ID</th>
+              <th>SIP/Call Reference</th>
               <th>Body Preview</th>
               <th>Last Error</th>
             </tr>
@@ -695,7 +620,7 @@
               <td class="mono">{{ item.attempts }}/{{ item.max_attempts }}</td>
               <td class="mono">{{ item.retry_interval_seconds }}s</td>
               <td class="mono">{{ item.next_attempt_at or '—' }}</td>
-              <td class="mono">{{ item.ami_action_id or '—' }}</td>
+              <td class="mono">{{ item.sip_call_id or item.sip_account_id or item.ami_action_id or '—' }}</td>
               <td class="message-preview">{{ item.body_preview }}</td>
               <td>{{ item.last_error or '—' }}</td>
             </tr>

@@ -42,7 +42,6 @@ from .admin_reports import (
     get_delivery_report_collector,
     record_delivery_report,
 )
-from .ami_service import AMIService
 from .cache import AudioCache, RateLimiter, get_redis
 from .config import Settings
 from .config_store import (
@@ -441,17 +440,6 @@ def _admin_context(
     return context
 
 
-def _ami_debug_probe(settings: Settings) -> dict:
-    service = AMIService(settings)
-    result = service.ping_detail()
-    return {
-        "ok": bool(result.get("ok")),
-        "status": "healthy" if result.get("ok") else "degraded",
-        "summary": str(result.get("summary", "AMI connection test failed.")),
-        "details": list(result.get("details", [])),
-    }
-
-
 def _build_health_context(settings: Settings) -> dict:
     checked_at = time.time()
     services: list[dict] = []
@@ -516,28 +504,32 @@ def _build_health_context(settings: Settings) -> dict:
             details=[f"URL: {settings.redis_url}"],
         )
 
-    ami_probe = _ami_debug_probe(settings)
-    ami_ok = bool(ami_probe["ok"])
-    ami_details = list(ami_probe["details"])
-    if ami_ok:
-        try:
-            ami_channels = len(AMIService(settings).get_active_channels())
-            ami_details.append(f"Active channels: {ami_channels}")
-        except Exception as exc:
-            ami_details.append(f"Active channel query failed: {exc}")
+    sip_status = build_pjsua2_service(settings).status_detail()
+    sip_ok = bool(sip_status.get("available")) and bool(sip_status.get("registered"))
+    sip_summary = (
+        f"Direct SIP UA is registered with account {sip_status.get('current_account_id', 'unknown')}."
+        if sip_ok
+        else "Direct SIP UA is not registered."
+    )
+    sip_details = [
+        f"Engine: {sip_status.get('engine', 'pjsua2')}",
+        f"Available: {'yes' if sip_status.get('available') else 'no'}",
+        f"Registered: {'yes' if sip_status.get('registered') else 'no'}",
+        f"Current account: {sip_status.get('current_account_id') or '—'}",
+    ]
+    if sip_status.get("import_error"):
+        sip_details.append(f"Import error: {sip_status.get('import_error')}")
 
     add_service(
-        "AMI",
+        "Direct SIP UA",
         "Telephony",
-        ami_ok,
-        ami_probe["summary"],
-        details=ami_details,
+        sip_ok,
+        sip_summary,
+        details=sip_details,
         notes=[
-            "AMI health uses short-lived login, ping, and logoff probes. It does not keep a persistent manager session open.",
-            "Because this gateway opens AMI only for probes and originate requests, Asterisk may not show a continuously connected manager user except during those short operations.",
-            "If this gateway runs in Docker, 127.0.0.1 usually points to the gateway container, not the Asterisk host.",
-            "Use the AMI debug section to verify connectivity and credentials without restarting the app.",
-            "Typical requirements: enabled AMI, correct manager username/secret, correct bind/permit rules, and port 5038 reachable.",
+            "Direct outbound delivery now uses the PJSUA2 runtime instead of Asterisk Manager Interface originate.",
+            "The PJSUA2 Python bindings must be installed in the deployment environment.",
+            "A SIP account must be mapped to the authenticated SMPP username for outbound delivery to work.",
         ],
     )
 
@@ -652,14 +644,14 @@ def _build_health_context(settings: Settings) -> dict:
             {"label": "Healthy Services", "value": str(healthy_count), "detail": "Passing checks", "class": "success"},
             {"label": "Total Services", "value": str(total_count), "detail": "Monitored components", "class": "unknown"},
             {"label": "Redis", "value": "Online" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "Offline", "detail": settings.redis_url, "class": "success" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
-            {"label": "AMI", "value": "Connected" if any(d['label'] == 'AMI' and d['status_label'] == 'Healthy' for d in dependencies) else "Disconnected", "detail": f"{settings.ami_host}:{settings.ami_port}", "class": "success" if any(d['label'] == 'AMI' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
+            {"label": "Direct SIP UA", "value": "Registered" if any(d['label'] == 'Direct SIP UA' and d['status_label'] == 'Healthy' for d in dependencies) else "Not Registered", "detail": next((d["detail"] for d in dependencies if d["label"] == "Direct SIP UA"), "PJSUA2"), "class": "success" if any(d['label'] == 'Direct SIP UA' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
             {"label": "SMPP", "value": "Listening" if smpp_ok else "Enabled / Not Listening" if smpp_enabled else "Disabled", "detail": f"{settings.smpp_host}:{settings.smpp_port}", "class": "success" if smpp_ok else "warning" if smpp_enabled else "danger"},
         ],
         "services": services,
         "dependencies": dependencies,
         "notes": [
             "Restart controls are safety-gated and may be disabled depending on the runtime environment.",
-            "AMI health depends on TCP connectivity, AMI login credentials, and Asterisk manager availability.",
+            "Direct SIP UA health depends on the PJSUA2 runtime, valid SIP credentials, and successful account registration.",
             "Configuration changes are loaded from persistent storage per request and apply automatically.",
             "SMPP support is a lightweight listener for inbound bind/connect verification and should be paired with a production SMPP stack if you need full message routing.",
         ],
@@ -798,37 +790,20 @@ def _restart_action_result(settings: Settings, action: str) -> dict:
 @app.get("/admin/config", response_class=HTMLResponse)
 @app.get("/admin/reports", response_class=HTMLResponse)
 @app.get("/admin/health", response_class=HTMLResponse)
-@app.get("/admin/ami-debug", response_class=HTMLResponse)
 async def admin_portal(
     request: Request,
     _: None = Depends(dep_admin_credentials),
     settings: Settings = Depends(dep_settings),
 ):
     section = "overview"
-    ami_debug = None
     if request.url.path.endswith("/config"):
         section = "config"
     elif request.url.path.endswith("/reports"):
         section = "reports"
     elif request.url.path.endswith("/health"):
         section = "health"
-    elif request.url.path.endswith("/ami-debug"):
-        section = "ami-debug"
-        ami_debug = _ami_debug_probe(settings)
 
     context = _admin_context(request, settings, active_section=section)
-    if ami_debug is not None:
-        context["ami_debug"] = {
-            "target": f"{settings.ami_host}:{settings.ami_port}",
-            "credentials_status": "configured" if settings.ami_username and settings.ami_secret else "missing",
-            "ping_ok": ami_debug["ok"],
-            "status_class": "success" if ami_debug["ok"] else "danger",
-            "status_label": "connected" if ami_debug["ok"] else "error",
-            "detail": ami_debug["summary"],
-            "details": ami_debug["details"],
-            "connection_timeout": settings.ami_connection_timeout,
-            "response_timeout": settings.ami_response_timeout,
-        }
     return templates.TemplateResponse(request, "admin.html", context)
 
 
@@ -1146,13 +1121,7 @@ async def generic_webhook(
 @app.get("/health")
 async def health(settings: Settings = Depends(dep_settings)):
     from .ami_service import AMIService
-    ami_ok = False
     redis_ok = False
-
-    try:
-        ami_ok = AMIService(settings).ping()
-    except Exception as e:
-        log.debug("AMI health check failed: %s", e)
 
     try:
         r = get_redis(settings)
@@ -1160,16 +1129,16 @@ async def health(settings: Settings = Depends(dep_settings)):
     except Exception as e:
         log.debug("Redis health check failed: %s", e)
 
-    healthy = ami_ok and redis_ok
+    sip_ok = bool(build_pjsua2_service(settings).status_detail().get("registered"))
+    healthy = sip_ok and redis_ok
     return JSONResponse(
         content={
             "status": "healthy" if healthy else "degraded",
-            "ami": ami_ok,
-            "redis": redis_ok,
-            "tts_provider": settings.tts_provider,
-            "sip_channel_prefix": settings.sip_channel_prefix,
-            "smpp_enabled": settings.smpp_enabled,
-            "smpp_port": settings.smpp_port,
+        "sip": build_pjsua2_service(settings).status_detail(),
+        "redis": redis_ok,
+        "tts_provider": settings.tts_provider,
+        "smpp_enabled": settings.smpp_enabled,
+        "smpp_port": settings.smpp_port,
         },
         status_code=200 if healthy else 503,
     )
@@ -1222,7 +1191,8 @@ async def debug_call(
         "phone_number": result.phone_number,
         "text_spoken": result.text_spoken,
         "audio_cached": result.was_cached,
-        "ami_action_id": result.ami_action_id,
+        "sip_call_id": result.sip_call_id,
+        "sip_account_id": result.sip_account_id,
         "error": result.error,
         "details": result.details,
     }
@@ -1230,7 +1200,7 @@ async def debug_call(
 
 def _log_result(result) -> None:
     if result.success:
-        log.info("Call queued → %s (cached=%s action=%s)",
-                 result.phone_number, result.was_cached, result.ami_action_id)
+        log.info("Call queued → %s (cached=%s sip_call_id=%s sip_account_id=%s)",
+                 result.phone_number, result.was_cached, result.sip_call_id, result.sip_account_id)
     else:
         log.error("Gateway failed for %s: %s", result.phone_number, result.error)
