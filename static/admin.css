@@ -52,9 +52,11 @@ a {
 }
 
 .content {
+  width: 100%;
   max-width: 1200px;
   margin: 0 auto;
   padding: 1.5rem;
+  overflow-x: hidden;
 }
 
 .page-header,
@@ -286,23 +288,27 @@ a {
 }
 
 .config-tab-nav {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.5rem;
   background: #ffffff;
   border: 1px solid var(--panel-border);
   border-radius: 16px;
   box-shadow: var(--shadow);
-  width: fit-content;
+  width: 100%;
 }
 
 .config-tab-label {
+  flex: 1 1 220px;
+  min-width: 0;
   padding: 0.85rem 1.15rem;
   border-radius: 12px;
   font-weight: 700;
   color: var(--muted);
   cursor: pointer;
   transition: all 0.18s ease;
+  text-align: center;
 }
 
 #config-tab-voice:checked ~ .config-tab-nav label[for="config-tab-voice"],
@@ -437,6 +443,8 @@ a {
 }
 
 .table-wrap {
+  width: 100%;
+  max-width: 100%;
   overflow-x: auto;
   border-radius: 14px;
 }
@@ -1024,20 +1032,29 @@ a {
 }
 
 @media (max-width: 900px) {
+  .content {
+    padding: 1rem;
+  }
+
   .dashboard-grid,
   .metric-grid,
   .form-grid,
   .health-hero,
   .health-service-grid,
   .health-footer-grid,
-  .inbox-queue-grid {
+  .inbox-queue-grid,
+  .dashboard-chart-grid,
+  .health-hero-metrics {
     grid-template-columns: 1fr;
   }
 
   .config-tab-nav {
-    width: 100%;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .config-tab-label {
+    flex: initial;
   }
 
   .field-span-2 {
@@ -1047,18 +1064,31 @@ a {
   .hero-panel,
   .page-header,
   .card-header,
-  .health-actions-panel {
+  .health-actions-panel,
+  .dashboard-chart-header {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  .table-actions {
+  .hero-actions,
+  .page-actions,
+  .health-actions,
+  .table-actions,
+  .form-actions {
     width: 100%;
   }
 
+  .hero-actions .button,
+  .page-actions .button,
+  .page-actions .inline-form,
+  .page-actions .inline-form .button,
   .table-actions .button,
   .table-actions .inline-form,
-  .table-actions .inline-form .button {
+  .table-actions .inline-form .button,
+  .health-actions .button,
+  .health-actions .inline-form,
+  .health-actions .inline-form .button,
+  .form-actions .button {
     width: 100%;
   }
 
@@ -1069,47 +1099,84 @@ a {
     padding: 1rem;
   }
 
-  .form-actions {
-    justify-content: stretch;
-  }
-
-  .form-actions .button {
-    width: 100%;
+  .message-preview {
+    max-width: 100%;
   }
 }
 
 @media (max-width: 720px) {
   .subnav {
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding: 0.75rem;
+  }
+
+  .subnav a {
+    text-align: center;
   }
 
   .data-table {
-    display: block;
-    overflow-x: auto;
-  }
-
-  .content {
-    padding: 1rem;
+    min-width: 640px;
   }
 
   .hero-panel,
   .card,
-  .page-header {
+  .page-header,
+  .settings-group {
     padding: 1rem;
   }
 
-  .nested-tab-nav {
-    display: grid;
+  .nested-tab-nav,
+  .config-tab-nav {
     grid-template-columns: 1fr;
   }
 
-  .health-actions {
-    width: 100%;
+  .bar-chart,
+  .stacked-bar-chart {
+    grid-template-columns: 1fr;
   }
 
-  .health-actions .button,
-  .health-actions .inline-form,
-  .health-actions .inline-form .button {
-    width: 100%;
+  .bar-chart-axis,
+  .stacked-bar-axis {
+    min-height: auto;
+    grid-auto-flow: column;
+    justify-content: space-between;
+    align-content: initial;
+  }
+
+  .bar-chart-bars {
+    min-height: 140px;
+  }
+}
+
+@media (max-width: 520px) {
+  .topbar {
+    padding: 1rem;
+  }
+
+  .brand {
+    font-size: 1rem;
+  }
+
+  .hero-panel {
+    border-radius: 18px;
+  }
+
+  .subnav {
+    grid-template-columns: 1fr;
+  }
+
+  .status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bar-track,
+  .stacked-bar-track,
+  .bar-chart-bars {
+    min-height: 120px;
+  }
+
+  .modal-card {
+    border-radius: 16px;
   }
 }

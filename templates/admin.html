@@ -757,26 +757,6 @@
 
 {% if active_section == 'config' %}
 <div class="config-page">
-  <section class="card config-card">
-    <div class="card-header">
-      <div>
-        <p class="eyebrow">Configuration</p>
-        <h2>Edit all runtime settings from the admin portal</h2>
-        <p class="muted">These values are persisted to the config store and applied immediately where supported.</p>
-      </div>
-      <span class="pill">Persisted admin config</span>
-    </div>
-
-    <div class="config-summary-grid">
-      {% for group in config_groups %}
-      <article class="stat-card stat-card-strong">
-        <span class="stat-label">{{ group.label }}</span>
-        <strong>{{ group.description }}</strong>
-      </article>
-      {% endfor %}
-    </div>
-  </section>
-
   {% macro render_input(field) -%}
     {% if field.is_secret %}
     <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
