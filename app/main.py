@@ -618,20 +618,38 @@ def _restart_action_result(settings: Settings, action: str) -> dict:
 @app.get("/admin/config", response_class=HTMLResponse)
 @app.get("/admin/reports", response_class=HTMLResponse)
 @app.get("/admin/health", response_class=HTMLResponse)
+@app.get("/admin/ami-debug", response_class=HTMLResponse)
 async def admin_portal(
     request: Request,
     _: None = Depends(dep_admin_credentials),
     settings: Settings = Depends(dep_settings),
 ):
     section = "overview"
+    ami_debug = None
     if request.url.path.endswith("/config"):
         section = "config"
     elif request.url.path.endswith("/reports"):
         section = "reports"
     elif request.url.path.endswith("/health"):
         section = "health"
+    elif request.url.path.endswith("/ami-debug"):
+        section = "ami-debug"
+        ami_debug = _ami_debug_probe(settings)
 
-    return templates.TemplateResponse(request, "admin.html", _admin_context(request, settings, active_section=section))
+    context = _admin_context(request, settings, active_section=section)
+    if ami_debug is not None:
+        context["ami_debug"] = {
+            "target": f"{settings.ami_host}:{settings.ami_port}",
+            "credentials_status": "configured" if settings.ami_username and settings.ami_secret else "missing",
+            "ping_ok": ami_debug["ok"],
+            "status_class": "success" if ami_debug["ok"] else "danger",
+            "status_label": "connected" if ami_debug["ok"] else "error",
+            "detail": ami_debug["summary"],
+            "details": ami_debug["details"],
+            "connection_timeout": settings.ami_connection_timeout,
+            "response_timeout": settings.ami_response_timeout,
+        }
+    return templates.TemplateResponse(request, "admin.html", context)
 
 
 @app.post("/admin/config/basic")
