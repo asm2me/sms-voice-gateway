@@ -129,7 +129,7 @@ async def admin_portal(request: Request, settings: Settings = Depends(dep_settin
             "config_snapshot": {"source": "runtime settings", "items": config_items},
             "report_summary": report_summary,
             "recent_reports": recent_reports,
-        },
+        }
     )
 
 
