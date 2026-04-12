@@ -270,6 +270,55 @@ a {
   gap: 1.25rem;
 }
 
+.config-tabs {
+  display: grid;
+  gap: 1rem;
+}
+
+.config-tab-input {
+  display: none;
+}
+
+.config-tab-nav {
+  display: inline-flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: #ffffff;
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  width: fit-content;
+}
+
+.config-tab-label {
+  padding: 0.85rem 1.15rem;
+  border-radius: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+#config-tab-basic:checked ~ .config-tab-nav label[for="config-tab-basic"],
+#config-tab-advanced:checked ~ .config-tab-nav label[for="config-tab-advanced"] {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 10px 18px rgba(36, 87, 214, 0.18);
+}
+
+.config-tab-panels {
+  display: grid;
+}
+
+.config-panel {
+  display: none;
+}
+
+#config-tab-basic:checked ~ .config-tab-panels .config-panel-basic,
+#config-tab-advanced:checked ~ .config-tab-panels .config-panel-advanced {
+  display: block;
+}
+
 .config-card {
   overflow: hidden;
 }
@@ -447,6 +496,12 @@ a {
   .metric-grid,
   .form-grid {
     grid-template-columns: 1fr;
+  }
+
+  .config-tab-nav {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
   }
 
   .field-span-2 {
