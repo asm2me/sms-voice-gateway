@@ -82,7 +82,7 @@
       {% endif %}
 
       {% if health.actions.restart_app.enabled %}
-      <form method="post" action="/admin/health/restart/app" class="inline-form">
+      <form method="post" action="/admin/health/restart?action=app" class="inline-form">
         <button type="submit" class="button button-danger">Restart app</button>
       </form>
       {% else %}
@@ -90,7 +90,7 @@
       {% endif %}
 
       {% if health.actions.restart_compose.enabled %}
-      <form method="post" action="/admin/health/restart/compose" class="inline-form">
+      <form method="post" action="/admin/health/restart?action=gateway" class="inline-form">
         <button type="submit" class="button button-secondary">Restart compose services</button>
       </form>
       {% else %}
@@ -131,8 +131,8 @@
       <dl class="health-service-details">
         {% for detail in service.details %}
         <div>
-          <dt>{{ detail.label }}</dt>
-          <dd class="{% if detail.mono %}mono{% endif %}">{{ detail.value }}</dd>
+          <dt>Detail</dt>
+          <dd class="mono">{{ detail }}</dd>
         </div>
         {% endfor %}
       </dl>
@@ -455,10 +455,10 @@
 
 {% if active_section == 'overview' %}
 {% set report_total = report_summary.total|default(0) %}
-{% set report_success = report_summary.success|default(0) %}
-{% set report_error = report_summary.error|default(0) %}
-{% set report_pending = report_summary.pending|default(0) %}
-{% set report_unknown = report_summary.unknown|default(0) %}
+{% set report_success = report_summary.status_counts[0].count if report_summary.status_counts|length > 0 else 0 %}
+{% set report_error = report_summary.status_counts[1].count if report_summary.status_counts|length > 1 else 0 %}
+{% set report_pending = report_summary.status_counts[2].count if report_summary.status_counts|length > 2 else 0 %}
+{% set report_unknown = report_summary.status_counts[3].count if report_summary.status_counts|length > 3 else 0 %}
 {% set report_chart_max = [report_total, report_success, report_error, report_pending, report_unknown, 1]|max %}
 {% set queue_total = queue_summary.total|default(0) %}
 {% set inbox_total = sms_inbox_summary.total|default(0) %}
@@ -553,15 +553,15 @@
       <div class="status-grid">
         <div class="stat-card">
           <span class="stat-label">Success</span>
-          <strong>{{ report_summary.success }}</strong>
+          <strong>{{ report_success }}</strong>
         </div>
         <div class="stat-card">
           <span class="stat-label">Error</span>
-          <strong>{{ report_summary.error }}</strong>
+          <strong>{{ report_error }}</strong>
         </div>
         <div class="stat-card">
           <span class="stat-label">Pending</span>
-          <strong>{{ report_summary.pending }}</strong>
+          <strong>{{ report_pending }}</strong>
         </div>
         <div class="stat-card">
           <span class="stat-label">Total</span>
@@ -1508,11 +1508,21 @@
                   </label>
                   <label class="field-group field-span-2">
                     <span class="field-label">Permissions</span>
-                    <select multiple size="8" name="permissions">
-                      {% for permission in available_permissions %}
-                      <option value="{{ permission }}">{{ permission }}</option>
+                    <div class="permission-picker">
+                      {% for group in permission_groups %}
+                      <div class="permission-group">
+                        <div class="permission-group-title">{{ group.group }}</div>
+                        <div class="permission-group-options">
+                          {% for permission in group.permissions %}
+                          <label class="permission-option">
+                            <input type="checkbox" name="permissions" value="{{ permission }}" />
+                            <span>{{ permission }}</span>
+                          </label>
+                          {% endfor %}
+                        </div>
+                      </div>
                       {% endfor %}
-                    </select>
+                    </div>
                   </label>
                 </div>
 
@@ -1564,11 +1574,21 @@
                   </label>
                   <label class="field-group field-span-2">
                     <span class="field-label">Permissions</span>
-                    <select multiple size="8" name="permissions" {% if user.auth_source == 'Bootstrap / Environment' %}disabled{% endif %}>
-                      {% for permission in available_permissions %}
-                      <option value="{{ permission }}" {% if permission in user.permissions %}selected{% endif %}>{{ permission }}</option>
+                    <div class="permission-picker {% if user.auth_source == 'Bootstrap / Environment' %}permission-picker-disabled{% endif %}">
+                      {% for group in permission_groups %}
+                      <div class="permission-group">
+                        <div class="permission-group-title">{{ group.group }}</div>
+                        <div class="permission-group-options">
+                          {% for permission in group.permissions %}
+                          <label class="permission-option">
+                            <input type="checkbox" name="permissions" value="{{ permission }}" {% if permission in user.permissions %}checked{% endif %} {% if user.auth_source == 'Bootstrap / Environment' %}disabled{% endif %} />
+                            <span>{{ permission }}</span>
+                          </label>
+                          {% endfor %}
+                        </div>
+                      </div>
                       {% endfor %}
-                    </select>
+                    </div>
                   </label>
                 </div>
 

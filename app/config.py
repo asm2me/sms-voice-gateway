@@ -47,6 +47,68 @@ class SystemUser(BaseModel):
     permissions: list[str] = Field(default_factory=list)
 
 
+SYSTEM_USER_PERMISSION_GROUPS: list[dict[str, object]] = [
+    {
+        "group": "Overview",
+        "permissions": [
+            "Overview — Read",
+        ],
+    },
+    {
+        "group": "Health",
+        "permissions": [
+            "Health — Read",
+            "Health — Restart",
+        ],
+    },
+    {
+        "group": "Configuration",
+        "permissions": [
+            "Configuration — Read",
+            "Configuration — Write",
+        ],
+    },
+    {
+        "group": "Delivery Reports",
+        "permissions": [
+            "Delivery Reports — Read",
+            "Delivery Reports — Write",
+        ],
+    },
+    {
+        "group": "Queue",
+        "permissions": [
+            "Queue — Read",
+            "Queue — Create",
+            "Queue — Update",
+            "Queue — Delete",
+            "Queue — Batch Update",
+            "Queue — Batch Delete",
+        ],
+    },
+    {
+        "group": "Test Send",
+        "permissions": [
+            "Test Send — Execute",
+        ],
+    },
+    {
+        "group": "System Users",
+        "permissions": [
+            "System Users — Read",
+            "System Users — Write",
+        ],
+    },
+]
+
+
+def get_system_user_permissions() -> list[str]:
+    permissions: list[str] = []
+    for group in SYSTEM_USER_PERMISSION_GROUPS:
+        permissions.extend(group["permissions"])  # type: ignore[arg-type]
+    return permissions
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

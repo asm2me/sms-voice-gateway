@@ -35,15 +35,22 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from .admin_reports import (
+    batch_delete_queue_items,
+    batch_update_queue_item_status,
+    delete_queue_item,
     export_delivery_reports_csv,
     export_delivery_reports_xlsx,
     export_inbox_messages_csv,
     export_inbox_messages_xlsx,
     get_delivery_report_collector,
+    get_queue_item,
+    get_queue_store,
+    query_queue_items,
     record_delivery_report,
+    record_queue_item,
 )
 from .cache import AudioCache, RateLimiter, get_redis
-from .config import SIPAccount, SMPPAccount, Settings, SystemUser
+from .config import SIPAccount, SMPPAccount, Settings, SystemUser, get_system_user_permissions
 from .config_store import (
     ADMIN_MANAGED_FIELDS,
     ensure_default_accounts,
@@ -51,7 +58,7 @@ from .config_store import (
     save_settings_to_store,
 )
 from .pjsua2_service import build_pjsua2_service
-from .sms_handler import IncomingSMS, SMSGateway
+from .sms_handler import IncomingSMS, SMSGateway, _utc_now_iso
 from .smpp_service import SMPPService
 
 logging.basicConfig(
@@ -225,14 +232,32 @@ def _config_items(settings: Settings) -> list[dict[str, str]]:
     ]
 
 
-def _build_queue_context(settings: Settings) -> tuple[dict, list[dict], dict, list[dict]]:
-    from .admin_reports import list_inbox_messages, list_queue_items, summarize_inbox, summarize_queue
+def _build_queue_context(
+    settings: Settings,
+    *,
+    search: str = "",
+    status_filter: str = "",
+    provider_filter: str = "",
+) -> tuple[dict, list[dict], dict, list[dict], dict]:
+    from .admin_reports import list_inbox_messages, summarize_inbox, summarize_queue
 
     inbox_summary = summarize_inbox(settings)
     queue_summary = summarize_queue(settings)
     recent_inbox_messages = list_inbox_messages(settings, limit=10)
-    recent_queue_items = list_queue_items(settings, limit=10)
-    return inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items
+    recent_queue_items = query_queue_items(
+        settings,
+        search=search,
+        status=status_filter,
+        provider=provider_filter,
+        limit=100,
+    )
+    queue_filters = {
+        "search": search,
+        "status": status_filter,
+        "provider": provider_filter,
+        "has_filters": bool(search.strip() or status_filter.strip() or provider_filter.strip()),
+    }
+    return inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters
 
 
 def _build_live_call_context(settings: Settings) -> dict:
@@ -407,6 +432,70 @@ def _build_system_user_from_form(form) -> SystemUser:
     )
 
 
+def _build_queue_item_from_form(form, *, provider: str = "admin") -> dict[str, str]:
+    return {
+        "phone_number": str(form.get("phone_number", "")).strip(),
+        "provider": str(form.get("provider", provider)).strip() or provider,
+        "body": str(form.get("body", "")).strip(),
+        "status": str(form.get("status", "queued")).strip() or "queued",
+        "last_error": str(form.get("last_error", "")).strip(),
+        "ami_action_id": str(form.get("ami_action_id", "")).strip(),
+        "item_id": str(form.get("item_id", "")).strip(),
+        "attempts": str(form.get("attempts", "0")).strip(),
+        "max_attempts": str(form.get("max_attempts", "")).strip(),
+        "retry_interval_seconds": str(form.get("retry_interval_seconds", "")).strip(),
+        "next_attempt_at": str(form.get("next_attempt_at", "")).strip(),
+    }
+
+
+def _simulate_test_send(settings: Settings, *, phone_number: str, body: str, provider: str = "admin-test") -> dict:
+    queue_item = record_queue_item(
+        settings,
+        phone_number=phone_number,
+        provider=provider,
+        body=body,
+        status="queued",
+    )
+    gateway = SMSGateway(settings)
+    sms = IncomingSMS(body=body, destination=phone_number, provider=provider)
+    result = gateway.process(sms)
+
+    if result.success:
+        queue_store = get_queue_store(settings)
+        current = queue_store.get(queue_item.id)
+        if current is not None:
+            current.status = "delivered"
+            current.updated_at = _utc_now_iso()
+            current.last_error = ""
+            current.ami_action_id = result.ami_action_id or current.ami_action_id
+            queue_store.upsert(current)
+    else:
+        queue_store = get_queue_store(settings)
+        current = queue_store.get(queue_item.id)
+        if current is not None:
+            current.status = "failed"
+            current.updated_at = _utc_now_iso()
+            current.last_error = result.error or "Test send failed"
+            current.ami_action_id = result.ami_action_id or current.ami_action_id
+            queue_store.upsert(current)
+
+    return {
+        "queue_item": (get_queue_item(settings, queue_item.id) or queue_item.to_dict()),
+        "result": {
+            "success": result.success,
+            "phone_number": result.phone_number,
+            "text_spoken": result.text_spoken,
+            "audio_path": result.audio_path,
+            "was_cached": result.was_cached,
+            "ami_action_id": result.ami_action_id,
+            "sip_call_id": result.sip_call_id,
+            "sip_account_id": result.sip_account_id,
+            "error": result.error,
+            "details": result.details,
+        },
+    }
+
+
 def _build_sip_profile_from_account(account: SIPAccount) -> dict[str, str | bool | int | dict]:
     domain = account.domain or account.host
     proxy_uri = account.outbound_proxy.strip()
@@ -568,7 +657,15 @@ def _admin_context(
     health_context: dict | None = None,
 ) -> dict:
     report_summary, recent_reports = _report_context(settings)
-    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items = _build_queue_context(settings)
+    queue_search = str(request.query_params.get("search", "")).strip()
+    queue_status = str(request.query_params.get("status", "")).strip()
+    queue_provider = str(request.query_params.get("provider", "")).strip()
+    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters = _build_queue_context(
+        settings,
+        search=queue_search,
+        status_filter=queue_status,
+        provider_filter=queue_provider,
+    )
     live_calls = _build_live_call_context(settings)
     sip_trunks_health = _build_sip_trunk_health_context(settings)
     health_payload = health_context or _build_health_context(settings)
@@ -584,6 +681,7 @@ def _admin_context(
         "recent_inbox_messages": recent_inbox_messages,
         "queue_summary": queue_summary,
         "recent_queue_items": recent_queue_items,
+        "queue_filters": queue_filters if 'queue_filters' in locals() else {"search": "", "status": "", "provider": "", "has_filters": False},
         "live_calls": live_calls,
         "basic_settings": _build_setting_items(
             settings,
@@ -670,15 +768,15 @@ def _admin_context(
         "sip_accounts": [account.model_dump() for account in settings.sip_accounts],
         "smpp_accounts": [account.model_dump() for account in settings.smpp_accounts],
         "system_users": [user.model_dump() for user in settings.system_users],
-        "available_permissions": [
-            "Overview — Read",
-            "Health — Read",
-            "Health — Write",
-            "Configuration — Read",
-            "Configuration — Write",
-            "Delivery Reports — Read",
-            "Delivery Reports — Write",
-            "System Users — Write",
+        "available_permissions": get_system_user_permissions(),
+        "permission_groups": [
+            {"group": "Overview", "permissions": ["Overview — Read"]},
+            {"group": "Health", "permissions": ["Health — Read", "Health — Restart"]},
+            {"group": "Configuration", "permissions": ["Configuration — Read", "Configuration — Write"]},
+            {"group": "Delivery Reports", "permissions": ["Delivery Reports — Read", "Delivery Reports — Write"]},
+            {"group": "Queue", "permissions": ["Queue — Read", "Queue — Create", "Queue — Update", "Queue — Delete", "Queue — Batch Update", "Queue — Batch Delete"]},
+            {"group": "Test Send", "permissions": ["Test Send — Execute"]},
+            {"group": "System Users", "permissions": ["System Users — Read", "System Users — Write"]},
         ],
         "smpp_sip_assignments": [
             {
@@ -1097,7 +1195,7 @@ async def admin_update_basic_config(
     )
     return templates.TemplateResponse(
         request,
-ba        "admin.html",
+        "admin.html",
         _admin_context(request, settings, active_section="config", success_message="Basic settings saved and applied immediately."),
     )
 
@@ -1348,13 +1446,109 @@ async def admin_delete_system_user(
     )
 
 
+@app.post("/admin/queue/test-send")
+async def admin_queue_test_send(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    form = await request.form()
+    payload = _build_queue_item_from_form(form, provider="admin-test")
+    if not payload["phone_number"] or not payload["body"]:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "phone_number and body are required")
+    outcome = _simulate_test_send(
+        settings,
+        phone_number=payload["phone_number"],
+        body=payload["body"],
+        provider=payload["provider"] or "admin-test",
+    )
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(
+            request,
+            settings,
+            active_section="overview",
+            success_message=(
+                f"Test send completed for {payload['phone_number']}."
+                if outcome["result"]["success"]
+                else f"Test send failed for {payload['phone_number']}: {outcome['result']['error'] or 'Unknown error'}"
+            ),
+        ),
+    )
+
+
+@app.post("/admin/queue/delete")
+async def admin_delete_queue_item_route(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    form = await request.form()
+    item_id = str(form.get("item_id", "")).strip()
+    if not item_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "item_id is required")
+    removed = delete_queue_item(settings, item_id)
+    message = f"Queue item '{item_id}' deleted." if removed else f"Queue item '{item_id}' was not found."
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(request, settings, active_section="overview", success_message=message),
+    )
+
+
+@app.post("/admin/queue/batch-delete")
+async def admin_batch_delete_queue_items_route(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    form = await request.form()
+    item_ids = [str(value).strip() for value in form.getlist("item_ids") if str(value).strip()] if hasattr(form, "getlist") else []
+    removed = batch_delete_queue_items(settings, item_ids)
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(
+            request,
+            settings,
+            active_section="overview",
+            success_message=f"Deleted {removed} queue item{'s' if removed != 1 else ''}.",
+        ),
+    )
+
+
+@app.post("/admin/queue/batch-status")
+async def admin_batch_update_queue_status_route(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    form = await request.form()
+    item_ids = [str(value).strip() for value in form.getlist("item_ids") if str(value).strip()] if hasattr(form, "getlist") else []
+    status_value = str(form.get("status", "")).strip()
+    if not status_value:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "status is required")
+    updated = batch_update_queue_item_status(settings, item_ids, status_value)
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(
+            request,
+            settings,
+            active_section="overview",
+            success_message=f"Updated {updated} queue item{'s' if updated != 1 else ''} to '{status_value}'.",
+        ),
+    )
+
+
 @app.get("/admin/reports/live")
 async def admin_reports_live(
     _: None = Depends(dep_admin_credentials),
     settings: Settings = Depends(dep_settings),
 ):
     report_summary, recent_reports = _report_context(settings)
-    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items = _build_queue_context(settings)
+    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters = _build_queue_context(settings)
     live_calls = _build_live_call_context(settings)
     return {
         "report_summary": report_summary,
@@ -1363,9 +1557,11 @@ async def admin_reports_live(
         "recent_inbox_messages": recent_inbox_messages,
         "queue_summary": queue_summary,
         "recent_queue_items": recent_queue_items,
+        "queue_filters": queue_filters,
         "live_calls": live_calls,
         "updated_at": live_calls.get("updated_at", ""),
     }
+
 
 @app.get("/admin/reports/export/{dataset}.{file_format}")
 async def admin_export_reports(

@@ -65,6 +65,8 @@ def _status_class(status: str) -> str:
         "pending": "pending",
         "failed": "error",
         "error": "error",
+        "cancelled": "warning",
+        "canceled": "warning",
     }
     return mapping.get((status or "").lower(), "unknown")
 
@@ -154,14 +156,15 @@ class QueueItem:
 
     @classmethod
     def from_mapping(cls, data: dict[str, Any]) -> "QueueItem":
+        body = _coerce_text(data.get("body"))
         return cls(
             id=_coerce_text(data.get("id")),
             created_at=_coerce_text(data.get("created_at")) or _isoformat(_utc_now()),
             updated_at=_coerce_text(data.get("updated_at")) or _coerce_text(data.get("created_at")) or _isoformat(_utc_now()),
             phone_number=_coerce_text(data.get("phone_number")),
             provider=_coerce_text(data.get("provider")),
-            body=_coerce_text(data.get("body")),
-            body_preview=_clean_preview(data.get("body_preview") or data.get("body")),
+            body=body,
+            body_preview=_clean_preview(data.get("body_preview") or body),
             status=_coerce_text(data.get("status")) or "queued",
             attempts=_coerce_int(data.get("attempts")),
             max_attempts=_coerce_int(data.get("max_attempts")),
@@ -341,10 +344,106 @@ class FileBackedQueueStore:
             self._persist_unlocked()
         return item
 
+    def get(self, item_id: str) -> QueueItem | None:
+        with self._lock:
+            for item in self._items:
+                if item.id == item_id:
+                    return item
+        return None
+
+    def delete(self, item_id: str) -> bool:
+        with self._lock:
+            before = len(self._items)
+            self._items = deque((item for item in self._items if item.id != item_id), maxlen=self.max_items)
+            removed = len(self._items) != before
+            if removed:
+                self._persist_unlocked()
+        return removed
+
+    def batch_delete(self, item_ids: list[str]) -> int:
+        ids = {item_id for item_id in item_ids if item_id}
+        if not ids:
+            return 0
+        with self._lock:
+            before = len(self._items)
+            self._items = deque((item for item in self._items if item.id not in ids), maxlen=self.max_items)
+            removed = before - len(self._items)
+            if removed:
+                self._persist_unlocked()
+        return removed
+
+    def batch_update_status(self, item_ids: list[str], status: str) -> int:
+        ids = {item_id for item_id in item_ids if item_id}
+        if not ids:
+            return 0
+        updated = 0
+        now = _isoformat(_utc_now())
+        with self._lock:
+            for index, existing in enumerate(self._items):
+                if existing.id not in ids:
+                    continue
+                self._items[index] = QueueItem(
+                    id=existing.id,
+                    created_at=existing.created_at,
+                    updated_at=now,
+                    phone_number=existing.phone_number,
+                    provider=existing.provider,
+                    body=existing.body,
+                    body_preview=existing.body_preview,
+                    status=status,
+                    attempts=existing.attempts,
+                    max_attempts=existing.max_attempts,
+                    retry_interval_seconds=existing.retry_interval_seconds,
+                    next_attempt_at=existing.next_attempt_at,
+                    last_error=existing.last_error,
+                    ami_action_id=existing.ami_action_id,
+                )
+                updated += 1
+            if updated:
+                self._persist_unlocked()
+        return updated
+
     def list_items(self, limit: int = 50) -> list[QueueItem]:
         with self._lock:
             items = list(self._items)[-max(limit, 0) :]
         return list(reversed(items))
+
+    def query_items(
+        self,
+        *,
+        search: str = "",
+        status: str = "",
+        provider: str = "",
+        limit: int = 50,
+    ) -> list[QueueItem]:
+        search_term = search.strip().lower()
+        status_term = status.strip().lower()
+        provider_term = provider.strip().lower()
+        with self._lock:
+            items = list(self._items)
+        filtered: list[QueueItem] = []
+        for item in reversed(items):
+            if search_term and search_term not in " ".join(
+                [
+                    item.id,
+                    item.phone_number,
+                    item.provider,
+                    item.body,
+                    item.body_preview,
+                    item.status,
+                    item.last_error,
+                    item.ami_action_id or "",
+                ]
+            ).lower():
+                continue
+            if status_term and item.status.lower() != status_term:
+                continue
+            if provider_term and item.provider.lower() != provider_term:
+                continue
+            filtered.append(item)
+            if limit > 0 and len(filtered) >= limit:
+                break
+        return filtered
 
     def summary(self) -> dict[str, Any]:
         with self._lock:
@@ -466,6 +565,42 @@ def list_inbox_messages(settings: Settings, limit: int = 10) -> list[dict[str, A
 
 def list_queue_items(settings: Settings, limit: int = 10) -> list[dict[str, Any]]:
     return [item.to_dict() for item in get_queue_store(settings).list_items(limit=limit)]
+
+
+def query_queue_items(
+    settings: Settings,
+    *,
+    search: str = "",
+    status: str = "",
+    provider: str = "",
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    return [
+        item.to_dict()
+        for item in get_queue_store(settings).query_items(
+            search=search,
+            status=status,
+            provider=provider,
+            limit=limit,
+        )
+    ]
+
+
+def get_queue_item(settings: Settings, item_id: str) -> dict[str, Any] | None:
+    item = get_queue_store(settings).get(item_id)
+    return item.to_dict() if item else None
+
+
+def delete_queue_item(settings: Settings, item_id: str) -> bool:
+    return get_queue_store(settings).delete(item_id)
+
+
+def batch_delete_queue_items(settings: Settings, item_ids: list[str]) -> int:
+    return get_queue_store(settings).batch_delete(item_ids)
+
+
+def batch_update_queue_item_status(settings: Settings, item_ids: list[str], status: str) -> int:
+    return get_queue_store(settings).batch_update_status(item_ids, status)
 
 
 def summarize_inbox(settings: Settings) -> dict[str, Any]:
