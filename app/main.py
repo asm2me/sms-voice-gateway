@@ -274,59 +274,189 @@ def _admin_context(
 def _build_health_context(settings: Settings) -> dict:
     from .ami_service import AMIService
 
-    now = time.time()
-    checks = []
-    overall_ok = True
+    checked_at = time.time()
+    services: list[dict] = []
+    dependencies: list[dict] = []
+    healthy_count = 0
+    total_count = 0
 
-    def add_check(key: str, label: str, status_value: str, details: str, *, restart_supported: bool = False, restart_disabled_reason: str = "") -> None:
-        nonlocal overall_ok
-        if status_value != "healthy":
-            overall_ok = False
-        checks.append(
+    def add_service(name: str, category: str, ok: bool, summary: str, details: list[str] | None = None, notes: list[str] | None = None) -> None:
+        nonlocal healthy_count, total_count
+        total_count += 1
+        if ok:
+            healthy_count += 1
+        status_class = "success" if ok else "danger"
+        status_label = "Healthy" if ok else "Degraded"
+        services.append(
             {
-                "key": key,
-                "label": label,
-                "status": status_value,
-                "details": details,
-                "restart_supported": restart_supported,
-                "restart_disabled_reason": restart_disabled_reason,
+                "name": name,
+                "category": category,
+                "status_class": status_class,
+                "status_label": status_label,
+                "summary": summary,
+                "details": details or [],
+                "notes": notes or [],
+            }
+        )
+        dependencies.append(
+            {
+                "label": name,
+                "status_class": status_class,
+                "status_label": status_label,
+                "detail": summary,
             }
         )
 
-    add_check("api", "API / App", "healthy", "FastAPI process is serving requests.", restart_supported=False, restart_disabled_reason="This runtime does not support in-process app restarts.")
+    add_service(
+        "API / App",
+        "Application",
+        True,
+        "FastAPI process is serving requests.",
+        details=[
+            f"Host: {settings.host}",
+            f"Port: {settings.port}",
+            f"Debug mode: {'enabled' if settings.debug else 'disabled'}",
+        ],
+    )
+
     try:
-        redis_ok = get_redis(settings).ping()
-        add_check("redis", "Redis", "healthy" if redis_ok else "degraded", "Redis ping succeeded." if redis_ok else "Redis ping failed.", restart_supported=False, restart_disabled_reason="Redis is managed externally and cannot be restarted safely from the app.")
+        redis_ok = bool(get_redis(settings).ping())
+        add_service(
+            "Redis",
+            "Cache",
+            redis_ok,
+            "Redis ping succeeded." if redis_ok else "Redis ping failed.",
+            details=[f"URL: {settings.redis_url}"],
+        )
     except Exception as exc:
-        add_check("redis", "Redis", "degraded", f"Redis ping failed: {exc}", restart_supported=False, restart_disabled_reason="Redis is managed externally and cannot be restarted safely from the app.")
+        add_service(
+            "Redis",
+            "Cache",
+            False,
+            f"Redis ping failed: {exc}",
+            details=[f"URL: {settings.redis_url}"],
+        )
 
     try:
         ami_ok = AMIService(settings).ping()
-        add_check("ami", "AMI", "healthy" if ami_ok else "degraded", "AMI ping succeeded." if ami_ok else "AMI ping failed.", restart_supported=False, restart_disabled_reason="AMI is managed by Asterisk and cannot be restarted safely from the app.")
+        ami_channels = len(AMIService(settings).get_active_channels()) if ami_ok else 0
+        add_service(
+            "AMI",
+            "Telephony",
+            ami_ok,
+            "AMI ping succeeded." if ami_ok else "AMI ping failed.",
+            details=[
+                f"Target: {settings.ami_host}:{settings.ami_port}",
+                f"Username: {settings.ami_username}",
+                f"Active channels: {ami_channels}",
+                f"Connection timeout: {settings.ami_connection_timeout}s",
+                f"Response timeout: {settings.ami_response_timeout}s",
+            ],
+        )
     except Exception as exc:
-        add_check("ami", "AMI", "degraded", f"AMI ping failed: {exc}", restart_supported=False, restart_disabled_reason="AMI is managed by Asterisk and cannot be restarted safely from the app.")
+        add_service(
+            "AMI",
+            "Telephony",
+            False,
+            f"AMI ping failed: {exc}",
+            details=[
+                f"Target: {settings.ami_host}:{settings.ami_port}",
+                f"Username: {settings.ami_username}",
+            ],
+        )
 
+    config_store_path = BASE_DIR / "data" / "config.json"
     try:
-        Path(settings.delivery_report_store_path).parent.mkdir(parents=True, exist_ok=True)
-        add_check("config_store", "Config Store", "healthy", "Settings store is writable and reachable.", restart_supported=False, restart_disabled_reason="Config storage is file-based and does not have a restart action.")
+        config_exists = config_store_path.exists()
+        load_settings_from_store()
+        add_service(
+            "Config Store",
+            "Persistence",
+            True,
+            "Settings store is readable.",
+            details=[
+                f"Path: {config_store_path}",
+                f"Exists: {'yes' if config_exists else 'no'}",
+            ],
+        )
     except Exception as exc:
-        add_check("config_store", "Config Store", "degraded", f"Config store access failed: {exc}", restart_supported=False, restart_disabled_reason="Config storage is file-based and does not have a restart action.")
+        add_service(
+            "Config Store",
+            "Persistence",
+            False,
+            f"Settings store access failed: {exc}",
+            details=[f"Path: {config_store_path}"],
+        )
 
+    report_store_path = Path(settings.delivery_report_store_path) if settings.delivery_report_store_path else BASE_DIR / "data" / "reports.json"
     try:
         collector = get_delivery_report_collector(settings)
-        collector.summary()
-        add_check("report_store", "Report Store", "healthy", "Report storage is reachable.", restart_supported=False, restart_disabled_reason="Report storage is file-based and does not have a restart action.")
+        summary = collector.summary()
+        add_service(
+            "Report Store",
+            "Persistence",
+            True,
+            "Report storage is reachable.",
+            details=[
+                f"Path: {report_store_path}",
+                f"Stored reports: {summary.get('total', 0)}",
+            ],
+        )
     except Exception as exc:
-        add_check("report_store", "Report Store", "degraded", f"Report store access failed: {exc}", restart_supported=False, restart_disabled_reason="Report storage is file-based and does not have a restart action.")
+        add_service(
+            "Report Store",
+            "Persistence",
+            False,
+            f"Report store access failed: {exc}",
+            details=[f"Path: {report_store_path}"],
+        )
 
     tts_ready = bool(settings.tts_provider)
-    add_check("tts", "TTS Provider Readiness", "healthy" if tts_ready else "degraded", f"TTS provider configured as {settings.tts_provider}." if tts_ready else "No TTS provider configured.", restart_supported=False, restart_disabled_reason="TTS providers are configured at runtime and do not expose restart controls.")
+    add_service(
+        "TTS Provider",
+        "Speech",
+        tts_ready,
+        f"TTS provider configured as {settings.tts_provider}." if tts_ready else "No TTS provider configured.",
+        details=[
+            f"Provider: {settings.tts_provider}",
+            f"Language: {settings.tts_language}",
+            f"Voice: {settings.tts_voice}",
+            f"Audio encoding: {settings.tts_audio_encoding}",
+        ],
+    )
 
+    overall_ok = healthy_count == total_count
     restart_actions = _restart_actions(settings)
     return {
-        "generated_at": now,
-        "overall_status": "healthy" if overall_ok else "degraded",
-        "checks": checks,
+        "overall_class": "success" if overall_ok else "warning",
+        "overall_label": "Healthy" if overall_ok else "Degraded",
+        "checked_at_display": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(checked_at)),
+        "summary": {
+            "title": "Gateway health overview",
+            "detail": f"{healthy_count} of {total_count} services are healthy.",
+        },
+        "runtime": {
+            "uptime_display": "Current session",
+            "last_restart_display": "Not tracked",
+        },
+        "summary_cards": [
+            {"label": "Healthy Services", "value": str(healthy_count), "detail": "Passing checks", "class": "success"},
+            {"label": "Total Services", "value": str(total_count), "detail": "Monitored components", "class": "unknown"},
+            {"label": "Redis", "value": "Online" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "Offline", "detail": settings.redis_url, "class": "success" if any(d['label'] == 'Redis' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
+            {"label": "AMI", "value": "Connected" if any(d['label'] == 'AMI' and d['status_label'] == 'Healthy' for d in dependencies) else "Disconnected", "detail": f"{settings.ami_host}:{settings.ami_port}", "class": "success" if any(d['label'] == 'AMI' and d['status_label'] == 'Healthy' for d in dependencies) else "danger"},
+        ],
+        "services": services,
+        "dependencies": dependencies,
+        "notes": [
+            "Restart controls are safety-gated and may be disabled depending on the runtime environment.",
+            "AMI health depends on TCP connectivity, AMI login credentials, and Asterisk manager availability.",
+            "Configuration changes are loaded from persistent storage per request and apply automatically.",
+        ],
+        "actions": {
+            "refresh": {"enabled": True, "reason": ""},
+            "restart_app": next(({"enabled": action["supported"], "reason": action["disabled_reason"]} for action in restart_actions if action["key"] == "app"), {"enabled": False, "reason": "Unavailable"}),
+            "restart_compose": next(({"enabled": action["supported"], "reason": action["disabled_reason"]} for action in restart_actions if action["key"] == "gateway"), {"enabled": False, "reason": "Unavailable"}),
+        },
         "restart_actions": restart_actions,
     }
 
