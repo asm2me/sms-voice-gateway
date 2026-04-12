@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .config import Settings
+from .config import SIPAccount, SMPPAccount, Settings
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +22,9 @@ BOOTSTRAP_ONLY_FIELDS = {
 }
 
 ADMIN_MANAGED_FIELDS = set(Settings.model_fields) - BOOTSTRAP_ONLY_FIELDS
+
+_DEFAULT_SIP_ACCOUNT_ID = "default-sip"
+_DEFAULT_SMPP_ACCOUNT_ID = "default-smpp"
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -64,10 +67,128 @@ def save_persistent_config(
     return store_path
 
 
+def _coerce_sip_account(raw: Any) -> SIPAccount | None:
+    if isinstance(raw, SIPAccount):
+        return raw
+    if not isinstance(raw, dict):
+        return None
+    data = dict(raw)
+    if not data.get("id"):
+        data["id"] = _DEFAULT_SIP_ACCOUNT_ID
+    if "label" not in data:
+        data["label"] = data.get("id", "")
+    return SIPAccount(**data)
+
+
+def _coerce_smpp_account(raw: Any) -> SMPPAccount | None:
+    if isinstance(raw, SMPPAccount):
+        return raw
+    if not isinstance(raw, dict):
+        return None
+    data = dict(raw)
+    if not data.get("id"):
+        data["id"] = _DEFAULT_SMPP_ACCOUNT_ID
+    if "label" not in data:
+        data["label"] = data.get("id", "")
+    return SMPPAccount(**data)
+
+
+def _normalize_account_lists(
+    values: dict[str, Any],
+) -> tuple[list[SIPAccount], list[SMPPAccount], dict[str, str]]:
+    sip_accounts_raw = values.get("sip_accounts")
+    smpp_accounts_raw = values.get("smpp_accounts")
+    assignments_raw = values.get("smpp_sip_assignments")
+
+    sip_accounts: list[SIPAccount] = []
+    smpp_accounts: list[SMPPAccount] = []
+    smpp_sip_assignments: dict[str, str] = {}
+
+    if isinstance(sip_accounts_raw, list):
+        for item in sip_accounts_raw:
+            account = _coerce_sip_account(item)
+            if account is not None:
+                sip_accounts.append(account)
+
+    if isinstance(smpp_accounts_raw, list):
+        for item in smpp_accounts_raw:
+            account = _coerce_smpp_account(item)
+            if account is not None:
+                smpp_accounts.append(account)
+
+    if isinstance(assignments_raw, dict):
+        for smpp_username, sip_account_id in assignments_raw.items():
+            if isinstance(smpp_username, str) and isinstance(sip_account_id, str):
+                smpp_sip_assignments[smpp_username] = sip_account_id
+
+    if not sip_accounts and not smpp_accounts and not smpp_sip_assignments:
+        legacy_smpp_username = str(values.get("smpp_username") or "").strip()
+        legacy_smpp_password = str(values.get("smpp_password") or "").strip()
+        legacy_sip_channel_prefix = str(values.get("sip_channel_prefix") or "").strip()
+        legacy_outbound_caller_id = str(values.get("outbound_caller_id") or "").strip()
+
+        if legacy_sip_channel_prefix or legacy_outbound_caller_id:
+            sip_accounts.append(
+                SIPAccount(
+                    id=_DEFAULT_SIP_ACCOUNT_ID,
+                    label="Default SIP",
+                    host="",
+                    username="",
+                    password="",
+                    transport="udp",
+                    port=5060,
+                    domain="",
+                    display_name="",
+                    from_user="",
+                    from_domain="",
+                    enabled=True,
+                    default_for_outbound=True,
+                    register=True,
+                    outbound_proxy="",
+                    extra={
+                        "legacy_channel_prefix": legacy_sip_channel_prefix,
+                        "legacy_outbound_caller_id": legacy_outbound_caller_id,
+                    },
+                )
+            )
+
+        if legacy_smpp_username or legacy_smpp_password:
+            smpp_accounts.append(
+                SMPPAccount(
+                    id=_DEFAULT_SMPP_ACCOUNT_ID,
+                    label="Default SMPP",
+                    username=legacy_smpp_username,
+                    password=legacy_smpp_password,
+                    enabled=True,
+                    default_for_inbound=True,
+                    default_sip_account_id=_DEFAULT_SIP_ACCOUNT_ID if sip_accounts else "",
+                    extra={},
+                )
+            )
+            if sip_accounts:
+                smpp_sip_assignments[legacy_smpp_username or _DEFAULT_SMPP_ACCOUNT_ID] = _DEFAULT_SIP_ACCOUNT_ID
+
+    if sip_accounts and not any(account.default_for_outbound for account in sip_accounts):
+        sip_accounts[0] = sip_accounts[0].model_copy(update={"default_for_outbound": True})
+
+    if smpp_accounts and not any(account.default_for_inbound for account in smpp_accounts):
+        smpp_accounts[0] = smpp_accounts[0].model_copy(update={"default_for_inbound": True})
+
+    return sip_accounts, smpp_accounts, smpp_sip_assignments
+
+
 def build_settings_data(settings: Settings) -> dict[str, Any]:
     data = settings.model_dump()
     for field in BOOTSTRAP_ONLY_FIELDS:
         data.pop(field, None)
+
+    sip_accounts = data.pop("sip_accounts", [])
+    smpp_accounts = data.pop("smpp_accounts", [])
+    smpp_sip_assignments = data.pop("smpp_sip_assignments", {})
+
+    data["sip_accounts"] = [account.model_dump() if isinstance(account, SIPAccount) else account for account in sip_accounts]
+    data["smpp_accounts"] = [account.model_dump() if isinstance(account, SMPPAccount) else account for account in smpp_accounts]
+    data["smpp_sip_assignments"] = dict(smpp_sip_assignments)
     return data
 
 
@@ -83,8 +204,97 @@ def load_settings_from_store(path: Path | str = CONFIG_STORE_PATH) -> Settings:
             continue
         merged[key] = value
 
+    sip_accounts, smpp_accounts, smpp_sip_assignments = _normalize_account_lists(merged)
+    merged["sip_accounts"] = sip_accounts
+    merged["smpp_accounts"] = smpp_accounts
+    merged["smpp_sip_assignments"] = smpp_sip_assignments
+
     return Settings(**merged)
 
 
 def save_settings_to_store(settings: Settings, path: Path | str = CONFIG_STORE_PATH) -> Path:
     return save_persistent_config(build_settings_data(settings), path)
+
+
+def get_sip_account_for_smpp_username(settings: Settings, smpp_username: str) -> SIPAccount | None:
+    username = (smpp_username or "").strip()
+    if not username:
+        return get_default_sip_account(settings)
+
+    assigned_sip_id = (settings.smpp_sip_assignments or {}).get(username, "").strip()
+    if assigned_sip_id:
+        for account in settings.sip_accounts:
+            if account.id == assigned_sip_id and account.enabled:
+                return account
+
+    for account in settings.sip_accounts:
+        if account.default_for_outbound and account.enabled:
+            return account
+
+    return get_default_sip_account(settings)
+
+
+def get_default_sip_account(settings: Settings) -> SIPAccount | None:
+    for account in settings.sip_accounts:
+        if account.enabled and account.default_for_outbound:
+            return account
+    for account in settings.sip_accounts:
+        if account.enabled:
+            return account
+    return None
+
+
+def get_default_smpp_account(settings: Settings) -> SMPPAccount | None:
+    for account in settings.smpp_accounts:
+        if account.enabled and account.default_for_inbound:
+            return account
+    for account in settings.smpp_accounts:
+        if account.enabled:
+            return account
+    return None
+
+
+def ensure_default_accounts(settings: Settings) -> Settings:
+    sip_accounts = list(settings.sip_accounts)
+    smpp_accounts = list(settings.smpp_accounts)
+    assignments = dict(settings.smpp_sip_assignments)
+
+    if not sip_accounts:
+        sip_accounts.append(
+            SIPAccount(
+                id=_DEFAULT_SIP_ACCOUNT_ID,
+                label="Default SIP",
+                enabled=True,
+                default_for_outbound=True,
+            )
+        )
+
+    if not smpp_accounts:
+        smpp_accounts.append(
+            SMPPAccount(
+                id=_DEFAULT_SMPP_ACCOUNT_ID,
+                label="Default SMPP",
+                enabled=True,
+                default_for_inbound=True,
+                default_sip_account_id=sip_accounts[0].id,
+            )
+        )
+
+    if not any(account.default_for_outbound for account in sip_accounts):
+        sip_accounts[0] = sip_accounts[0].model_copy(update={"default_for_outbound": True})
+
+    if not any(account.default_for_inbound for account in smpp_accounts):
+        smpp_accounts[0] = smpp_accounts[0].model_copy(update={"default_for_inbound": True})
+
+    if smpp_accounts and sip_accounts:
+        for account in smpp_accounts:
+            if account.username and account.username not in assignments:
+                assignments[account.username] = account.default_sip_account_id or sip_accounts[0].id
+
+    return settings.model_copy(
+        update={
+            "sip_accounts": sip_accounts,
+            "smpp_accounts": smpp_accounts,
+            "smpp_sip_assignments": assignments,
+        }
+    )

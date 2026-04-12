@@ -1,9 +1,40 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class SIPAccount(BaseModel):
+    id: str
+    label: str = ""
+    host: str = ""
+    username: str = ""
+    password: str = ""
+    transport: Literal["udp", "tcp", "tls"] = "udp"
+    port: int = 5060
+    domain: str = ""
+    display_name: str = ""
+    from_user: str = ""
+    from_domain: str = ""
+    enabled: bool = True
+    default_for_outbound: bool = False
+    register: bool = True
+    outbound_proxy: str = ""
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class SMPPAccount(BaseModel):
+    id: str
+    label: str = ""
+    username: str = ""
+    password: str = ""
+    enabled: bool = True
+    default_for_inbound: bool = False
+    default_sip_account_id: str = ""
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class Settings(BaseSettings):
@@ -67,6 +98,11 @@ class Settings(BaseSettings):
     asterisk_context: str = "sms-voice-otp"
     asterisk_exten: str = "s"
     asterisk_priority: str = "1"
+
+    # Multi-account SIP / SMPP configuration persisted in JSON
+    sip_accounts: list[SIPAccount] = Field(default_factory=list)
+    smpp_accounts: list[SMPPAccount] = Field(default_factory=list)
+    smpp_sip_assignments: dict[str, str] = Field(default_factory=dict)
 
     # Retry policy
     delivery_retry_count: int = 2

@@ -25,3 +25,8 @@ requests>=2.31.0   # used by ElevenLabs backend (already a transitive dep)
 python-multipart>=0.0.9   # required for FastAPI Form() / file uploads
 jinja2>=3.1.0   # required for FastAPI Jinja2Templates
 openpyxl>=3.1.0   # XLSX export for admin reports
+
+# ── Direct SIP UA / PJSIP ─────────────────────────────────────────────────────
+# Install the PJSUA2 Python bindings provided by your deployment/runtime.
+# Package name and installation method vary by platform; this project loads
+# the `pjsua2` module lazily at runtime and degrades safely when unavailable.

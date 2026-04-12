@@ -8,6 +8,7 @@ from typing import Optional
 
 from .admin_reports import record_inbox_message
 from .config import Settings
+from .config_store import get_default_smpp_account, get_sip_account_for_smpp_username
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class SMPPService:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._last_error: str = ""
+        self._active_clients: dict[socket.socket, dict[str, str]] = {}
 
     @property
     def enabled(self) -> bool:
@@ -117,6 +119,7 @@ class SMPPService:
                 pass
             self._server = None
         self._thread = None
+        self._active_clients.clear()
         log.info("SMPP listener stopped")
 
     def _serve(self) -> None:
@@ -177,6 +180,10 @@ class SMPPService:
                         )
                         break
                     if self._authenticate(body):
+                        self._active_clients[conn] = {
+                            "smpp_username": bind_fields["system_id"],
+                            "client_addr": f"{addr[0]}:{addr[1]}",
+                        }
                         self._send_pdu(conn, bind_response_command_id, 0, sequence, b"\x00")
                         log.info(
                             "SMPP bind success from %s:%s using interface_version=0x%02x",
@@ -193,6 +200,8 @@ class SMPPService:
                     log.info("SMPP enquire_link handled for %s:%s", addr[0], addr[1])
                 elif command_id == _SM_PP_SUBMIT_SM:
                     submit_fields = self._parse_submit_sm(body)
+                    smpp_username = self._active_clients.get(conn, {}).get("smpp_username", "")
+                    sip_account = get_sip_account_for_smpp_username(self.settings, smpp_username)
                     record_inbox_message(
                         self.settings,
                         from_number=submit_fields["source_addr"],
@@ -203,11 +212,13 @@ class SMPPService:
                         status="received",
                     )
                     log.info(
-                        "SMPP inbox message stored from=%s to=%s text=%r source=%s",
+                        "SMPP inbox message stored from=%s to=%s text=%r source=%s smpp_username=%s sip_account_id=%s",
                         submit_fields["source_addr"],
                         submit_fields["destination_addr"],
                         submit_fields["short_message"][:120],
                         f"smpp:{addr[0]}:{addr[1]}",
+                        smpp_username,
+                        sip_account.id if sip_account else "",
                     )
                     message_id = f"smpp-{sequence}".encode("ascii", "ignore") + b"\x00"
                     self._send_pdu(conn, _SM_PP_SUBMIT_SM_RESP, 0, sequence, message_id)
@@ -235,6 +246,10 @@ class SMPPService:
         except Exception as exc:
             log.debug("SMPP client error: %s", exc)
         finally:
+            try:
+                self._active_clients.pop(conn, None)
+            except Exception:
+                pass
             try:
                 conn.close()
             except Exception:
@@ -320,7 +335,7 @@ class SMPPService:
         if data_coding == 8:
             short_message = short_message_bytes.decode("utf-16-be", "ignore")
         else:
-            short_message = short_message_bytes.decode("utf-utf-8", "ignore") if False else short_message_bytes.decode("latin-1", "ignore")
+            short_message = short_message_bytes.decode("latin-1", "ignore")
 
         return {
             "service_type": service_type,
@@ -353,6 +368,11 @@ class SMPPService:
         interface_version = bind_fields["interface_version"]
         expected_system_id = (self.settings.smpp_username or "").strip()
         expected_password = (self.settings.smpp_password or "").strip()
+        default_smpp_account = get_default_smpp_account(self.settings)
+
+        if default_smpp_account and default_smpp_account.username:
+            expected_system_id = default_smpp_account.username.strip()
+            expected_password = default_smpp_account.password.strip()
 
         if not self._supported_interface_version(interface_version):
             log.warning(
@@ -363,7 +383,7 @@ class SMPPService:
             )
             return False
 
-        if not self.settings.smpp_username and not self.settings.smpp_password:
+        if not self.settings.smpp_username and not self.settings.smpp_password and not default_smpp_account:
             return True
 
         auth_ok = system_id == expected_system_id and password == expected_password

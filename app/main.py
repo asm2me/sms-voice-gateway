@@ -45,7 +45,13 @@ from .admin_reports import (
 from .ami_service import AMIService
 from .cache import AudioCache, RateLimiter, get_redis
 from .config import Settings
-from .config_store import ADMIN_MANAGED_FIELDS, load_settings_from_store, save_settings_to_store
+from .config_store import (
+    ADMIN_MANAGED_FIELDS,
+    ensure_default_accounts,
+    load_settings_from_store,
+    save_settings_to_store,
+)
+from .pjsua2_service import build_pjsua2_service
 from .sms_handler import IncomingSMS, SMSGateway
 from .smpp_service import SMPPService
 
@@ -96,14 +102,13 @@ def _stop_retry_worker() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = load_settings_from_store()
+    settings = ensure_default_accounts(load_settings_from_store())
     smpp_service = SMPPService(settings)
     app.state.smpp_service = smpp_service
     log.info(
-        "SMS Voice Gateway starting (TTS=%s, AMI=%s:%d, SMPP=%s:%d enabled=%s)",
+        "SMS Voice Gateway starting (TTS=%s, SIP accounts=%d, SMPP=%s:%d enabled=%s)",
         settings.tts_provider,
-        settings.ami_host,
-        settings.ami_port,
+        len(settings.sip_accounts),
         settings.smpp_host,
         settings.smpp_port,
         settings.smpp_enabled,
@@ -134,7 +139,7 @@ if STATIC_DIR.exists():
 
 
 def dep_settings() -> Settings:
-    return load_settings_from_store()
+    return ensure_default_accounts(load_settings_from_store())
 
 
 def dep_gateway(settings: Annotated[Settings, Depends(dep_settings)]) -> SMSGateway:
@@ -206,18 +211,17 @@ def _config_items(settings: Settings) -> list[dict[str, str]]:
         {"label": "TTS Voice", "display_value": settings.tts_voice, "visibility": "public"},
         {"label": "Speaking Rate", "display_value": str(settings.tts_speaking_rate), "visibility": "public"},
         {"label": "Audio Encoding", "display_value": settings.tts_audio_encoding, "visibility": "public"},
-        {"label": "AMI Host", "display_value": settings.ami_host, "visibility": "public"},
-        {"label": "AMI Port", "display_value": str(settings.ami_port), "visibility": "public"},
-        {"label": "Retry Count", "display_value": str(settings.delivery_retry_count), "visibility": "public"},
-        {"label": "Retry Interval (s)", "display_value": str(settings.delivery_retry_interval_seconds), "visibility": "public"},
+        {"label": "SIP Accounts", "display_value": str(len(settings.sip_accounts)), "visibility": "public"},
+        {"label": "Default SIP Account", "display_value": next((account.label or account.id for account in settings.sip_accounts if account.default_for_outbound), "—"), "visibility": "public"},
+        {"label": "SMPP Accounts", "display_value": str(len(settings.smpp_accounts)), "visibility": "public"},
         {"label": "SMPP Host", "display_value": settings.smpp_host, "visibility": "public"},
         {"label": "SMPP Port", "display_value": str(settings.smpp_port), "visibility": "public"},
         {"label": "SMPP Enabled", "display_value": "enabled" if settings.smpp_enabled else "disabled", "visibility": "public"},
-        {"label": "SIP Channel Prefix", "display_value": settings.sip_channel_prefix, "visibility": "public"},
         {"label": "Outbound Caller ID", "display_value": settings.outbound_caller_id, "visibility": "public"},
+        {"label": "Retry Count", "display_value": str(settings.delivery_retry_count), "visibility": "public"},
+        {"label": "Retry Interval (s)", "display_value": str(settings.delivery_retry_interval_seconds), "visibility": "public"},
         {"label": "Redis URL", "display_value": settings.redis_url, "visibility": "public"},
         {"label": "Audio Cache Directory", "display_value": settings.audio_cache_dir, "visibility": "public"},
-        {"label": "Asterisk Sounds Directory", "display_value": settings.asterisk_sounds_dir, "visibility": "public"},
         {"label": "Webhook Secret", "display_value": "configured" if settings.webhook_secret else "not configured", "visibility": "protected"},
     ]
 
@@ -230,6 +234,38 @@ def _build_queue_context(settings: Settings) -> tuple[dict, list[dict], dict, li
     recent_inbox_messages = list_inbox_messages(settings, limit=10)
     recent_queue_items = list_queue_items(settings, limit=10)
     return inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items
+
+def _build_live_call_context(settings: Settings) -> dict:
+    service = build_pjsua2_service(settings)
+    status = service.status_detail()
+    active_calls: list[dict] = []
+    current_account_id = status.get("current_account_id", "")
+
+    if current_account_id:
+        active_calls.append(
+            {
+                "channel": f"sip:{current_account_id}",
+                "caller_id_num": "",
+                "caller_id_name": current_account_id,
+                "connected_line_num": "",
+                "connected_line_name": "",
+                "state": "registered" if status.get("registered") else "idle",
+                "context": "pjsua2",
+                "extension": "",
+                "application": "direct-sip-ua",
+                "duration": "",
+            }
+        )
+
+    return {
+        "active_count": len(active_calls),
+        "items": active_calls,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        "engine": "pjsua2",
+        "available": status.get("available", False),
+        "registered": status.get("registered", False),
+        "import_error": status.get("import_error", ""),
+    }
 
 
 def _record_gateway_result(provider: str, result, *, phone_number: str = "", message: str = "") -> None:
@@ -251,7 +287,7 @@ def _record_gateway_result(provider: str, result, *, phone_number: str = "", mes
 
 
 def _save_admin_config(form, keys: list[str]) -> Settings:
-    current = load_settings_from_store()
+    current = ensure_default_accounts(load_settings_from_store())
     data = current.model_dump()
     field_types = {name: field.annotation for name, field in Settings.model_fields.items()}
 
@@ -290,6 +326,7 @@ def _admin_context(
 ) -> dict:
     report_summary, recent_reports = _report_context(settings)
     sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items = _build_queue_context(settings)
+    live_calls = _build_live_call_context(settings)
     context = {
         "request": request,
         "active_section": active_section,
@@ -300,6 +337,7 @@ def _admin_context(
         "recent_inbox_messages": recent_inbox_messages,
         "queue_summary": queue_summary,
         "recent_queue_items": recent_queue_items,
+        "live_calls": live_calls,
         "basic_settings": _build_setting_items(
             settings,
             [
@@ -341,23 +379,13 @@ def _admin_context(
         "telephony_settings": _build_setting_items(
             settings,
             [
-                ("ami_host", "AMI Host"),
-                ("ami_port", "AMI Port"),
-                ("ami_username", "AMI Username"),
-                ("ami_secret", "AMI Secret"),
-                ("ami_connection_timeout", "AMI Connection Timeout"),
-                ("ami_response_timeout", "AMI Response Timeout"),
-                ("sip_channel_prefix", "SIP Channel Prefix"),
                 ("outbound_caller_id", "Outbound Caller ID"),
                 ("call_answer_timeout", "Call Answer Timeout"),
-                ("asterisk_context", "Asterisk Context"),
-                ("asterisk_exten", "Asterisk Exten"),
-                ("asterisk_priority", "Asterisk Priority"),
                 ("smpp_enabled", "SMPP Enabled"),
                 ("smpp_host", "SMPP Host"),
                 ("smpp_port", "SMPP Port"),
-                ("smpp_username", "SMPP Username"),
-                ("smpp_password", "SMPP Password"),
+                ("smpp_username", "Legacy SMPP Username"),
+                ("smpp_password", "Legacy SMPP Password"),
             ],
         ),
         "storage_settings": _build_setting_items(
@@ -388,12 +416,23 @@ def _admin_context(
             {"key": "basic", "label": "Core Voice Routing", "description": "TTS, parsing, and playback behavior"},
             {"key": "security", "label": "Security and Access", "description": "Webhook verification and rate limiting"},
             {"key": "providers", "label": "Speech Provider Credentials", "description": "Cloud/provider credentials and engine options"},
-            {"key": "telephony", "label": "Telephony and Gateway Routing", "description": "AMI, SIP, SMPP, and dialing behavior"},
+            {"key": "telephony", "label": "Telephony and Gateway Routing", "description": "Direct SIP UA, SMPP listener, and dialing behavior"},
             {"key": "storage", "label": "Storage and Persistence", "description": "Cache, Redis, reports, and retry persistence"},
             {"key": "system", "label": "System Bootstrap", "description": "Minimal env/bootstrap values that start the admin"},
         ],
         "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
         "health": health_context or _build_health_context(settings),
+        "sip_accounts": [account.model_dump() for account in settings.sip_accounts],
+        "smpp_accounts": [account.model_dump() for account in settings.smpp_accounts],
+        "smpp_sip_assignments": [
+            {
+                "smpp_username": smpp_username,
+                "sip_account_id": sip_account_id,
+                "smpp_label": next((account.label or account.id for account in settings.smpp_accounts if account.username == smpp_username), smpp_username),
+                "sip_label": next((account.label or account.id for account in settings.sip_accounts if account.id == sip_account_id), sip_account_id),
+            }
+            for smpp_username, sip_account_id in (settings.smpp_sip_assignments or {}).items()
+        ],
         "bootstrap_fields": ["host", "port", "debug", "admin_username", "admin_password"],
         "admin_managed_fields": sorted(ADMIN_MANAGED_FIELDS),
     }
@@ -904,6 +943,25 @@ async def admin_update_advanced_config(
         _admin_context(request, settings, active_section="config", success_message=f"Advanced settings saved and applied immediately.{smpp_message}"),
     )
 
+
+@app.get("/admin/reports/live")
+async def admin_reports_live(
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    report_summary, recent_reports = _report_context(settings)
+    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items = _build_queue_context(settings)
+    live_calls = _build_live_call_context(settings)
+    return {
+        "report_summary": report_summary,
+        "recent_reports": recent_reports,
+        "sms_inbox_summary": sms_inbox_summary,
+        "recent_inbox_messages": recent_inbox_messages,
+        "queue_summary": queue_summary,
+        "recent_queue_items": recent_queue_items,
+        "live_calls": live_calls,
+        "updated_at": live_calls.get("updated_at", ""),
+    }
 
 @app.get("/admin/reports/export/{dataset}.{file_format}")
 async def admin_export_reports(
