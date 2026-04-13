@@ -70,6 +70,7 @@ class SipAccountProfile:
     enabled: bool = True
     registration_timeout: int = 300
     auth_realm: str = ""
+    concurrency_limit: int = 1
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -120,6 +121,8 @@ class PJSUA2UnavailableError(RuntimeError):
 
 _PJSUA2_ENDPOINT_LOCK = threading.RLock()
 _PJSUA2_ENDPOINT_ACTIVE = False
+_TRUNK_CONCURRENCY_LOCK = threading.RLock()
+_TRUNK_ACTIVE_CALLS: dict[str, int] = {}
 
 
 class PJSipUASession:
@@ -259,6 +262,7 @@ class PJSipUASession:
             enabled=bool(profile.get("enabled", True)),
             registration_timeout=int(profile.get("registration_timeout", 300) or 300),
             auth_realm=str(profile.get("auth_realm", "")),
+            concurrency_limit=max(1, int(profile.get("concurrency_limit", 1) or 1)),
             extra=dict(profile.get("extra", {}) or {}),
         )
 
@@ -288,10 +292,19 @@ class PJSipUASession:
                         details={"already_registered": self._registered},
                     )
 
-                self.shutdown()
-                init_result = self.initialize()
-                if not init_result.success:
-                    return init_result
+                if self._account is not None and self._current_profile and self._current_profile.id != selected.id:
+                    if self._account is not None:
+                        with suppress(Exception):
+                            self._account.shutdown()
+                    self._account = None
+                    self._current_profile = None
+                    self._registered = False
+                    self._last_call = None
+
+                if self._endpoint is None:
+                    init_result = self.initialize()
+                    if not init_result.success:
+                        return init_result
 
                 account_cfg = pj.AccountConfig()
                 account_cfg.idUri = selected.sip_uri or self._build_id_uri(selected)
@@ -424,34 +437,70 @@ class PJSipUASession:
             try:
                 pj = self._pj
                 assert pj is not None
-                call_id = f"pj_{int(time.time() * 1000)}"
-                call = self._account.makeCall(self._build_sip_uri(destination), _CallCallbackHolder())
-                self._last_call = call
+                account_id = self._current_profile.id
+                concurrency_limit = max(1, int(self._current_profile.concurrency_limit or 1))
 
-                playback_result = self.prepare_playback(
-                    request.audio_path,
-                    destination_number=destination,
-                    account_id=self._current_profile.id,
-                    repeat_count=request.playback_repeats,
-                    pause_ms=request.playback_pause_ms,
-                )
+                with _TRUNK_CONCURRENCY_LOCK:
+                    active_calls = _TRUNK_ACTIVE_CALLS.get(account_id, 0)
+                    if active_calls >= concurrency_limit:
+                        return PJSUA2Result(
+                            success=False,
+                            account_id=account_id,
+                            destination_number=destination,
+                            audio_path=request.audio_path,
+                            registered=True,
+                            error=f"SIP trunk concurrency limit reached ({concurrency_limit})",
+                            details={
+                                "active_calls": active_calls,
+                                "concurrency_limit": concurrency_limit,
+                            },
+                        )
+                    _TRUNK_ACTIVE_CALLS[account_id] = active_calls + 1
 
-                return PJSUA2Result(
-                    success=True,
-                    account_id=self._current_profile.id,
-                    call_id=call_id,
-                    destination_number=destination,
-                    registered=True,
-                    audio_path=request.audio_path,
-                    message="Outbound SIP call started",
-                    details={
-                        "playback": playback_result.details,
-                        "call_state": "initiated",
-                        "display_name": request.display_name,
-                        "caller_id": request.caller_id or self._current_profile.caller_id,
-                        "extra_vars": request.extra_vars,
-                    },
-                )
+                call_started = False
+                try:
+                    call_id = f"pj_{int(time.time() * 1000)}"
+                    call = self._account.makeCall(
+                        self._build_sip_uri(destination),
+                        _CallCallbackHolder(self, account_id, call_id),
+                    )
+                    self._last_call = call
+                    call_started = True
+
+                    playback_result = self.prepare_playback(
+                        request.audio_path,
+                        destination_number=destination,
+                        account_id=account_id,
+                        repeat_count=request.playback_repeats,
+                        pause_ms=request.playback_pause_ms,
+                    )
+
+                    return PJSUA2Result(
+                        success=True,
+                        account_id=account_id,
+                        call_id=call_id,
+                        destination_number=destination,
+                        registered=True,
+                        audio_path=request.audio_path,
+                        message="Outbound SIP call started",
+                        details={
+                            "playback": playback_result.details,
+                            "call_state": "initiated",
+                            "display_name": request.display_name,
+                            "caller_id": request.caller_id or self._current_profile.caller_id,
+                            "extra_vars": request.extra_vars,
+                            "active_calls": _TRUNK_ACTIVE_CALLS.get(account_id, 0),
+                            "concurrency_limit": concurrency_limit,
+                        },
+                    )
+                finally:
+                    if not call_started:
+                        with _TRUNK_CONCURRENCY_LOCK:
+                            current = _TRUNK_ACTIVE_CALLS.get(account_id, 0)
+                            if current <= 1:
+                                _TRUNK_ACTIVE_CALLS.pop(account_id, None)
+                            else:
+                                _TRUNK_ACTIVE_CALLS[account_id] = current - 1
             except Exception as exc:
                 log.exception("Outbound SIP call failed")
                 return PJSUA2Result(
@@ -524,13 +573,17 @@ class PJSipUASession:
             )
 
     def status_detail(self) -> dict[str, Any]:
+        current_account_id = self._current_profile.id if self._current_profile else ""
+        with _TRUNK_CONCURRENCY_LOCK:
+            active_calls = _TRUNK_ACTIVE_CALLS.get(current_account_id, 0) if current_account_id else 0
         return {
             "available": self.available,
             "registered": self._registered,
-            "current_account_id": self._current_profile.id if self._current_profile else "",
+            "current_account_id": current_account_id,
             "import_error": self.import_error,
             "has_endpoint": self._endpoint is not None,
             "has_call": self._last_call is not None,
+            "active_calls": active_calls,
         }
 
     def _wait_for_registration(self, account: "_GatewayAccount", *, timeout_seconds: float = 10.0) -> dict[str, Any]:
@@ -696,12 +749,87 @@ class _GatewayAccount:
 
 class _CallCallbackHolder:
     """
-    Placeholder callback object. Real deployments can subclass this to hook into
-    call state changes, media negotiation, and playback initiation.
+    Lightweight callback adapter that releases per-trunk concurrency slots when a
+    call transitions into a terminal/disconnected state.
 
-    The object intentionally remains minimal so the helper can be imported even
-    when the binding implementation differs slightly between environments.
+    The implementation stays defensive because Python PJSUA2 bindings can differ
+    slightly between runtimes and distributions.
     """
+    _TERMINAL_STATES = {
+        "PJSIP_INV_STATE_DISCONNECTED",
+        "DISCONNECTED",
+        "disconnected",
+        "CALL_DISCONNECTED",
+    }
+
+    def __init__(self, session: PJSipUASession, account_id: str, call_id: str):
+        self._session = session
+        self._account_id = account_id
+        self._call_id = call_id
+        self._released = False
+        self._lock = threading.Lock()
+
+    def _release_slot(self) -> None:
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
+
+        with _TRUNK_CONCURRENCY_LOCK:
+            current = _TRUNK_ACTIVE_CALLS.get(self._account_id, 0)
+            if current <= 1:
+                _TRUNK_ACTIVE_CALLS.pop(self._account_id, None)
+            else:
+                _TRUNK_ACTIVE_CALLS[self._account_id] = current - 1
+
+        log.info(
+            "Released SIP trunk concurrency slot account=%s call_id=%s active_calls=%s",
+            self._account_id,
+            self._call_id,
+            _TRUNK_ACTIVE_CALLS.get(self._account_id, 0),
+        )
+
+    def onCallState(self, *args: Any, **kwargs: Any) -> None:
+        call_obj = args[0] if args else None
+        info_obj = None
+
+        with suppress(Exception):
+            if call_obj is not None and hasattr(call_obj, "getInfo"):
+                info_obj = call_obj.getInfo()
+
+        state_name = ""
+        state_text = ""
+        last_status_code = 0
+
+        if info_obj is not None:
+            for attr in ("stateText", "state_text"):
+                with suppress(Exception):
+                    value = getattr(info_obj, attr)
+                    if value is not None:
+                        state_text = str(value)
+                        break
+
+            for attr in ("lastStatusCode", "last_status_code"):
+                with suppress(Exception):
+                    value = getattr(info_obj, attr)
+                    if value is not None:
+                        last_status_code = int(value)
+                        break
+
+            for attr in ("state", "callState", "call_state"):
+                with suppress(Exception):
+                    value = getattr(info_obj, attr)
+                    if value is not None:
+                        state_name = str(value)
+                        break
+
+        if (
+            state_name in self._TERMINAL_STATES
+            or state_text.upper() == "DISCONNECTED"
+            or last_status_code >= 300
+        ):
+            self._release_slot()
+
     def __getattr__(self, name: str) -> Any:
         def _noop(*args: Any, **kwargs: Any) -> None:
             return None

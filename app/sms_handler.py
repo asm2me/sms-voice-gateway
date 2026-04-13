@@ -312,6 +312,7 @@ class SMSGateway:
                         "caller_id": sip_account.from_user or self.settings.outbound_caller_id,
                         "enabled": sip_account.enabled,
                         "proxy_uri": sip_account.outbound_proxy,
+                        "concurrency_limit": sip_account.concurrency_limit,
                     },
                 )
                 sip_call_id = sip_result.call_id or sip_call_id
@@ -341,6 +342,30 @@ class SMSGateway:
 
                 last_error = sip_result.error or sip_result.message or "Direct SIP call failed"
                 log.warning("Direct SIP attempt %d/%d failed for %s via %s: %s", attempt, max_attempts, phone, sip_account_id, last_error)
+
+                if "concurrency limit reached" in last_error.lower():
+                    return GatewayResult(
+                        success=False,
+                        phone_number=phone,
+                        text_spoken=spoken_text,
+                        audio_path=audio_path,
+                        was_cached=was_cached,
+                        sip_call_id=sip_call_id,
+                        sip_account_id=sip_account_id,
+                        error=last_error,
+                        details={
+                            "sip_result": sip_result.details,
+                            "tts_cached": was_cached,
+                            "hash": hkey,
+                            "rate_counts": self.rate_limiter.get_counts(phone),
+                            "attempts": attempt,
+                            "max_attempts": max_attempts,
+                            "retry_interval_seconds": retry_interval_seconds,
+                            "sip_account_id": sip_account_id,
+                            "smpp_username": sms.smpp_username or "",
+                            "smpp_retry_count": retry_count,
+                        },
+                    )
 
             if attempt < max_attempts:
                 retry_snapshot = _queue_retry(

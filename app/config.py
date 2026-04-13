@@ -23,6 +23,7 @@ class SIPAccount(BaseModel):
     default_for_outbound: bool = False
     register: bool = True
     outbound_proxy: str = ""
+    concurrency_limit: int = 1
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
