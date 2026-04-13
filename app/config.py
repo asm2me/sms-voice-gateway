@@ -37,6 +37,8 @@ class SMPPAccount(BaseModel):
     default_sip_account_id: str = ""
     delivery_retry_count: int | None = None
     delivery_retry_interval_seconds: int | None = None
+    rate_limit_hourly: int = 0
+    rate_limit_daily: int = 0
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -197,6 +199,10 @@ class Settings(BaseSettings):
     smpp_port: int = 7070
     smpp_username: str = "smpp"
     smpp_password: str = "smpp_secret"
+
+    # Per-SMPP-user rate limits
+    smpp_default_rate_limit_hourly: int = 0
+    smpp_default_rate_limit_daily: int = 0
 
     # Rate limiting
     rate_limit_hourly: int = 3    # max calls per number per hour

@@ -33,11 +33,14 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.requests import ClientDisconnect
 from pydantic import BaseModel
 
 from .admin_reports import (
+    batch_delete_inbox_messages,
     batch_delete_queue_items,
     batch_update_queue_item_status,
+    delete_inbox_message,
     delete_queue_item,
     export_delivery_reports_csv,
     export_delivery_reports_xlsx,
@@ -46,6 +49,8 @@ from .admin_reports import (
     get_delivery_report_collector,
     get_queue_item,
     get_queue_store,
+    paginate_items,
+    query_inbox_messages,
     query_queue_items,
     record_delivery_report,
     record_queue_item,
@@ -240,26 +245,50 @@ def _build_queue_context(
     search: str = "",
     status_filter: str = "",
     provider_filter: str = "",
-) -> tuple[dict, list[dict], dict, list[dict], dict]:
-    from .admin_reports import list_inbox_messages, summarize_inbox, summarize_queue
+    page: int = 1,
+    inbox_search: str = "",
+    inbox_status: str = "",
+    inbox_provider: str = "",
+    inbox_page: int = 1,
+    page_size: int = 20,
+) -> tuple[dict, dict, dict, dict, dict, dict]:
+    from .admin_reports import summarize_inbox, summarize_queue
 
     inbox_summary = summarize_inbox(settings)
     queue_summary = summarize_queue(settings)
-    recent_inbox_messages = list_inbox_messages(settings, limit=10)
-    recent_queue_items = query_queue_items(
+    all_queue_items = query_queue_items(
         settings,
         search=search,
         status=status_filter,
         provider=provider_filter,
-        limit=100,
+        limit=getattr(settings, "delivery_report_max_items", 1000),
     )
+    all_inbox_messages = query_inbox_messages(
+        settings,
+        search=inbox_search,
+        status=inbox_status,
+        provider=inbox_provider,
+        limit=getattr(settings, "delivery_report_max_items", 1000),
+    )
+    recent_queue_items = paginate_items(all_queue_items, page=page, page_size=page_size)
+    recent_inbox_messages = paginate_items(all_inbox_messages, page=inbox_page, page_size=page_size)
     queue_filters = {
         "search": search,
         "status": status_filter,
         "provider": provider_filter,
+        "page": recent_queue_items["page"],
+        "page_size": recent_queue_items["page_size"],
         "has_filters": bool(search.strip() or status_filter.strip() or provider_filter.strip()),
     }
-    return inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters
+    inbox_filters = {
+        "search": inbox_search,
+        "status": inbox_status,
+        "provider": inbox_provider,
+        "page": recent_inbox_messages["page"],
+        "page_size": recent_inbox_messages["page_size"],
+        "has_filters": bool(inbox_search.strip() or inbox_status.strip() or inbox_provider.strip()),
+    }
+    return inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters
 
 
 def _build_live_call_context(settings: Settings) -> dict:
@@ -460,6 +489,8 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
 
     delivery_retry_count_raw = str(form.get("delivery_retry_count", "")).strip()
     delivery_retry_interval_raw = str(form.get("delivery_retry_interval_seconds", "")).strip()
+    rate_limit_hourly_raw = str(form.get("rate_limit_hourly", "")).strip()
+    rate_limit_daily_raw = str(form.get("rate_limit_daily", "")).strip()
 
     return SMPPAccount(
         id=account_id,
@@ -471,6 +502,8 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
         default_sip_account_id=str(form.get("default_sip_account_id", "")).strip(),
         delivery_retry_count=int(delivery_retry_count_raw) if delivery_retry_count_raw != "" else None,
         delivery_retry_interval_seconds=int(delivery_retry_interval_raw) if delivery_retry_interval_raw != "" else None,
+        rate_limit_hourly=int(rate_limit_hourly_raw) if rate_limit_hourly_raw != "" else None,
+        rate_limit_daily=int(rate_limit_daily_raw) if rate_limit_daily_raw != "" else None,
     )
 
 
@@ -720,11 +753,21 @@ def _admin_context(
     queue_search = str(request.query_params.get("search", "")).strip()
     queue_status = str(request.query_params.get("status", "")).strip()
     queue_provider = str(request.query_params.get("provider", "")).strip()
-    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters = _build_queue_context(
+    queue_page = int(request.query_params.get("queue_page", "1") or "1")
+    inbox_search = str(request.query_params.get("inbox_search", "")).strip()
+    inbox_status = str(request.query_params.get("inbox_status", "")).strip()
+    inbox_provider = str(request.query_params.get("inbox_provider", "")).strip()
+    inbox_page = int(request.query_params.get("inbox_page", "1") or "1")
+    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(
         settings,
         search=queue_search,
         status_filter=queue_status,
         provider_filter=queue_provider,
+        page=queue_page,
+        inbox_search=inbox_search,
+        inbox_status=inbox_status,
+        inbox_provider=inbox_provider,
+        inbox_page=inbox_page,
     )
     live_calls = _build_live_call_context(settings)
     sip_trunks_health = _build_sip_trunk_health_context(settings)
@@ -738,10 +781,13 @@ def _admin_context(
         "report_summary": report_summary,
         "recent_reports": recent_reports,
         "sms_inbox_summary": sms_inbox_summary,
-        "recent_inbox_messages": recent_inbox_messages,
+        "recent_inbox_messages": recent_inbox_messages["items"],
         "queue_summary": queue_summary,
-        "recent_queue_items": recent_queue_items,
+        "recent_queue_items": recent_queue_items["items"],
         "queue_filters": queue_filters,
+        "inbox_filters": inbox_filters,
+        "queue_pagination": {k: recent_queue_items[k] for k in ("page", "page_size", "total_items", "total_pages", "has_previous", "has_next", "previous_page", "next_page")},
+        "inbox_pagination": {k: recent_inbox_messages[k] for k in ("page", "page_size", "total_items", "total_pages", "has_previous", "has_next", "previous_page", "next_page")},
         "live_calls": live_calls,
         "basic_settings": _build_setting_items(
             settings,
@@ -826,7 +872,18 @@ def _admin_context(
         "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
         "health": health_payload,
         "sip_accounts": [account.model_dump() for account in settings.sip_accounts],
-        "smpp_accounts": [account.model_dump() for account in settings.smpp_accounts],
+        "smpp_accounts": [
+            {
+                **account.model_dump(),
+                "effective_rate_limit_hourly": account.rate_limit_hourly if account.rate_limit_hourly not in (None, 0) else settings.smpp_default_rate_limit_hourly,
+                "effective_rate_limit_daily": account.rate_limit_daily if account.rate_limit_daily not in (None, 0) else settings.smpp_default_rate_limit_daily,
+                "rate_limit_hourly_is_unlimited": account.rate_limit_hourly == 0,
+                "rate_limit_daily_is_unlimited": account.rate_limit_daily == 0,
+                "effective_rate_limit_hourly_is_unlimited": (account.rate_limit_hourly if account.rate_limit_hourly is not None else settings.smpp_default_rate_limit_hourly) == 0,
+                "effective_rate_limit_daily_is_unlimited": (account.rate_limit_daily if account.rate_limit_daily is not None else settings.smpp_default_rate_limit_daily) == 0,
+            }
+            for account in settings.smpp_accounts
+        ],
         "system_users": [user.model_dump() for user in settings.system_users],
         "available_permissions": get_system_user_permissions(),
         "permission_groups": [
@@ -1968,7 +2025,18 @@ async def admin_tools_test_send(
     _: None = Depends(dep_admin_credentials),
     settings: Settings = Depends(dep_settings),
 ):
-    form = await request.form()
+    try:
+        form = await request.form()
+    except ClientDisconnect:
+        log.warning("Admin test-send request client disconnected before form parsing completed")
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "client_disconnected",
+                "message": "Client disconnected before the test-send request body was fully received.",
+            },
+            status_code=499,
+        )
     smpp_username = str(form.get("smpp_username", "")).strip()
     phone_number = str(form.get("phone_number", "")).strip()
     body = str(form.get("body", "")).strip()
@@ -2292,7 +2360,9 @@ async def generic_webhook(
     _record_gateway_result("generic", result, phone_number=payload.destination or payload.from_number or payload.to_number, message=payload.body[:120])
 
     if not result.success:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, result.error)
+        pending_reason = (result.details or {}).get("pending_reason", "")
+        status_code = status.HTTP_429_TOO_MANY_REQUESTS if "rate limited" in (result.error or "").lower() else status.HTTP_422_UNPROCESSABLE_ENTITY
+        raise HTTPException(status_code, result.error, headers={"Retry-After": "3600"} if status_code == status.HTTP_429_TOO_MANY_REQUESTS else None)
 
     return {
         "success": True,

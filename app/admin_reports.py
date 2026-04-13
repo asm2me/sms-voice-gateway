@@ -581,6 +581,72 @@ def list_inbox_messages(settings: Settings, limit: int = 10) -> list[dict[str, A
     return [item.to_dict() for item in get_inbox_store(settings).list_messages(limit=limit)]
 
 
+def query_inbox_messages(
+    settings: Settings,
+    *,
+    search: str = "",
+    status: str = "",
+    provider: str = "",
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    search_term = search.strip().lower()
+    status_term = status.strip().lower()
+    provider_term = provider.strip().lower()
+    items = get_inbox_store(settings).list_messages(limit=getattr(settings, "delivery_report_max_items", 1000))
+    filtered: list[InboxMessage] = []
+    for item in items:
+        haystack = " ".join(
+            [
+                item.id,
+                item.created_at,
+                item.updated_at,
+                item.from_number,
+                item.to_number,
+                item.provider,
+                item.body,
+                item.body_preview,
+                item.source,
+                item.status,
+                item.last_error,
+            ]
+        ).lower()
+        if search_term and search_term not in haystack:
+            continue
+        if status_term and item.status.lower() != status_term:
+            continue
+        if provider_term and item.provider.lower() != provider_term:
+            continue
+        filtered.append(item)
+        if limit > 0 and len(filtered) >= limit:
+            break
+    return [item.to_dict() for item in filtered]
+
+
+def delete_inbox_message(settings: Settings, item_id: str) -> bool:
+    store = get_inbox_store(settings)
+    with store._lock:
+        before = len(store._items)
+        store._items = deque((item for item in store._items if item.id != item_id), maxlen=store.max_items)
+        removed = len(store._items) != before
+        if removed:
+            store._persist_unlocked()
+    return removed
+
+
+def batch_delete_inbox_messages(settings: Settings, item_ids: list[str]) -> int:
+    ids = {item_id for item_id in item_ids if item_id}
+    if not ids:
+        return 0
+    store = get_inbox_store(settings)
+    with store._lock:
+        before = len(store._items)
+        store._items = deque((item for item in store._items if item.id not in ids), maxlen=store.max_items)
+        removed = before - len(store._items)
+        if removed:
+            store._persist_unlocked()
+    return removed
+
+
 def list_queue_items(settings: Settings, limit: int = 10) -> list[dict[str, Any]]:
     return [item.to_dict() for item in get_queue_store(settings).list_items(limit=limit)]
 
@@ -629,6 +695,27 @@ def summarize_inbox(settings: Settings) -> dict[str, Any]:
         "latest_timestamp": summary.get("latest_timestamp"),
         "by_status": summary.get("by_status", {}),
         "unread_label": "Recent",
+    }
+
+
+def paginate_items(items: list[dict[str, Any]], *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+    page = max(1, page)
+    page_size = max(1, page_size)
+    total = len(items)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return {
+        "items": items[start:end],
+        "page": page,
+        "page_size": page_size,
+        "total_items": total,
+        "total_pages": total_pages,
+        "has_previous": page > 1,
+        "has_next": page < total_pages,
+        "previous_page": max(1, page - 1),
+        "next_page": min(total_pages, page + 1),
     }
 
 
