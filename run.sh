@@ -24,6 +24,15 @@ source .venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
+# Install PJSUA2 if available from pip; this is required for live SIP registration tests.
+if ! python -c "import pjsua2" >/dev/null 2>&1; then
+    echo "[+] Installing pjsua2..."
+    pip install -q pjsua2 || {
+        echo "[!] pjsua2 is not available via pip for this environment."
+        echo "[!] Install the system package or a prebuilt wheel that provides the Python module."
+    }
+fi
+
 # Ensure audio cache directory exists
 mkdir -p audio_cache
 
