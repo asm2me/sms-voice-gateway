@@ -190,6 +190,14 @@ class PJSipUASession:
                 with suppress(Exception):
                     ep_cfg.logConfig.level = 3
                     ep_cfg.logConfig.consoleLevel = 3
+                with suppress(Exception):
+                    ep_cfg.medConfig.noVad = True
+                with suppress(Exception):
+                    ep_cfg.medConfig.hasIoqueue = True
+                with suppress(Exception):
+                    ep_cfg.medConfig.clockRate = 16000
+                with suppress(Exception):
+                    ep_cfg.medConfig.sndClockRate = 16000
 
                 ep.libInit(ep_cfg)
 
@@ -202,6 +210,11 @@ class PJSipUASession:
 
                 transport = ep.transportCreate(transport_type, transport_cfg)
                 ep.libStart()
+
+                with suppress(Exception):
+                    aud_mgr = ep.audDevManager()
+                    if hasattr(aud_mgr, "setNullDev"):
+                        aud_mgr.setNullDev()
 
                 self._endpoint = ep
                 self._transport = transport
