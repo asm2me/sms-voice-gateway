@@ -491,6 +491,9 @@ def _build_sip_account_from_form(form) -> SIPAccount:
     username = str(form.get("username", "")).strip()
     account_id = str(form.get("account_id", "")).strip() or _slugify_identifier(label or username or host, "sip-account")
     port_raw = str(form.get("port", "5060")).strip()
+    concurrency_limit_raw = str(
+        form.get("concurrency_limit", form.get("max_concurrent_channels", "1"))
+    ).strip()
     return SIPAccount(
         id=account_id,
         label=label or account_id,
@@ -507,6 +510,7 @@ def _build_sip_account_from_form(form) -> SIPAccount:
         default_for_outbound=_form_bool(form, "default_for_outbound"),
         register=_form_bool(form, "register"),
         outbound_proxy=str(form.get("outbound_proxy", "")).strip(),
+        concurrency_limit=max(1, int(concurrency_limit_raw or "1")),
     )
 
 
@@ -1779,6 +1783,18 @@ async def admin_test_sip_account_connection(
         default_for_outbound=str(payload.get("default_for_outbound", "false")).strip().lower() in {"1", "true", "yes", "on"},
         register=str(payload.get("register", "true")).strip().lower() in {"1", "true", "yes", "on"},
         outbound_proxy=str(payload.get("outbound_proxy", "")).strip(),
+        concurrency_limit=max(
+            1,
+            int(
+                str(
+                    payload.get(
+                        "concurrency_limit",
+                        payload.get("max_concurrent_channels", "1"),
+                    )
+                ).strip()
+                or "1"
+            ),
+        ),
     )
     settings = dep_settings()
     service = build_pjsua2_service(settings)

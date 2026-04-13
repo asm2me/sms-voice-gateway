@@ -53,13 +53,23 @@ def _host_with_port(host: str, port: int | str | None) -> str:
     host = (host or "").strip()
     if not host:
         return ""
+
+    port_value = None
+    try:
+        if port not in (None, "", 0, "0"):
+            port_value = int(port)
+    except Exception:
+        port_value = None
+
     if host.startswith("[") and "]" in host:
-        return host if not port else f"{host}:{int(port)}"
+        return host if port_value is None else f"{host}:{port_value}"
     if ":" in host and host.count(":") > 1:
-        return host if not port else f"[{host}]:{int(port)}"
+        return host if port_value is None else f"[{host}]:{port_value}"
     if ":" in host:
-        return host
-    return host if not port else f"{host}:{int(port)}"
+        host_name, host_port = host.rsplit(":", 1)
+        if host_port.isdigit():
+            return host
+    return host if port_value is None else f"{host}:{port_value}"
 
 
 @dataclass

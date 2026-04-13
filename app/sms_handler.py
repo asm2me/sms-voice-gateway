@@ -288,6 +288,8 @@ class SMSGateway:
                     "id": sip_account.id,
                     "display_name": sip_account.display_name or sip_account.label,
                     "domain": sip_account.domain or sip_account.host,
+                    "host": sip_account.host,
+                    "port": sip_account.port,
                     "username": sip_account.username,
                     "password": sip_account.password,
                     "transport": (sip_account.transport or "udp").upper(),
@@ -295,6 +297,11 @@ class SMSGateway:
                     "enabled": sip_account.enabled,
                     "proxy_uri": sip_account.outbound_proxy,
                     "concurrency_limit": sip_account.concurrency_limit,
+                    "extra": {
+                        "host": sip_account.host,
+                        "port": sip_account.port,
+                        "from_domain": sip_account.from_domain,
+                    },
                 },
             )
             sip_call_id = sip_result.call_id or sip_call_id
