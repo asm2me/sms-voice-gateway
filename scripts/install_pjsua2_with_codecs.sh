@@ -136,7 +136,7 @@ print(sysconfig.get_config_var("LIBDIR") or "")
 PY
 )"
 
-make -C pjsip-apps/src/swig \
+make -C pjsip-apps/src/swig python \
   PYTHON="${PYTHON_BIN}" \
   PYTHON_INCLUDE="${PYTHON_INCLUDE}" \
   PYTHON_LIBDIR="${PYTHON_LIBDIR}" \
@@ -160,6 +160,7 @@ echo "Verify with:"
 echo "  ${PYTHON_BIN} -c \"import pjsua2 as pj; print('pjsua2 ok', pj)\""
 echo
 echo "Then restart the gateway service/container and inspect codecEnum2() / SIP SDP again."
+echo "The installer intentionally builds only the Python SWIG target and skips Java/JDK-dependent targets."
 echo
 echo "Note: G.723.1 support depends on an available codec implementation in the build environment."
 echo "If your pjproject build still does not expose G723.1, you need a compatible external codec library/toolchain."
