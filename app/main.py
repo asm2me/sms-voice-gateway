@@ -7,7 +7,7 @@ Supported SMS provider webhooks:
   POST /sms/generic     – Generic JSON: {body, from, to, destination}
 
 Health / debug endpoints:
-  GET  /health          – service liveness + AMI ping + Redis ping
+  GET  /health          – service liveness + SIP + Redis ping
   GET  /cache/stats     – audio cache statistics
   POST /cache/evict     – evict expired audio files
   GET  /debug/call      – manually trigger a test call (guarded by webhook_secret)
@@ -29,7 +29,7 @@ from threading import Event, Thread
 from typing import Annotated, Optional
 
 from fastapi import Body, Depends, FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -61,6 +61,7 @@ from .config_store import (
 from .pjsua2_service import SipAccountProfile, build_pjsua2_service
 from .sms_handler import IncomingSMS, SMSGateway, _utc_now_iso
 from .smpp_service import SMPPService
+from .tts_service import TTSService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -136,7 +137,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="SMS Voice Gateway",
-    description="Converts incoming SMS to TTS and delivers via SIP/Asterisk call",
+    description="Converts incoming SMS to voice and delivers via outbound SIP call",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -302,7 +303,11 @@ def _record_gateway_result(provider: str, result, *, phone_number: str = "", mes
             provider=provider,
             phone_number=result.phone_number or phone_number,
             message=message,
-            error=result.error or None,
+            error=(
+                (result.details or {}).get("pending_reason")
+                or result.error
+                or None
+            ),
             ami_action_id=result.ami_action_id or None,
             audio_cached=result.was_cached if hasattr(result, "was_cached") else None,
             text_spoken=result.text_spoken or None,
@@ -499,14 +504,9 @@ def _simulate_smpp_test_send(
         current_queue_item.status = "delivered" if result.success else "queued"
         current_queue_item.last_error = "" if result.success else result.error or "Test send failed"
         current_queue_item.ami_action_id = result.ami_action_id or getattr(current_queue_item, "ami_action_id", "")
-        if hasattr(current_queue_item, "sip_account_id"):
-            current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
-        if hasattr(current_queue_item, "details") and isinstance(getattr(current_queue_item, "details", None), dict):
-            current_queue_item.details["sip_account_id"] = result.sip_account_id or current_queue_item.details.get("sip_account_id", "")
-            current_queue_item.details["sip_call_id"] = result.sip_call_id or current_queue_item.details.get("sip_call_id", "")
-            current_queue_item.details["smpp_username"] = smpp_username
-            current_queue_item.details["result_success"] = result.success
-            current_queue_item.details["result_error"] = result.error or ""
+        current_queue_item.sip_call_id = result.sip_call_id or getattr(current_queue_item, "sip_call_id", "")
+        current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
+        current_queue_item.audio_path = result.audio_path or getattr(current_queue_item, "audio_path", "")
         queue_store.upsert(current_queue_item)
 
     return {
@@ -746,7 +746,7 @@ def _admin_context(
             settings,
             [
                 ("audio_cache_dir", "Audio Cache Directory"),
-                ("asterisk_sounds_dir", "Asterisk Sounds Directory"),
+                ("asterisk_sounds_dir", "Audio Publish Directory"),
                 ("audio_cache_ttl", "Audio Cache TTL"),
                 ("delivery_retry_count", "Delivery Retry Count"),
                 ("delivery_retry_interval_seconds", "Delivery Retry Interval Seconds"),
@@ -770,7 +770,7 @@ def _admin_context(
             {"key": "basic", "label": "Core Voice Routing", "description": "TTS, parsing, and playback behavior"},
             {"key": "security", "label": "Security and Access", "description": "Webhook verification and rate limiting"},
             {"key": "providers", "label": "Speech Provider Credentials", "description": "Cloud/provider credentials and engine options"},
-            {"key": "telephony", "label": "Telephony and Gateway Routing", "description": "Direct SIP UA, SMPP listener, and dialing behavior"},
+            {"key": "telephony", "label": "Telephony and Gateway Routing", "description": "Outbound SIP, SMPP listener, and dialing behavior"},
             {"key": "storage", "label": "Storage and Persistence", "description": "Cache, Redis, reports, and retry persistence"},
             {"key": "system", "label": "System Bootstrap", "description": "Minimal env/bootstrap values that start the admin"},
         ],
@@ -894,7 +894,7 @@ def _build_health_context(settings: Settings) -> dict:
         sip_summary,
         details=sip_details,
         notes=[
-            "Direct outbound delivery now uses the PJSUA2 runtime instead of Asterisk Manager Interface originate.",
+            "Direct outbound delivery uses the SIP runtime and configured SIP accounts.",
             "The PJSUA2 Python bindings must be installed in the deployment environment.",
             "A SIP account must be mapped to the authenticated SMPP username for outbound delivery to work.",
         ],
@@ -1407,6 +1407,16 @@ def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
     )
 
 
+def _queue_audio_url(item: dict[str, object] | None) -> str:
+    if not item:
+        return ""
+    item_id = str(item.get("id", "")).strip()
+    audio_path = str(item.get("audio_path", "")).strip()
+    if not item_id or not audio_path:
+        return ""
+    return f"/admin/queue/audio/{item_id}"
+
+
 def _build_sip_test_payload(account: SIPAccount, result) -> dict:
     status_class = "success" if result.success else "danger"
     status_label = "Connected" if result.success else "Failed"
@@ -1586,7 +1596,7 @@ async def admin_assign_smpp_to_sip(
     return templates.TemplateResponse(
         request,
         "admin.html",
-        _admin_context(request, settings, active_section="config", success_message=f"Assigned SMPP user '{smpp_username}' to SIP trunk '{sip_account_id}'."),
+        _admin_context(request, settings, active_section="config", success_message=f"Assigned SMPP user '{smpp_username}' to SIP account '{sip_account_id}'."),
     )
 
 
@@ -1672,6 +1682,86 @@ async def admin_tools_logs(
     _: None = Depends(dep_admin_credentials),
 ):
     return JSONResponse({"lines": _read_admin_log()})
+
+
+@app.post("/admin/tools/tts-preview")
+async def admin_tools_tts_preview(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    form = await request.form()
+    body = str(form.get("body", "")).strip()
+
+    if not body:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "body is required")
+
+    _append_admin_log(f"Tools tts-preview started provider={settings.tts_provider} body={body[:80]!r}")
+    try:
+        tts = TTSService(settings, AudioCache(settings))
+        audio_path, was_cached = tts.get_or_create_audio(body)
+        audio_url = f"/admin/tools/tts-preview/audio?path={audio_path}"
+        _append_admin_log(
+            f"Tools tts-preview finished ok provider={settings.tts_provider} cached={was_cached} audio_path={audio_path}"
+        )
+        return templates.TemplateResponse(
+            request,
+            "admin.html",
+            _admin_context(
+                request,
+                settings,
+                active_section="tools",
+                success_message=f"TTS preview audio generated using provider '{settings.tts_provider}'.",
+            )
+            | {
+                "tts_preview_audio_url": audio_url,
+                "tts_preview_cached": was_cached,
+                "tts_preview_provider": settings.tts_provider,
+            },
+        )
+    except Exception as exc:
+        _append_admin_log(
+            f"Tools tts-preview failed provider={settings.tts_provider} error={exc}"
+        )
+        return templates.TemplateResponse(
+            request,
+            "admin.html",
+            _admin_context(
+                request,
+                settings,
+                active_section="tools",
+                success_message=f"TTS preview failed: {exc}",
+                message_level="danger",
+            ),
+        )
+
+
+@app.get("/admin/tools/tts-preview/audio")
+async def admin_tools_tts_preview_audio(
+    path: str,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    raw_audio_path = str(path or "").strip()
+    if not raw_audio_path:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "path is required")
+
+    audio_path = Path(raw_audio_path)
+    if not audio_path.is_absolute():
+        audio_path = (BASE_DIR / audio_path).resolve()
+    else:
+        audio_path = audio_path.resolve()
+
+    allowed_roots = [
+        (BASE_DIR / settings.audio_cache_dir).resolve(),
+        (BASE_DIR / "audio_cache").resolve(),
+    ]
+    if not any(audio_path.is_relative_to(root) for root in allowed_roots):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Audio path is outside the allowed cache directories")
+    if not audio_path.exists() or not audio_path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Generated audio file not found")
+
+    return FileResponse(audio_path, media_type="audio/wav", filename=audio_path.name)
 
 
 @app.post("/admin/tools/test-send")
@@ -1781,6 +1871,38 @@ async def admin_batch_update_queue_status_route(
             success_message=f"Updated {updated} queue item{'s' if updated != 1 else ''} to '{status_value}'.",
         ),
     )
+
+
+@app.get("/admin/queue/audio/{item_id}")
+async def admin_queue_audio(
+    item_id: str,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    item = get_queue_item(settings, item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Queue item not found")
+
+    raw_audio_path = str(item.get("audio_path", "")).strip()
+    if not raw_audio_path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Queue item has no generated audio")
+
+    audio_path = Path(raw_audio_path)
+    if not audio_path.is_absolute():
+        audio_path = (BASE_DIR / audio_path).resolve()
+    else:
+        audio_path = audio_path.resolve()
+
+    allowed_roots = [
+        (BASE_DIR / settings.audio_cache_dir).resolve(),
+        (BASE_DIR / "audio_cache").resolve(),
+    ]
+    if not any(audio_path.is_relative_to(root) for root in allowed_roots):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Audio path is outside the allowed cache directories")
+    if not audio_path.exists() or not audio_path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Generated audio file not found")
+
+    return FileResponse(audio_path, media_type="audio/wav", filename=audio_path.name)
 
 
 @app.get("/admin/reports/live")
@@ -2023,7 +2145,7 @@ async def cache_stats(settings: Settings = Depends(dep_settings)):
         "audio_files": len(files),
         "total_size_mb": round(total_bytes / 1024 / 1024, 2),
         "cache_dir": str(cache_dir.resolve()),
-        "asterisk_sounds_dir": settings.asterisk_sounds_dir,
+        "audio_publish_dir": settings.asterisk_sounds_dir,
     }
 
 
