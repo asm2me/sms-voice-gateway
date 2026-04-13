@@ -151,7 +151,7 @@ class Settings(BaseSettings):
 
     # ElevenLabs
     elevenlabs_api_key: Optional[str] = None
-    elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"
+    elevenlabs_voice_id: str = "rUaPbzcZIu8df8iNL9WZ"
 
     # Audio cache
     audio_cache_dir: str = "./audio_cache"
