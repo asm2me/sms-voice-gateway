@@ -159,7 +159,9 @@ if [[ -d pjsip-apps/src/swig/python ]]; then
   "${PYTHON_BIN}" setup.py install
 fi
 
-ldconfig
+if command -v ldconfig >/dev/null 2>&1; then
+  ldconfig
+fi
 
 echo
 echo "Installed pjproject ${PJPROJECT_VERSION} with Python pjsua2 bindings."
