@@ -299,15 +299,16 @@ class PJSipUASession:
 
     def register_account(self, profile: SipAccountProfile | dict[str, Any]) -> PJSUA2RegistrationResult:
         with self._lock:
-            init_result = self.initialize()
-            if not init_result.success:
-                return init_result
-
             try:
                 pj = self._pj
                 assert pj is not None
                 selected = self.select_profile(profile)
+                existing_profile = self._current_profile
                 self._current_profile = selected
+
+                init_result = self.initialize()
+                if not init_result.success:
+                    return init_result
 
                 if not selected.enabled:
                     return PJSUA2RegistrationResult(
@@ -316,7 +317,11 @@ class PJSipUASession:
                         error="SIP profile is disabled",
                     )
 
-                if self._account is not None and self._current_profile and self._current_profile.id == selected.id:
+                if (
+                    self._account is not None
+                    and existing_profile is not None
+                    and existing_profile.id == selected.id
+                ):
                     return PJSUA2RegistrationResult(
                         success=True,
                         account_id=selected.id,
@@ -324,12 +329,14 @@ class PJSipUASession:
                         details={"already_registered": self._registered},
                     )
 
-                if self._account is not None and self._current_profile and self._current_profile.id != selected.id:
-                    if self._account is not None:
-                        with suppress(Exception):
-                            self._account.shutdown()
+                if (
+                    self._account is not None
+                    and existing_profile is not None
+                    and existing_profile.id != selected.id
+                ):
+                    with suppress(Exception):
+                        self._account.shutdown()
                     self._account = None
-                    self._current_profile = None
                     self._registered = False
                     self._last_call = None
 
@@ -340,7 +347,7 @@ class PJSipUASession:
 
                 account_cfg = pj.AccountConfig()
                 account_cfg.idUri = selected.sip_uri or self._build_id_uri(selected)
-                account_cfg.regConfig.registerOnAdd = True
+                account_cfg.regConfig.registerOnAdd = False
 
                 registrar_uri = selected.registrar_uri or self._build_registrar_uri(selected)
                 account_cfg.regConfig.registrarUri = registrar_uri
@@ -363,37 +370,18 @@ class PJSipUASession:
 
                 self._account = account
                 self._current_profile = selected
-                registration_probe = self._wait_for_registration(account, timeout_seconds=12.0)
-                self._registered = registration_probe["success"]
-
-                if not registration_probe["success"]:
-                    return PJSUA2RegistrationResult(
-                        success=False,
-                        account_id=selected.id,
-                        error=registration_probe["error"] or "SIP trunk registration did not complete successfully",
-                        status_code=registration_probe["status_code"],
-                        status_text=registration_probe["status_text"],
-                        details={
-                            "id_uri": account_cfg.idUri,
-                            "registrar_uri": registrar_uri,
-                            "username": selected.username,
-                            "transport": selected.transport,
-                            "probe": registration_probe,
-                        },
-                    )
+                self._registered = True
 
                 return PJSUA2RegistrationResult(
                     success=True,
                     account_id=selected.id,
-                    message="SIP account registered successfully",
-                    status_code=registration_probe["status_code"],
-                    status_text=registration_probe["status_text"],
+                    message="SIP account prepared without prior trunk registration",
                     details={
                         "id_uri": account_cfg.idUri,
                         "registrar_uri": registrar_uri,
                         "username": selected.username,
                         "transport": selected.transport,
-                        "probe": registration_probe,
+                        "register_on_add": False,
                     },
                 )
             except Exception as exc:
@@ -456,14 +444,6 @@ class PJSipUASession:
                     success=False,
                     destination_number=destination,
                     error="No SIP account is active",
-                )
-
-            if not self._registered:
-                return PJSUA2Result(
-                    success=False,
-                    account_id=self._current_profile.id,
-                    destination_number=destination,
-                    error="SIP account is not registered",
                 )
 
             try:
@@ -669,8 +649,8 @@ class PJSipUASession:
         if profile.sip_uri:
             return profile.sip_uri
         user = profile.username or profile.id
-        host = profile.domain or str(profile.extra.get("host", "") or "")
-        port = profile.extra.get("port")
+        host = profile.domain or profile.host or str(profile.extra.get("host", "") or "")
+        port = profile.port or profile.extra.get("port")
         target = _host_with_port(host, port)
         if not target:
             fallback = self.settings.sip_gateway_domain if hasattr(self.settings, "sip_gateway_domain") else ""
@@ -682,8 +662,8 @@ class PJSipUASession:
     def _build_registrar_uri(self, profile: SipAccountProfile) -> str:
         if profile.registrar_uri:
             return profile.registrar_uri
-        host = profile.domain or str(profile.extra.get("host", "") or "")
-        port = profile.extra.get("port")
+        host = profile.domain or profile.host or str(profile.extra.get("host", "") or "")
+        port = profile.port or profile.extra.get("port")
         target = _host_with_port(host, port)
         if not target:
             raise ValueError("SIP profile requires registrar_uri or domain/host")
@@ -694,11 +674,13 @@ class PJSipUASession:
     def _build_sip_uri(self, number: str) -> str:
         profile = self._current_profile
         if profile:
-            host = profile.domain or str(profile.extra.get("host", "") or "")
-            port = profile.extra.get("port")
+            host = profile.domain or profile.host or str(profile.extra.get("host", "") or "")
+            port = profile.port or profile.extra.get("port")
             target = _host_with_port(host, port)
+            transport = (profile.transport or "").strip().lower()
+            transport_suffix = f";transport={transport}" if transport else ""
             if target:
-                return f"sip:{number}@{target}"
+                return f"sip:{number}@{target}{transport_suffix}"
         return f"sip:{number}"
 
     def close(self) -> None:
