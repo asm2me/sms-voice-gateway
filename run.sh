@@ -24,21 +24,47 @@ source .venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
-# Install build dependencies commonly required for local PJSUA2 builds.
-if command -v apt-get >/dev/null 2>&1; then
-    if ! dpkg -s build-essential pkg-config libasound2-dev libssl-dev libopus-dev libvpx-dev libavcodec-dev libavformat-dev libswscale-dev python3-dev >/dev/null 2>&1; then
-        echo "[+] Installing system packages required for PJSUA2 builds..."
-        sudo apt-get update -y
-        sudo apt-get install -y build-essential pkg-config libasound2-dev libssl-dev libopus-dev libvpx-dev libavcodec-dev libavformat-dev libswscale-dev python3-dev
-    fi
-fi
+install_pjsua2_from_source() {
+    local build_root="${SCRIPT_DIR}/.cache/pjsip"
+    local src_dir="${build_root}/pjproject"
+    local version="${PJSIP_VERSION:-2.14.1}"
+    local archive="${build_root}/pjproject-${version}.tar.bz2"
+    local url="https://github.com/pjsip/pjproject/archive/refs/tags/${version}.tar.gz"
 
-# Install PJSUA2 if available from pip; this is required for live SIP registration tests.
+    mkdir -p "${build_root}"
+
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "[+] Installing system packages required for PJSUA2 source builds..."
+        apt-get update -y
+        apt-get install -y build-essential pkg-config libasound2-dev libssl-dev libopus-dev libvpx-dev libavcodec-dev libavformat-dev libswscale-dev python3-dev swig wget tar
+    fi
+
+    if [ ! -d "${src_dir}" ]; then
+        echo "[+] Downloading pjproject ${version}..."
+        rm -f "${build_root}"/pjproject-*.tar.gz
+        wget -O "${archive}.gz" "${url}"
+        rm -rf "${src_dir}" "${build_root}/pjproject-${version}"
+        tar -xzf "${archive}.gz" -C "${build_root}"
+        mv "${build_root}/pjproject-${version}" "${src_dir}"
+    fi
+
+    cd "${src_dir}"
+    echo "[+] Building PJSIP/PJSUA2 Python bindings from source..."
+    ./configure --prefix="${src_dir}/build"
+    make dep
+    make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
+    make install
+    cd pjsip-apps/src/swig/python
+    python setup.py install
+    cd "${SCRIPT_DIR}"
+}
+
+# Install PJSUA2 for live SIP registration tests.
 if ! python -c "import pjsua2" >/dev/null 2>&1; then
     echo "[+] Installing pjsua2..."
-    pip install -q pjsua2 || {
-        echo "[!] pjsua2 pip build failed."
-        echo "[!] This usually means a compatible wheel or full local PJSIP source/bindings are still required."
+    pip install -q pjsua2 || install_pjsua2_from_source || {
+        echo "[!] Unable to install pjsua2 automatically."
+        echo "[!] Provide a compatible wheel or install from a supported PJSIP source build."
     }
 fi
 
