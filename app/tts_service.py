@@ -281,16 +281,20 @@ _BACKENDS = {
 }
 
 _backend_instance: Optional[TTSBackend] = None
+_backend_provider: str | None = None
 
 
 def get_backend(settings: Settings) -> TTSBackend:
-    global _backend_instance
-    if _backend_instance is None:
-        cls = _BACKENDS.get(settings.tts_provider)
+    global _backend_instance, _backend_provider
+    requested_provider = (settings.tts_provider or "").strip()
+
+    if _backend_instance is None or _backend_provider != requested_provider:
+        cls = _BACKENDS.get(requested_provider)
         if cls is None:
-            raise ValueError(f"Unknown TTS provider: {settings.tts_provider}")
+            raise ValueError(f"Unknown TTS provider: {requested_provider}")
         _backend_instance = cls(settings)
-        log.info("TTS backend initialised: %s", settings.tts_provider)
+        _backend_provider = requested_provider
+        log.info("TTS backend initialised: %s", requested_provider)
     return _backend_instance
 
 
