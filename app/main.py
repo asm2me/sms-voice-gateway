@@ -328,19 +328,20 @@ def _save_admin_config(form, keys: list[str]) -> Settings:
 
         raw = str(form.get(key, ""))
         annotation = field_types.get(key)
+        stripped = raw.strip()
 
         if annotation is bool:
-            data[key] = raw.strip().lower() in {"1", "true", "yes", "on"}
+            data[key] = stripped.lower() in {"1", "true", "yes", "on"}
         elif annotation is int:
-            stripped = raw.strip()
             if stripped != "":
                 data[key] = int(stripped)
         elif annotation is float:
-            stripped = raw.strip()
             if stripped != "":
                 data[key] = float(stripped)
-        elif raw != "":
+        elif stripped != "":
             data[key] = raw
+        elif _is_secret_field(key):
+            data[key] = data.get(key)
 
     updated = Settings(**data)
     save_settings_to_store(updated)
@@ -1351,6 +1352,99 @@ async def admin_update_advanced_config(
         "admin.html",
         _admin_context(request, settings, active_section="config", success_message=f"Advanced settings saved and applied immediately.{smpp_message}"),
     )
+
+
+def _provider_test_payload(provider: str, success: bool, summary: str, detail: str = "") -> dict[str, str]:
+    return {
+        "provider": provider,
+        "success": success,
+        "status_class": "success" if success else "danger",
+        "status_label": "Connected" if success else "Failed",
+        "summary": summary,
+        "detail": detail,
+    }
+
+
+def _build_provider_test_settings(current: Settings, provider: str, form) -> Settings:
+    provider_keys: dict[str, list[str]] = {
+        "google": [
+            "google_credentials_json",
+        ],
+        "aws_polly": [
+            "aws_access_key_id",
+            "aws_secret_access_key",
+            "aws_region",
+            "aws_polly_voice_id",
+            "aws_polly_engine",
+        ],
+        "openai": [
+            "openai_api_key",
+            "openai_tts_model",
+            "openai_tts_voice",
+        ],
+        "elevenlabs": [
+            "elevenlabs_api_key",
+            "elevenlabs_voice_id",
+        ],
+    }
+    update: dict[str, object] = {"tts_provider": provider}
+
+    for key in provider_keys.get(provider, []):
+        if key not in form:
+            continue
+        raw = str(form.get(key, ""))
+        stripped = raw.strip()
+        if stripped != "":
+            update[key] = raw
+        elif _is_secret_field(key):
+            update[key] = getattr(current, key)
+
+    return current.model_copy(update=update)
+
+
+@app.post("/admin/config/provider-test")
+async def admin_test_provider_config(
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+    provider: str = Form(...),
+    sample_text: str = Form("This is a provider connectivity test."),
+    request: Request | None = None,
+):
+    form = await request.form() if request is not None else {}
+    provider_name = (provider or "").strip()
+    supported_providers = {"google", "aws_polly", "openai", "elevenlabs"}
+    if provider_name not in supported_providers:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unsupported provider")
+
+    test_settings = _build_provider_test_settings(settings, provider_name, form)
+    spoken_text = str(sample_text or "").strip() or "This is a provider connectivity test."
+
+    _append_admin_log(f"Provider test started provider={provider_name} body={spoken_text[:80]!r}")
+    try:
+        tts = TTSService(test_settings, AudioCache(test_settings))
+        audio_path, was_cached = tts.get_or_create_audio(spoken_text)
+        _append_admin_log(
+            f"Provider test finished ok provider={provider_name} cached={was_cached} audio_path={audio_path}"
+        )
+        return JSONResponse(
+            _provider_test_payload(
+                provider_name,
+                True,
+                "Provider credentials accepted and audio generation succeeded.",
+                f"Audio generated at {audio_path} (cached={'yes' if was_cached else 'no'}).",
+            )
+        )
+    except Exception as exc:
+        _append_admin_log(f"Provider test failed provider={provider_name} error={exc}")
+        return JSONResponse(
+            _provider_test_payload(
+                provider_name,
+                False,
+                str(exc),
+                "The provider rejected the credentials or audio generation failed.",
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
 
 
 def _append_admin_log(message: str) -> None:

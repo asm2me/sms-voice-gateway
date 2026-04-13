@@ -148,6 +148,9 @@ class QueueItem:
     next_attempt_at: str | None = None
     last_error: str = ""
     ami_action_id: str | None = None
+    sip_call_id: str | None = None
+    sip_account_id: str = ""
+    audio_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -172,6 +175,9 @@ class QueueItem:
             next_attempt_at=_coerce_text(data.get("next_attempt_at")) or None,
             last_error=_coerce_text(data.get("last_error")),
             ami_action_id=_coerce_text(data.get("ami_action_id")) or None,
+            sip_call_id=_coerce_text(data.get("sip_call_id")) or None,
+            sip_account_id=_coerce_text(data.get("sip_account_id")),
+            audio_path=_coerce_text(data.get("audio_path")),
         )
 
 
@@ -397,6 +403,9 @@ class FileBackedQueueStore:
                     next_attempt_at=existing.next_attempt_at,
                     last_error=existing.last_error,
                     ami_action_id=existing.ami_action_id,
+                    sip_call_id=existing.sip_call_id,
+                    sip_account_id=existing.sip_account_id,
+                    audio_path=existing.audio_path,
                 )
                 updated += 1
             if updated:
@@ -433,6 +442,9 @@ class FileBackedQueueStore:
                     item.status,
                     item.last_error,
                     item.ami_action_id or "",
+                    item.sip_call_id or "",
+                    item.sip_account_id or "",
+                    item.audio_path or "",
                 ]
             ).lower():
                 continue
@@ -537,6 +549,9 @@ def record_queue_item(
     next_attempt_at: str | None = None,
     last_error: str = "",
     ami_action_id: str | None = None,
+    sip_call_id: str | None = None,
+    sip_account_id: str = "",
+    audio_path: str = "",
     item_id: str | None = None,
 ) -> QueueItem:
     now = _isoformat(_utc_now())
@@ -555,6 +570,9 @@ def record_queue_item(
         next_attempt_at=next_attempt_at,
         last_error=last_error,
         ami_action_id=ami_action_id,
+        sip_call_id=sip_call_id,
+        sip_account_id=sip_account_id,
+        audio_path=audio_path,
     )
     return get_queue_store(settings).upsert(item)
 
