@@ -199,20 +199,35 @@ class OpenAITTSBackend(TTSBackend):
 class ElevenLabsTTSBackend(TTSBackend):
     def __init__(self, settings: Settings):
         import requests  # type: ignore
-        self.api_key = settings.elevenlabs_api_key
-        self.voice_id = settings.elevenlabs_voice_id
+
+        self.api_key = (settings.elevenlabs_api_key or "").strip()
+        self.voice_id = (settings.elevenlabs_voice_id or "").strip()
         self.requests = requests
 
     def synthesize(self, text: str) -> bytes:
+        if not self.api_key:
+            raise ValueError("ElevenLabs API key is not configured")
+        if not self.voice_id:
+            raise ValueError("ElevenLabs voice id is not configured")
+
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}"
-        headers = {"xi-api-key": self.api_key, "Content-Type": "application/json"}
+        headers = {
+            "xi-api-key": self.api_key,
+            "Accept": "audio/pcm",
+            "Content-Type": "application/json",
+        }
         payload = {
             "text": text,
             "model_id": "eleven_multilingual_v2",
             "voice_settings": {"stability": 0.5, "similarity_boost": 0.8},
-            "output_format": "pcm_8000",
         }
-        r = self.requests.post(url, json=payload, headers=headers, timeout=30)
+        r = self.requests.post(
+            url,
+            params={"output_format": "pcm_8000"},
+            json=payload,
+            headers=headers,
+            timeout=30,
+        )
         r.raise_for_status()
         # Wrap raw PCM in WAV
         out = io.BytesIO()
