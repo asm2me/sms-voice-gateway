@@ -53,11 +53,19 @@ apt-get install -y --no-install-recommends \
   libspeex-dev \
   libspeexdsp-dev \
   libgsm1-dev \
-  libilbc-dev \
   python3-dev \
   python3-pip \
   python3-setuptools \
-  python3-wheel
+  python3-wheel \
+  libsox-dev || true
+
+if apt-cache show libilbc-dev >/dev/null 2>&1; then
+  apt-get install -y --no-install-recommends libilbc-dev
+elif apt-cache show libilbc2 >/dev/null 2>&1; then
+  apt-get install -y --no-install-recommends libilbc2
+else
+  echo "libilbc package not available in this distribution; continuing without it."
+fi
 
 WORKDIR="/usr/local/src/pjsip-build"
 rm -rf "${WORKDIR}"
