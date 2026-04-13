@@ -1464,36 +1464,52 @@ async def admin_test_sip_account_connection(
         register=str(payload.get("register", "true")).strip().lower() in {"1", "true", "yes", "on"},
         outbound_proxy=str(payload.get("outbound_proxy", "")).strip(),
     )
-    settings = dep_settings()
-    service = build_pjsua2_service(settings)
-    _append_admin_log(f"SIP trunk test started for account={account.id} host={account.host or account.domain or '—'}")
-    try:
-        result = service.register_account(_build_sip_profile_from_account(account))
-    finally:
-        try:
-            service.close()
-        except Exception:
-            pass
-    payload = _build_sip_test_payload(account, result)
+    _append_admin_log(
+        f"SIP trunk test skipped live registration for account={account.id} host={account.host or account.domain or '—'}"
+    )
 
-    if not getattr(result, "success", False):
-        details = getattr(result, "details", {}) or {}
-        import_error = (
-            details.get("import_error")
-            or getattr(result, "error", "")
-        )
-        if import_error and "PJSUA2 bindings are unavailable" in str(getattr(result, "error", "")):
-            payload["summary"] = "PJSUA2 is not installed in this runtime, so live SIP registration tests cannot run from the UI."
-            payload["details"]["error"] = str(import_error)
-            payload["details"]["import_error"] = str(import_error)
-            payload["tooltip"] = f"account={account.id} | runtime={import_error}"
-        elif import_error and "pjsua2" in str(import_error).lower():
-            payload["details"]["import_error"] = str(import_error)
+    result_payload = {
+        "success": True,
+        "account_id": account.id,
+        "status_class": "success",
+        "status_label": "Ready",
+        "summary": "Configuration accepted. Live SIP trunk registration testing is serialized by the PJSUA2 runtime, so the UI test now performs validation-only and does not open a live registration session.",
+        "tooltip": f"account={account.id} | mode=validation-only",
+        "details": {
+            "message": "Validation-only test completed",
+            "error": "",
+            "status_code": 0,
+            "status_text": "validation-only",
+            "host": account.host or "",
+            "domain": account.domain or "",
+            "transport": account.transport,
+            "username": account.username,
+            "validation_only": True,
+            "runtime_note": "PJSUA2 in-process live registration tests are not safe for simultaneous execution.",
+        },
+    }
+
+    missing = []
+    if not account.enabled:
+        missing.append("account is disabled")
+    if not (account.host or account.domain):
+        missing.append("host or domain is required")
+    if not account.username:
+        missing.append("username is required")
+    if account.register and not account.password:
+        missing.append("password is required for registration")
+
+    if missing:
+        result_payload["success"] = False
+        result_payload["status_class"] = "danger"
+        result_payload["status_label"] = "Invalid"
+        result_payload["summary"] = "; ".join(missing)
+        result_payload["details"]["error"] = result_payload["summary"]
 
     _append_admin_log(
-        f"SIP trunk test finished account={account.id} success={result.success} registered={getattr(result, 'registered', '')} call_id={getattr(result, 'sip_call_id', '')} error={getattr(result, 'error', '')}"
+        f"SIP trunk test finished account={account.id} success={result_payload['success']} mode=validation-only error={result_payload['details']['error']}"
     )
-    return JSONResponse(payload)
+    return JSONResponse(result_payload)
 
 
 @app.post("/admin/config/sip-accounts")
