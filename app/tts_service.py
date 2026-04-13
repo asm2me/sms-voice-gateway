@@ -164,12 +164,33 @@ class GoogleTTSBackend(TTSBackend):
 
     def _synthesize_with_voice(self, text: str, language: str, voice_name: str) -> bytes:
         synthesis_input = self._tts_mod.SynthesisInput(text=text)
-        response = self.client.synthesize_speech(
-            input=synthesis_input,
-            voice=self._build_voice_params(language, voice_name),
-            audio_config=self.audio_config,
-        )
-        return response.audio_content
+        voice_params = self._build_voice_params(language, voice_name)
+        try:
+            response = self.client.synthesize_speech(
+                input=synthesis_input,
+                voice=voice_params,
+                audio_config=self.audio_config,
+            )
+            return response.audio_content
+        except Exception as exc:
+            message = str(exc)
+            if voice_name and "does not exist" in message:
+                fallback_language = _google_language_from_voice_name(voice_name) or (language or "").strip()
+                log.warning(
+                    "Google TTS voice '%s' was not found; retrying with language '%s' and provider default voice",
+                    voice_name,
+                    fallback_language,
+                )
+                fallback_voice = self._tts_mod.VoiceSelectionParams(
+                    language_code=fallback_language,
+                )
+                response = self.client.synthesize_speech(
+                    input=synthesis_input,
+                    voice=fallback_voice,
+                    audio_config=self.audio_config,
+                )
+                return response.audio_content
+            raise
 
     def synthesize(self, text: str) -> bytes:
         return self._synthesize_with_voice(text, self.settings.tts_language, self.settings.tts_voice)
