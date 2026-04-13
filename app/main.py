@@ -1794,6 +1794,18 @@ def _get_admin_test_send_job(job_id: str) -> dict[str, object] | None:
         return dict(job) if job else None
 
 
+def _wait_for_admin_test_send_job(job_id: str, timeout_seconds: float = 6.0) -> dict[str, object] | None:
+    deadline = time.time() + max(0.0, timeout_seconds)
+    while time.time() < deadline:
+        job = _get_admin_test_send_job(job_id)
+        if not job:
+            return None
+        if str(job.get("status", "")).strip().lower() not in {"queued", "processing"}:
+            return job
+        time.sleep(0.2)
+    return _get_admin_test_send_job(job_id)
+
+
 def _run_admin_test_send_job(
     job_id: str,
     settings: Settings,
@@ -2320,17 +2332,14 @@ async def admin_tools_test_send(
     }
 
     if not smpp_username or not phone_number or not body:
-        return templates.TemplateResponse(
-            request,
-            "admin.html",
-            _admin_context(
-                request,
-                settings,
-                active_section="tools",
-                success_message="smpp_username, phone_number and body are required",
-                message_level="danger",
-                tools_form_values=tools_form_values,
-            ),
+        return JSONResponse(
+            {
+                "success": False,
+                "status": "failed",
+                "message": "smpp_username, phone_number and body are required",
+                "error": "missing_required_fields",
+                "tools_form_values": tools_form_values,
+            },
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -2357,6 +2366,34 @@ async def admin_tools_test_send(
     )
     worker.start()
 
+    response_payload = {
+        "success": True,
+        "status": "queued",
+        "job_id": job_id,
+        "message": f"Test message queued for {phone_number} using SMPP user '{smpp_username}'. Processing continues in the background.",
+        "status_url": f"/admin/tools/test-send/{job_id}",
+        "tools_form_values": tools_form_values,
+    }
+
+    requested_with = str(request.headers.get("X-Requested-With", "")).strip().lower()
+    accepts_json = "application/json" in str(request.headers.get("accept", "")).lower()
+    is_async_request = requested_with == "xmlhttprequest" or accepts_json
+
+    if is_async_request:
+        return JSONResponse(response_payload, status_code=status.HTTP_202_ACCEPTED)
+
+    final_job = _wait_for_admin_test_send_job(job_id, timeout_seconds=6.0) or response_payload
+    final_status = str(final_job.get("status", "queued")).strip().lower()
+    final_success = bool(final_job.get("success"))
+    final_message = str(final_job.get("message") or response_payload["message"]).strip()
+    final_message_level = (
+        "danger"
+        if final_status == "failed" or not final_success
+        else "warning"
+        if final_status in {"queued", "processing"}
+        else "success"
+    )
+
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2364,11 +2401,10 @@ async def admin_tools_test_send(
             request,
             settings,
             active_section="tools",
-            success_message=f"Test message queued for {phone_number} using SMPP user '{smpp_username}'. Processing continues in the background under job {job_id}. Refresh the page or check logs for completion.",
-            message_level="success",
+            success_message=final_message,
+            message_level=final_message_level,
             tools_form_values=tools_form_values,
         ),
-        status_code=status.HTTP_202_ACCEPTED,
     )
 
 
@@ -2430,6 +2466,27 @@ async def admin_batch_update_queue_status_route(
             settings,
             active_section="reports",
             success_message=f"Updated {updated} queue item{'s' if updated != 1 else ''} to '{status_value}'.",
+        ),
+    )
+
+
+@app.post("/admin/inbox/batch-delete")
+async def admin_batch_delete_inbox_messages_route(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    form = await request.form()
+    item_ids = [str(value).strip() for value in form.getlist("item_ids") if str(value).strip()] if hasattr(form, "getlist") else []
+    removed = batch_delete_inbox_messages(settings, item_ids)
+    return templates.TemplateResponse(
+        request,
+        "admin.html",
+        _admin_context(
+            request,
+            settings,
+            active_section="reports",
+            success_message=f"Deleted {removed} inbox message{'s' if removed != 1 else ''}.",
         ),
     )
 

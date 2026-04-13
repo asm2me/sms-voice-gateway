@@ -550,7 +550,7 @@
   {% if recent_inbox_messages %}
   <form method="post" action="/admin/inbox/batch-delete" class="admin-form">
     <div class="table-wrap">
-      <table class="data-table inbox-table">
+    <table class="data-table inbox-table" id="inbox-table">
       <thead>
         <tr>
           <th><label class="table-select-all"><input type="checkbox" class="js-select-all" data-select-all="inbox-table" data-select-all-target="inbox-table" /> Select all</label></th>
@@ -2265,11 +2265,105 @@
       };
     };
 
+  window.__adminToolsTestSendState = window.__adminToolsTestSendState || { timer: null };
+
+  window.__adminClearToolsTestSendPoll =
+    window.__adminClearToolsTestSendPoll ||
+    function () {
+      const state = window.__adminToolsTestSendState;
+      if (state && state.timer) {
+        window.clearTimeout(state.timer);
+        state.timer = null;
+      }
+    };
+
+  window.__adminRenderToolsTestSendStatus =
+    window.__adminRenderToolsTestSendStatus ||
+    function (payload) {
+      const noticeLevel =
+        payload && payload.status === "failed"
+          ? "danger"
+          : payload && payload.status === "processing"
+          ? "warning"
+          : "success";
+      const message =
+        (payload && (payload.message || payload.error)) ||
+        "Tools test-send status updated.";
+
+      ensureTopNotice(message, noticeLevel);
+
+      const statusHost = document.getElementById("tts-preview-status");
+      if (!statusHost) return;
+
+      const queueItem = payload && payload.queue_item ? payload.queue_item : null;
+      const result = payload && payload.result ? payload.result : null;
+      const audioUrl = queueItem && queueItem.audio_path ? "/admin/queue/audio/" + queueItem.id : "";
+      const references = [];
+      if (result && result.sip_account_id) references.push("SIP account: " + escapeHtml(result.sip_account_id));
+      if (result && result.sip_call_id) references.push("Call ID: " + escapeHtml(result.sip_call_id));
+      if (result && result.ami_action_id) references.push("AMI action: " + escapeHtml(result.ami_action_id));
+      if (queueItem && queueItem.last_error) references.push("Last error: " + escapeHtml(queueItem.last_error));
+
+      statusHost.innerHTML =
+        '<span class="status-badge status-' +
+        (noticeLevel === "danger" ? "danger" : noticeLevel === "warning" ? "pending" : "success") +
+        '">' +
+        escapeHtml(payload && payload.status ? payload.status : "queued") +
+        "</span>" +
+        '<div class="inline-test-status__summary">' +
+        escapeHtml(message) +
+        "</div>" +
+        (references.length
+          ? '<div class="inline-test-status__summary muted">' + references.join(" • ") + "</div>"
+          : "") +
+        (audioUrl
+          ? '<div class="inline-test-status__summary"><button type="button" class="button button-secondary button-small" onclick="window.__adminPlayQueueAudio(\'' +
+            audioUrl +
+            '\', this)">Play generated audio</button></div>'
+          : "");
+    };
+
+  window.__adminPollToolsTestSendStatus =
+    window.__adminPollToolsTestSendStatus ||
+    async function (statusUrl, attempt) {
+      const state = window.__adminToolsTestSendState;
+      const nextAttempt = (attempt || 0) + 1;
+      try {
+        const response = await fetch(statusUrl, {
+          method: "GET",
+          credentials: "same-origin",
+          headers: {
+            "X-Requested-With": "XMLHttpRequest",
+          },
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error((payload && (payload.detail || payload.message || payload.error)) || "Unable to read test-send status");
+        }
+
+        window.__adminRenderToolsTestSendStatus(payload);
+
+        if (payload.status === "queued" || payload.status === "processing") {
+          state.timer = window.setTimeout(function () {
+            window.__adminPollToolsTestSendStatus(statusUrl, nextAttempt);
+          }, 1200);
+          return;
+        }
+
+        state.timer = window.setTimeout(function () {
+          window.location.href = "/admin/reports";
+        }, 1800);
+      } catch (error) {
+        ensureTopNotice((error && error.message) || "Unable to read test-send status", "danger");
+      }
+    };
+
   (function () {
     const triggers = document.querySelectorAll(".js-sip-test-trigger");
     const providerTriggers = document.querySelectorAll(".js-provider-test-trigger");
     const selectAllCheckboxes = document.querySelectorAll("input[type='checkbox'][data-select-all-target]");
     const modalAsyncForms = document.querySelectorAll(".js-modal-async-form");
+    const toolsForm = document.querySelector('form[action="/admin/tools/test-send"]');
 
     function syncSelectAllState(tableId) {
       const table = document.getElementById(tableId);
@@ -2548,6 +2642,52 @@
         submitModalForm(form);
       });
     });
+
+    if (toolsForm) {
+      toolsForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+        window.__adminClearToolsTestSendPoll();
+
+        const formData = new FormData(toolsForm);
+        const submitButton = toolsForm.querySelector('button[type="submit"]');
+        const inlineStatus = document.getElementById("tts-preview-status");
+        if (submitButton) submitButton.disabled = true;
+        if (inlineStatus) {
+          inlineStatus.innerHTML =
+            '<span class="status-badge status-pending">Queued</span>' +
+            '<div class="inline-test-status__summary">Submitting test message and starting live status polling.</div>';
+        }
+
+        try {
+          const response = await fetch("/admin/tools/test-send", {
+            method: "POST",
+            body: formData,
+            credentials: "same-origin",
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+            },
+          });
+          const payload = await response.json();
+          if (!response.ok || !payload.success || !payload.status_url) {
+            throw new Error((payload && (payload.message || payload.error)) || "Test send failed");
+          }
+
+          window.__adminRenderToolsTestSendStatus(payload);
+          window.__adminPollToolsTestSendStatus(payload.status_url, 0);
+        } catch (error) {
+          ensureTopNotice((error && error.message) || "Test send failed", "danger");
+          if (inlineStatus) {
+            inlineStatus.innerHTML =
+              '<span class="status-badge status-danger">Failed</span>' +
+              '<div class="inline-test-status__summary">' +
+              escapeHtml((error && error.message) || "Test send failed") +
+              "</div>";
+          }
+        } finally {
+          if (submitButton) submitButton.disabled = false;
+        }
+      });
+    }
 
     document.querySelectorAll("input[type='checkbox'][data-select-all-target]").forEach((checkbox) => {
       const tableId = checkbox.getAttribute("data-select-all-target");
