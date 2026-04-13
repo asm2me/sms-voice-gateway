@@ -170,8 +170,20 @@ Common tasks include:
 - enabling and configuring SMPP
 - adjusting rate limits and playback behavior
 - reviewing configuration snapshots and delivery reports
+- using the **Tools** page to simulate a voice SMS and preview generated TTS audio in-place without reloading the page
 
 The admin configuration is persisted to disk by the application. This means settings survive restarts without needing to be re-entered in `.env`.
+
+### Admin tools page
+
+The admin portal includes a **Tools** page for operational testing.
+
+Available actions include:
+
+- **Send Voice SMS**: submits a synthetic SMPP-style message into the normal queue → TTS → SIP delivery flow
+- **TTS and Play Audio**: generates preview speech for the current message body and plays it directly in the browser without a full page refresh
+
+The TTS preview action is intended for quick validation of provider credentials, language, and voice behavior before placing a live outbound test call.
 
 ## Docker
 

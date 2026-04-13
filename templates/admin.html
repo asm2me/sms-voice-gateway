@@ -78,18 +78,10 @@
     </div>
   </form>
 
-  <form id="tts-preview-form" method="post" action="/admin/tools/tts-preview" style="display: none;">
-    <input type="hidden" name="body" id="tts-preview-body" value="" />
-  </form>
-
-  {% if tts_preview_audio_url %}
-  <div class="notice notice-success">
-    <strong>TTS preview ready:</strong> Provider <span class="mono">{{ tts_preview_provider or 'configured' }}</span>{% if tts_preview_cached is not none %} · cached={{ 'yes' if tts_preview_cached else 'no' }}{% endif %}
+  <div id="tts-preview-status" class="inline-test-status" aria-live="polite"></div>
+  <div class="audio-preview-panel" id="tts-preview-panel" style="display: none;">
+    <audio id="tts-preview-audio" controls preload="metadata"></audio>
   </div>
-  <div class="audio-preview-panel">
-    <audio controls autoplay preload="metadata" src="{{ tts_preview_audio_url }}"></audio>
-  </div>
-  {% endif %}
 </section>
 {% endif %}
 
@@ -1026,6 +1018,10 @@
                   <div class="notice notice-warning">
                     <strong>Upload recommended.</strong>
                     If the saved path points to a file that does not exist on this machine, provider testing will fail. Uploading here stores a local copy for both Save and Test Provider.
+                  </div>
+                  <div class="notice">
+                    <strong>Arabic note.</strong>
+                    For Arabic speech with Google, set <span class="mono">tts_language</span> in Core Voice Configuration to <span class="mono">ar-EG</span> or <span class="mono">ar-SA</span>, and use a matching Google Arabic voice name in <span class="mono">tts_voice</span>. The inline provider test will automatically use Arabic sample text when the selected language starts with <span class="mono">ar</span>.
                   </div>
                 </div>
                 <div class="form-actions">
@@ -2055,13 +2051,60 @@
 <script>
   window.__adminPreviewTTS =
     window.__adminPreviewTTS ||
-    function () {
+    async function () {
       const bodyField = document.getElementById("tools-message-body");
-      const previewBody = document.getElementById("tts-preview-body");
-      const previewForm = document.getElementById("tts-preview-form");
-      if (!bodyField || !previewBody || !previewForm) return;
-      previewBody.value = bodyField.value || "";
-      previewForm.submit();
+      const status = document.getElementById("tts-preview-status");
+      const panel = document.getElementById("tts-preview-panel");
+      const audio = document.getElementById("tts-preview-audio");
+      if (!bodyField || !status || !panel || !audio) return;
+
+      const body = bodyField.value || "";
+      if (!body.trim()) {
+        status.innerHTML = '<span class="status-badge status-danger">Missing text</span><div class="inline-test-status__summary">Enter a message body before previewing TTS.</div>';
+        panel.style.display = "none";
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+        return;
+      }
+
+      status.innerHTML = '<span class="status-badge status-pending">Generating…</span><div class="inline-test-status__summary">Creating preview audio without reloading the page.</div>';
+
+      try {
+        const formData = new FormData();
+        formData.set("body", body);
+
+        const response = await fetch("/admin/tools/tts-preview", {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin",
+        });
+
+        const result = await response.json();
+        if (!response.ok || !result.success || !result.audio_url) {
+          throw new Error((result && (result.message || result.error)) || "TTS preview failed");
+        }
+
+        audio.src = result.audio_url;
+        panel.style.display = "block";
+        audio.load();
+        audio.play().catch(() => {});
+        status.innerHTML =
+          '<span class="status-badge status-success">Ready</span>' +
+          '<div class="inline-test-status__summary">' +
+          (result.message || "Preview audio generated.") +
+          "</div>";
+      } catch (error) {
+        panel.style.display = "none";
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+        status.innerHTML =
+          '<span class="status-badge status-danger">Failed</span>' +
+          '<div class="inline-test-status__summary">' +
+          ((error && error.message) || "TTS preview failed") +
+          "</div>";
+      }
     };
 
   window.__adminQueueAudioPlayer = window.__adminQueueAudioPlayer || new Audio();
@@ -2204,7 +2247,14 @@
 
       const formData = new FormData(form);
       formData.set("provider", provider);
-      formData.set("sample_text", "This is a provider connectivity test.");
+      const languageField =
+        form.querySelector('[name="tts_language"]') ||
+        document.querySelector('form[action="/admin/config/basic"] [name="tts_language"]');
+      const sampleText =
+        languageField && String(languageField.value || "").toLowerCase().startsWith("ar")
+          ? "مرحبا، هذه تجربة لاختبار نطق اللغة العربية."
+          : "This is a provider connectivity test.";
+      formData.set("sample_text", sampleText);
 
       setProviderStatus(status, null, true);
       trigger.disabled = true;

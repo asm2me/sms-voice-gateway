@@ -374,10 +374,21 @@ async def _store_google_credentials_upload(upload: UploadFile | None) -> str:
     except Exception as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Uploaded Google credentials file is not valid JSON: {exc}") from exc
 
-    if not isinstance(parsed, dict) or parsed.get("type") != "service_account":
+    if not isinstance(parsed, dict):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "Uploaded Google credentials file is not a Google service account JSON file",
+            "Uploaded Google credentials file must be a JSON object.",
+        )
+
+    google_type = str(parsed.get("type", "")).strip()
+    if google_type != "service_account":
+        detected_type = google_type or "unknown"
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Uploaded Google credentials file is not a Google service account JSON file. "
+            f"Detected type: {detected_type}. "
+            "OAuth client JSON files are not supported for server-to-server TTS authentication. "
+            "Create/download a Service Account key JSON from Google Cloud IAM > Service Accounts and upload that file instead.",
         )
 
     destination = _provider_uploads_dir() / "google-sa.json"
@@ -1900,35 +1911,26 @@ async def admin_tools_tts_preview(
         _append_admin_log(
             f"Tools tts-preview finished ok provider={settings.tts_provider} cached={was_cached} audio_path={audio_path}"
         )
-        return templates.TemplateResponse(
-            request,
-            "admin.html",
-            _admin_context(
-                request,
-                settings,
-                active_section="tools",
-                success_message=f"TTS preview audio generated using provider '{settings.tts_provider}'.",
-            )
-            | {
-                "tts_preview_audio_url": audio_url,
-                "tts_preview_cached": was_cached,
-                "tts_preview_provider": settings.tts_provider,
-            },
+        return JSONResponse(
+            {
+                "success": True,
+                "audio_url": audio_url,
+                "cached": was_cached,
+                "provider": settings.tts_provider,
+                "message": f"TTS preview audio generated using provider '{settings.tts_provider}'.",
+            }
         )
     except Exception as exc:
         _append_admin_log(
             f"Tools tts-preview failed provider={settings.tts_provider} error={exc}"
         )
-        return templates.TemplateResponse(
-            request,
-            "admin.html",
-            _admin_context(
-                request,
-                settings,
-                active_section="tools",
-                success_message=f"TTS preview failed: {exc}",
-                message_level="danger",
-            ),
+        return JSONResponse(
+            {
+                "success": False,
+                "error": str(exc),
+                "message": f"TTS preview failed: {exc}",
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
 
 
