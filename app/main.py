@@ -1390,6 +1390,7 @@ def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
         caller_id=caller_id,
         enabled=bool(account.enabled),
         auth_realm="*",
+        concurrency_limit=max(1, int(getattr(account, "concurrency_limit", 1) or 1)),
         extra={
             "host": (account.host or "").strip(),
             "port": account.port,
@@ -1464,7 +1465,9 @@ async def admin_test_sip_account_connection(
         outbound_proxy=str(payload.get("outbound_proxy", "")).strip(),
     )
     settings = dep_settings()
-    service = build_pjsua2_service(settings)
+    if getattr(app.state, "pjsua2_service", None) is None:
+        app.state.pjsua2_service = build_pjsua2_service(settings)
+    service = app.state.pjsua2_service
     _append_admin_log(f"SIP trunk test started for account={account.id} host={account.host or account.domain or '—'}")
     result = service.register_account(_build_sip_profile_from_account(account))
     payload = _build_sip_test_payload(account, result)
