@@ -1465,11 +1465,15 @@ async def admin_test_sip_account_connection(
         outbound_proxy=str(payload.get("outbound_proxy", "")).strip(),
     )
     settings = dep_settings()
-    if getattr(app.state, "pjsua2_service", None) is None:
-        app.state.pjsua2_service = build_pjsua2_service(settings)
-    service = app.state.pjsua2_service
+    service = build_pjsua2_service(settings)
     _append_admin_log(f"SIP trunk test started for account={account.id} host={account.host or account.domain or '—'}")
-    result = service.register_account(_build_sip_profile_from_account(account))
+    try:
+        result = service.register_account(_build_sip_profile_from_account(account))
+    finally:
+        try:
+            service.close()
+        except Exception:
+            pass
     payload = _build_sip_test_payload(account, result)
 
     if not getattr(result, "success", False):
