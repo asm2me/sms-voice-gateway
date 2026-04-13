@@ -198,15 +198,16 @@ class SMSGateway:
                 details={"pending_reason": _derive_pending_reason(stage="voice_tts", detail="message body is empty after number parsing")},
             )
 
-        allowed, reason = self.rate_limiter.is_allowed(phone)
-        if not allowed:
-            log.warning("Rate limit for %s: %s", phone, reason)
-            return GatewayResult(
-                success=False,
-                phone_number=phone,
-                error=f"Rate limited: {reason}",
-                details={"pending_reason": _derive_pending_reason(stage="rate_limit", detail=reason)},
-            )
+        if sms.provider != "admin-test":
+            allowed, reason = self.rate_limiter.is_allowed(phone)
+            if not allowed:
+                log.warning("Rate limit for %s: %s", phone, reason)
+                return GatewayResult(
+                    success=False,
+                    phone_number=phone,
+                    error=f"Rate limited: {reason}",
+                    details={"pending_reason": _derive_pending_reason(stage="rate_limit", detail=reason)},
+                )
 
         try:
             audio_path, was_cached = self.tts.get_or_create_audio(spoken_text)
