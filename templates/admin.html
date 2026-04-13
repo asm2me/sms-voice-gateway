@@ -1011,13 +1011,22 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/advanced" class="admin-form" id="voice-provider-google-form">
+              <form method="post" action="/admin/config/advanced" class="admin-form" id="voice-provider-google-form" enctype="multipart/form-data">
                 <div class="form-grid">
                   <label class="field-group field-span-2">
                     <span class="field-label">{{ google_credentials.label }}</span>
                     {{ render_input(google_credentials) }}
                     <small class="muted">{{ google_credentials.name }}</small>
                   </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Google Service Account JSON Upload</span>
+                    <input type="file" name="google_credentials_file" accept=".json,application/json" />
+                    <small class="muted">Upload a Google service-account JSON file to store it locally for this gateway. When uploaded, it replaces the saved <span class="mono">google_credentials_json</span> path with the stored file location.</small>
+                  </label>
+                  <div class="notice notice-warning">
+                    <strong>Upload recommended.</strong>
+                    If the saved path points to a file that does not exist on this machine, provider testing will fail. Uploading here stores a local copy for both Save and Test Provider.
+                  </div>
                 </div>
                 <div class="form-actions">
                   <button type="button" class="button button-secondary js-provider-test-trigger" data-provider="google" data-target-form="voice-provider-google-form" data-target-status="provider-test-status-google">Test Provider</button>

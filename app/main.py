@@ -28,7 +28,7 @@ from pathlib import Path
 from threading import Event, Thread
 from typing import Annotated, Optional
 
-from fastapi import Body, Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -346,6 +346,43 @@ def _save_admin_config(form, keys: list[str]) -> Settings:
     updated = Settings(**data)
     save_settings_to_store(updated)
     return updated
+
+
+def _provider_uploads_dir() -> Path:
+    path = BASE_DIR / "data" / "provider_uploads"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+async def _store_google_credentials_upload(upload: UploadFile | None) -> str:
+    if upload is None:
+        return ""
+
+    filename = (upload.filename or "").strip().lower()
+    if not filename:
+        return ""
+
+    if not filename.endswith(".json"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Google credentials upload must be a .json file")
+
+    raw = await upload.read()
+    if not raw:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Uploaded Google credentials file is empty")
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Uploaded Google credentials file is not valid JSON: {exc}") from exc
+
+    if not isinstance(parsed, dict) or parsed.get("type") != "service_account":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Uploaded Google credentials file is not a Google service account JSON file",
+        )
+
+    destination = _provider_uploads_dir() / "google-sa.json"
+    destination.write_bytes(raw)
+    return str(destination)
 
 
 def _slugify_identifier(value: str, fallback: str) -> str:
@@ -1275,6 +1312,7 @@ async def admin_update_basic_config(
 async def admin_update_advanced_config(
     request: Request,
     _: None = Depends(dep_admin_credentials),
+    google_credentials_file: UploadFile | None = File(default=None),
 ):
     form = await request.form()
     settings = _save_admin_config(
@@ -1320,6 +1358,10 @@ async def admin_update_advanced_config(
             "delivery_report_max_items",
         ],
     )
+    uploaded_google_credentials_path = await _store_google_credentials_upload(google_credentials_file)
+    if uploaded_google_credentials_path:
+        settings = settings.model_copy(update={"google_credentials_json": uploaded_google_credentials_path})
+        save_settings_to_store(settings)
 
     smpp_message = ""
     smpp_service = getattr(app.state, "smpp_service", None)
@@ -1388,7 +1430,7 @@ def _validate_elevenlabs_api_key(api_key: str) -> tuple[bool, str]:
         return False, f"ElevenLabs API key validation request failed: {exc}"
 
 
-def _build_provider_test_settings(current: Settings, provider: str, form) -> Settings:
+async def _build_provider_test_settings(current: Settings, provider: str, form) -> Settings:
     provider_keys: dict[str, list[str]] = {
         "google": [
             "google_credentials_json",
@@ -1435,6 +1477,16 @@ def _build_provider_test_settings(current: Settings, provider: str, form) -> Set
         if voice_value:
             update["tts_voice"] = voice_value
 
+    if provider == "google":
+        uploaded_google_credentials_path = await _store_google_credentials_upload(form.get("google_credentials_file"))
+        if uploaded_google_credentials_path:
+            update["google_credentials_json"] = uploaded_google_credentials_path
+        elif not str(update.get("google_credentials_json", getattr(current, "google_credentials_json", "")) or "").strip():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Upload a Google service account JSON file or provide a valid google_credentials_json path before testing.",
+            )
+
     return current.model_copy(update=update)
 
 
@@ -1452,7 +1504,7 @@ async def admin_test_provider_config(
     if provider_name not in supported_providers:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unsupported provider")
 
-    test_settings = _build_provider_test_settings(settings, provider_name, form)
+    test_settings = await _build_provider_test_settings(settings, provider_name, form)
     spoken_text = str(sample_text or "").strip() or "This is a provider connectivity test."
 
     _append_admin_log(f"Provider test started provider={provider_name} body={spoken_text[:80]!r}")
