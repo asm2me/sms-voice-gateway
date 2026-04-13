@@ -631,7 +631,10 @@ class PJSipUASession:
                     answered = bool(call_outcome.get("answered"))
                     playback_seconds = float(call_outcome.get("playback_seconds") or 0.0)
                     audio_duration_seconds = float(playback_result.audio_duration_seconds or 0.0)
-                    delivered = answered
+                    disconnect_reason = str(call_outcome.get("disconnect_reason") or "")
+                    last_status_code = int(call_outcome.get("last_status_code") or 0)
+                    remote_hangup_after_answer = answered and last_status_code == 200 and disconnect_reason.upper() == "DISCONNECTED"
+                    delivered = answered and not remote_hangup_after_answer
                     read = delivered and audio_duration_seconds > 0 and playback_seconds >= (audio_duration_seconds * 0.5)
 
                     return PJSUA2Result(
@@ -660,6 +663,7 @@ class PJSipUASession:
                                 "read_threshold_seconds": audio_duration_seconds * 0.5 if audio_duration_seconds > 0 else 0.0,
                             },
                             "call_state": str(call_outcome.get("state_text") or "completed"),
+                            "remote_hangup_after_answer": remote_hangup_after_answer,
                             "display_name": request.display_name,
                             "caller_id": request.caller_id or self._current_profile.caller_id,
                             "extra_vars": request.extra_vars,
@@ -668,8 +672,8 @@ class PJSipUASession:
                             "answered": answered,
                             "delivered": delivered,
                             "read": read,
-                            "last_status_code": int(call_outcome.get("last_status_code") or 0),
-                            "disconnect_reason": str(call_outcome.get("disconnect_reason") or ""),
+                            "last_status_code": last_status_code,
+                            "disconnect_reason": disconnect_reason,
                         },
                     )
                 finally:
@@ -1270,9 +1274,22 @@ class _CallCallbackHolder:
             )
 
         if (
+            state_text.upper() == "CONFIRMED"
+            or state_name.upper() == "CONFIRMED"
+        ) and self._answered_at is None:
+            self._answered_at = time.time()
+            log.info(
+                "Outbound SIP call confirmed account=%s call_id=%s state=%s status=%s",
+                self._account_id,
+                self._call_id,
+                state_text or state_name,
+                last_status_code,
+            )
+
+        if (
             state_name in self._TERMINAL_STATES
             or state_text.upper() == "DISCONNECTED"
-            or last_status_code >= 300
+            or (last_status_code >= 300 and self._answered_at is None)
         ):
             self._disconnected_at = time.time()
             self._disconnect_reason = state_text or state_name or self._disconnect_reason
