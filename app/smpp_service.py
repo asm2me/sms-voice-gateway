@@ -10,6 +10,7 @@ from typing import Optional
 from .admin_reports import record_inbox_message
 from .config import Settings
 from .config_store import get_default_smpp_account, get_sip_account_for_smpp_username
+from .cache import enqueue_voice_message
 
 log = logging.getLogger(__name__)
 
@@ -226,6 +227,35 @@ class SMPPService:
                         source=f"smpp:{addr[0]}:{addr[1]}",
                         status="received",
                     )
+                    queue_result = enqueue_voice_message(
+                        self.settings,
+                        from_number=submit_fields["source_addr"],
+                        to_number=submit_fields["destination_addr"],
+                        body=submit_fields["short_message"],
+                        source="smpp",
+                        source_ref=f"{addr[0]}:{addr[1]}",
+                        metadata={
+                            "smpp_username": smpp_username,
+                            "sip_account_id": sip_account.id if sip_account else "",
+                            "registered_delivery": submit_fields["registered_delivery"],
+                            "data_coding": submit_fields["data_coding"],
+                            "message_id": f"smpp-{sequence}",
+                        },
+                    )
+                    log.info(
+                        "SMPP message queued source=%s to=%s queued=%s details=%s",
+                        submit_fields["source_addr"],
+                        submit_fields["destination_addr"],
+                        queue_result.ok,
+                        queue_result.message,
+                    )
+                    if not queue_result.ok:
+                        log.warning(
+                            "Failed to queue SMPP message source=%s to=%s error=%s",
+                            submit_fields["source_addr"],
+                            submit_fields["destination_addr"],
+                            queue_result.message,
+                        )
                     log.info(
                         "SMPP inbox message stored from=%s to=%s text=%r source=%s smpp_username=%s sip_account_id=%s",
                         submit_fields["source_addr"],
