@@ -1081,7 +1081,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/advanced" class="admin-form" id="voice-provider-google-form" enctype="multipart/form-data">
+              <form method="post" action="/admin/config/advanced" class="admin-form js-modal-async-form" id="voice-provider-google-form" enctype="multipart/form-data">
                 <div class="form-grid">
                   <label class="field-group field-span-2">
                     <span class="field-label">{{ google_credentials.label }}</span>
@@ -1123,7 +1123,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/advanced" class="admin-form" id="voice-provider-aws-form">
+              <form method="post" action="/admin/config/advanced" class="admin-form js-modal-async-form" id="voice-provider-aws-form">
                 <div class="form-grid">
                   <label class="field-group">
                     <span class="field-label">{{ aws_access_key.label }}</span>
@@ -1172,7 +1172,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/advanced" class="admin-form" id="voice-provider-openai-form">
+              <form method="post" action="/admin/config/advanced" class="admin-form js-modal-async-form" id="voice-provider-openai-form">
                 <div class="form-grid">
                   <label class="field-group field-span-2">
                     <span class="field-label">{{ openai_api_key.label }}</span>
@@ -1211,7 +1211,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/advanced" class="admin-form" id="voice-provider-elevenlabs-form">
+              <form method="post" action="/admin/config/advanced" class="admin-form js-modal-async-form" id="voice-provider-elevenlabs-form">
                 <div class="form-grid">
                   <label class="field-group field-span-2">
                     <span class="field-label">{{ elevenlabs_api_key.label }}</span>
@@ -1388,7 +1388,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/sip-accounts" class="admin-form js-sip-test-form" id="sip-test-form-new">
+              <form method="post" action="/admin/config/sip-accounts" class="admin-form js-sip-test-form js-modal-async-form" id="sip-test-form-new">
                 <div class="form-grid">
                   <label class="field-group">
                     <span class="field-label">Account ID</span>
@@ -1489,7 +1489,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/sip-accounts" class="admin-form js-sip-test-form" id="sip-test-form-{{ account.id }}">
+              <form method="post" action="/admin/config/sip-accounts" class="admin-form js-sip-test-form js-modal-async-form" id="sip-test-form-{{ account.id }}">
                 <div class="form-grid">
                   <input type="hidden" name="account_id" value="{{ account.id }}" />
                   <label class="field-group"><span class="field-label">Label</span><input type="text" name="label" value="{{ account.label or '' }}" /></label>
@@ -1682,7 +1682,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/system-users" class="admin-form">
+              <form method="post" action="/admin/config/system-users" class="admin-form js-modal-async-form">
                 <div class="form-grid">
                   <label class="field-group">
                     <span class="field-label">User ID</span>
@@ -1751,7 +1751,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/system-users" class="admin-form">
+              <form method="post" action="/admin/config/system-users" class="admin-form js-modal-async-form">
                 <div class="form-grid">
                   <input type="hidden" name="user_id" value="{{ user.id }}" />
                   <label class="field-group">
@@ -1924,7 +1924,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/smpp-accounts" class="admin-form">
+              <form method="post" action="/admin/config/smpp-accounts" class="admin-form js-modal-async-form">
                 <div class="form-grid">
                   <label class="field-group">
                     <span class="field-label">Account ID</span>
@@ -2006,7 +2006,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/smpp-accounts" class="admin-form">
+              <form method="post" action="/admin/config/smpp-accounts" class="admin-form js-modal-async-form">
                 <div class="form-grid">
                   <input type="hidden" name="account_id" value="{{ account.id }}" />
                   <label class="field-group">
@@ -2257,6 +2257,7 @@
     const triggers = document.querySelectorAll(".js-sip-test-trigger");
     const providerTriggers = document.querySelectorAll(".js-provider-test-trigger");
     const selectAllCheckboxes = document.querySelectorAll("input[type='checkbox'][data-select-all-target]");
+    const modalAsyncForms = document.querySelectorAll(".js-modal-async-form");
 
     function syncSelectAllState(tableId) {
       const table = document.getElementById(tableId);
@@ -2289,6 +2290,95 @@
         syncSelectAllState(table.id);
       });
     });
+
+    function escapeHtml(value) {
+      const element = document.createElement("div");
+      element.textContent = String(value || "");
+      return element.innerHTML;
+    }
+
+    function ensureTopNotice(message, level) {
+      const subnav = document.querySelector(".subnav");
+      if (!subnav) return null;
+
+      let notice = document.querySelector(".subnav + .notice[data-generated-notice='true']");
+      if (!notice) {
+        notice = document.createElement("div");
+        notice.setAttribute("data-generated-notice", "true");
+        subnav.insertAdjacentElement("afterend", notice);
+      }
+
+      notice.className = "notice notice-" + (level || "success");
+      notice.innerHTML =
+        "<strong>" +
+        ((level || "success") === "danger"
+          ? "Error:"
+          : (level || "success") === "warning"
+          ? "Warning:"
+          : "Success:") +
+        "</strong> " +
+        escapeHtml(message || "");
+      return notice;
+    }
+
+    async function submitModalForm(form) {
+      const modal = form.closest(".modal-shell");
+      const modalId = modal && modal.id ? modal.id : "";
+      const submitButton = form.querySelector('button[type="submit"]:focus, input[type="submit"]:focus');
+      const formData = new FormData(form);
+
+      if (submitButton && submitButton.name) {
+        formData.set(submitButton.name, submitButton.value || "");
+      }
+
+      form.querySelectorAll("button[type='submit'], input[type='submit']").forEach((button) => {
+        button.disabled = true;
+      });
+
+      try {
+        const response = await fetch(form.action, {
+          method: (form.method || "post").toUpperCase(),
+          body: formData,
+          credentials: "same-origin",
+          headers: {
+            "X-Requested-With": "XMLHttpRequest",
+          },
+        });
+
+        const html = await response.text();
+        const parser = new DOMParser();
+        const nextDoc = parser.parseFromString(html, "text/html");
+        const nextContent = nextDoc.querySelector("main");
+        const currentContent = document.querySelector("main");
+        const nextTitle = nextDoc.querySelector("title");
+        const successNotice = nextDoc.querySelector(".notice");
+        const message = successNotice ? successNotice.textContent.trim() : (response.ok ? "Saved successfully." : "Save failed.");
+
+        if (currentContent && nextContent) {
+          currentContent.innerHTML = nextContent.innerHTML;
+          if (nextTitle) {
+            document.title = nextTitle.textContent || document.title;
+          }
+          ensureTopNotice(message, response.ok ? "success" : "danger");
+          if (modalId) {
+            window.location.hash = modalId;
+          }
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          window.setTimeout(function () {
+            window.location.reload();
+          }, 50);
+          return;
+        }
+
+        throw new Error(message || "Save failed");
+      } catch (error) {
+        ensureTopNotice((error && error.message) || "Save failed", "danger");
+      } finally {
+        form.querySelectorAll("button[type='submit'], input[type='submit']").forEach((button) => {
+          button.disabled = false;
+        });
+      }
+    }
 
     function setProviderStatus(target, payload, loading) {
       if (!target) return;
@@ -2433,6 +2523,17 @@
     providerTriggers.forEach((trigger) => {
       trigger.addEventListener("click", function () {
         runProviderTest(trigger);
+      });
+    });
+
+    modalAsyncForms.forEach((form) => {
+      form.addEventListener("submit", function (event) {
+        const submitter = event.submitter;
+        if (submitter && submitter.name === "form_action" && submitter.value === "test") {
+          return;
+        }
+        event.preventDefault();
+        submitModalForm(form);
       });
     });
 

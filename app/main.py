@@ -1721,16 +1721,31 @@ def _queue_audio_url(item: dict[str, object] | None) -> str:
 
 
 def _build_sip_test_payload(account: SIPAccount, result) -> dict:
-    status_class = "success" if result.success else "danger"
-    status_label = "Connected" if result.success else "Failed"
+    probe_mode = str(getattr(result, "probe_mode", "") or "").strip().lower()
     status_code = getattr(result, "status_code", 0) or 0
     status_text = getattr(result, "status_text", "") or ""
     message = getattr(result, "message", "") or ""
     error = getattr(result, "error", "") or ""
-    summary = message if result.success else error or message or "Connection test failed"
+
+    if result.success:
+        status_class = "success"
+        status_label = "Connected"
+        if probe_mode == "prepare":
+            summary = "SIP account credentials and target URI were accepted for direct outbound use without trunk registration."
+        elif probe_mode == "register":
+            registration_suffix = f" ({status_code} {status_text})".strip() if status_code or status_text else ""
+            summary = f"SIP trunk registration succeeded{registration_suffix}".strip()
+        else:
+            summary = message or "Connection test succeeded"
+    else:
+        status_class = "danger"
+        status_label = "Failed"
+        summary = error or message or "Connection test failed"
+
     tooltip_parts = [
         f"account={account.id}",
         f"host={account.host or account.domain or '—'}",
+        f"mode={probe_mode or ('register' if account.register else 'prepare')}",
     ]
     if status_code:
         tooltip_parts.append(f"status={status_code}")
@@ -1751,6 +1766,8 @@ def _build_sip_test_payload(account: SIPAccount, result) -> dict:
             "error": error,
             "status_code": status_code,
             "status_text": status_text,
+            "probe_mode": probe_mode or ("register" if account.register else "prepare"),
+            "register_enabled": bool(account.register),
             "host": account.host or "",
             "domain": account.domain or "",
             "transport": account.transport,
@@ -1825,7 +1842,7 @@ async def admin_test_sip_account_connection(
             payload["details"]["runtime_note"] = "PJSUA2 runtime account/NOTIFY collision detected during overlapping live tests."
 
     _append_admin_log(
-        f"SIP trunk test finished account={account.id} success={result.success} registered={getattr(result, 'registered', '')} call_id={getattr(result, 'sip_call_id', '')} error={getattr(result, 'error', '')}"
+        f"SIP trunk test finished account={account.id} success={result.success} probe_mode={getattr(result, 'probe_mode', '')} registered={getattr(result, 'registered', '')} call_id={getattr(result, 'sip_call_id', '')} error={getattr(result, 'error', '')}"
     )
     return JSONResponse(payload)
 

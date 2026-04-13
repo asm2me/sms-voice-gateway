@@ -137,6 +137,7 @@ class PJSUA2RegistrationResult:
     error: str = ""
     status_code: int = 0
     status_text: str = ""
+    probe_mode: str = ""
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -365,7 +366,9 @@ class PJSipUASession:
 
                 account_cfg = pj.AccountConfig()
                 account_cfg.idUri = selected.sip_uri or self._build_id_uri(selected)
-                account_cfg.regConfig.registerOnAdd = False
+
+                should_register = bool(selected.extra.get("register", True))
+                account_cfg.regConfig.registerOnAdd = should_register
 
                 registrar_uri = selected.registrar_uri or self._build_registrar_uri(selected)
                 account_cfg.regConfig.registrarUri = registrar_uri
@@ -400,12 +403,35 @@ class PJSipUASession:
 
                 self._account = account
                 self._current_profile = selected
-                self._registered = True
 
+                if should_register:
+                    wait_result = self._wait_for_registration(account)
+                    self._registered = bool(wait_result.get("success"))
+                    return PJSUA2RegistrationResult(
+                        success=bool(wait_result.get("success")),
+                        account_id=selected.id,
+                        message="SIP registration succeeded" if wait_result.get("success") else "",
+                        error=str(wait_result.get("error") or ""),
+                        status_code=int(wait_result.get("status_code") or 0),
+                        status_text=str(wait_result.get("status_text") or ""),
+                        probe_mode="register",
+                        details={
+                            "id_uri": account_cfg.idUri,
+                            "registrar_uri": registrar_uri,
+                            "username": selected.username,
+                            "transport": selected.transport,
+                            "register_on_add": True,
+                            "registered": bool(wait_result.get("registered")),
+                            "polls": wait_result.get("polls", 0),
+                        },
+                    )
+
+                self._registered = False
                 return PJSUA2RegistrationResult(
                     success=True,
                     account_id=selected.id,
-                    message="SIP account prepared without prior trunk registration",
+                    message="SIP account prepared for direct outbound use without trunk registration",
+                    probe_mode="prepare",
                     details={
                         "id_uri": account_cfg.idUri,
                         "registrar_uri": registrar_uri,
