@@ -364,11 +364,59 @@
     </div>
   </div>
 
+  <div class="filter-bar">
+    <form method="get" action="/admin/reports" class="admin-form filter-form">
+      <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
+      <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
+      <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
+      <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
+      <label class="field-group">
+        <span class="field-label">Queue Search</span>
+        <input type="text" name="search" value="{{ queue_filters.search }}" placeholder="Search queue items" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Status</span>
+        <input type="text" name="status" value="{{ queue_filters.status }}" placeholder="queued, delivered, failed" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Provider</span>
+        <input type="text" name="provider" value="{{ queue_filters.provider }}" placeholder="twilio, generic, admin-test" />
+      </label>
+      <button type="submit" class="button button-secondary">Apply Queue Filters</button>
+    </form>
+    <form method="get" action="/admin/reports" class="admin-form filter-form">
+      <input type="hidden" name="search" value="{{ queue_filters.search }}" />
+      <input type="hidden" name="status" value="{{ queue_filters.status }}" />
+      <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
+      <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
+      <label class="field-group">
+        <span class="field-label">Inbox Search</span>
+        <input type="text" name="inbox_search" value="{{ inbox_filters.search }}" placeholder="Search inbox messages" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Inbox Status</span>
+        <input type="text" name="inbox_status" value="{{ inbox_filters.status }}" placeholder="received" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Inbox Provider</span>
+        <input type="text" name="inbox_provider" value="{{ inbox_filters.provider }}" placeholder="smpp, twilio, generic" />
+      </label>
+      <button type="submit" class="button button-secondary">Apply Inbox Filters</button>
+    </form>
+  </div>
+
   {% if recent_queue_items %}
+  {% if recent_queue_items %}
+  <form method="post" action="/admin/queue/batch-delete" class="admin-form">
+    <div class="form-actions">
+      <button type="submit" class="button button-danger button-small">Delete Selected Queue Items</button>
+      <button type="submit" formaction="/admin/queue/batch-status" class="button button-secondary button-small">Mark Selected as Processed</button>
+    </div>
   <div class="table-wrap">
     <table class="data-table queue-table" id="live-queue-table">
       <thead>
         <tr>
+          <th>Select</th>
           <th>Created</th>
           <th>Phone</th>
           <th>Provider</th>
@@ -385,6 +433,7 @@
       <tbody id="live-queue-body">
         {% for item in recent_queue_items %}
         <tr>
+          <td><input type="checkbox" name="item_ids" value="{{ item.id }}" /></td>
           <td class="mono">{{ item.created_at }}</td>
           <td class="mono">{{ item.phone_number or '—' }}</td>
           <td>{{ item.provider or '—' }}</td>
@@ -414,6 +463,21 @@
         {% endfor %}
       </tbody>
     </table>
+  </div>
+  </tbody>
+    </table>
+  </div>
+  </form>
+  <div class="pagination-row">
+    <span class="muted">Page {{ queue_pagination.page }} of {{ queue_pagination.total_pages }}</span>
+    <div class="page-actions">
+      {% if queue_pagination.has_previous %}
+      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.previous_page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}">Previous</a>
+      {% endif %}
+      {% if queue_pagination.has_next %}
+      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.next_page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}">Next</a>
+      {% endif %}
+    </div>
   </div>
   {% else %}
   <div class="empty-state">
@@ -488,10 +552,12 @@
   </div>
 
   {% if recent_inbox_messages %}
+  <form method="post" action="/admin/inbox/batch-delete" class="admin-form">
   <div class="table-wrap">
     <table class="data-table inbox-table">
       <thead>
         <tr>
+          <th>Select</th>
           <th>Received</th>
           <th>From</th>
           <th>Destination</th>
@@ -505,6 +571,7 @@
       <tbody>
         {% for message in recent_inbox_messages %}
         <tr>
+          <td><input type="checkbox" name="item_ids" value="{{ message.id }}" /></td>
           <td class="mono">{{ message.created_at }}</td>
           <td class="mono">{{ message.phone_number or '—' }}</td>
           <td class="mono">{{ message.destination or '—' }}</td>
@@ -519,6 +586,24 @@
         {% endfor %}
       </tbody>
     </table>
+  </div>
+  </tbody>
+    </table>
+  </div>
+  <div class="form-actions">
+    <button type="submit" class="button button-danger button-small">Delete Selected Inbox Messages</button>
+  </div>
+  </form>
+  <div class="pagination-row">
+    <span class="muted">Page {{ inbox_pagination.page }} of {{ inbox_pagination.total_pages }}</span>
+    <div class="page-actions">
+      {% if inbox_pagination.has_previous %}
+      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.previous_page }}">Previous</a>
+      {% endif %}
+      {% if inbox_pagination.has_next %}
+      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.next_page }}">Next</a>
+      {% endif %}
+    </div>
   </div>
   {% else %}
   <div class="empty-state">
@@ -1788,6 +1873,8 @@
                   <th>Enabled</th>
                   <th>Default</th>
                   <th>Default SIP</th>
+                  <th>Hourly Limit</th>
+                  <th>Daily Limit</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -1810,6 +1897,8 @@
                     </span>
                   </td>
                   <td class="mono">{{ account.default_sip_account_id or '—' }}</td>
+                  <td class="mono">{{ account.effective_rate_limit_hourly or '—' }}</td>
+                  <td class="mono">{{ account.effective_rate_limit_daily or '—' }}</td>
                   <td>
                     <div class="table-actions">
                       <a class="button button-secondary button-small" href="#smpp-user-edit-{{ account.id }}">Edit</a>
@@ -1893,6 +1982,16 @@
                     <input type="number" step="1" min="0" name="delivery_retry_interval_seconds" placeholder="Use global default" />
                     <small class="muted">Optional per-user retry interval override.</small>
                   </label>
+                  <label class="field-group">
+                    <span class="field-label">Hourly Limit</span>
+                    <input type="number" step="1" min="0" name="rate_limit_hourly" placeholder="0 = unlimited; blank uses global default" />
+                    <small class="muted">Optional per-user hourly message limit. Set 0 to disable the limit for this user.</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Daily Limit</span>
+                    <input type="number" step="1" min="0" name="rate_limit_daily" placeholder="0 = unlimited; blank uses global default" />
+                    <small class="muted">Optional per-user daily message limit. Set 0 to disable the limit for this user.</small>
+                  </label>
                 </div>
                 <div class="form-actions">
                   <a href="#" class="button button-secondary">Cancel</a>
@@ -1961,6 +2060,16 @@
                     <span class="field-label">Retry Interval Seconds</span>
                     <input type="number" step="1" min="0" name="delivery_retry_interval_seconds" value="{{ account.delivery_retry_interval_seconds if account.delivery_retry_interval_seconds is not none else '' }}" placeholder="Use global default" />
                     <small class="muted">Optional per-user retry interval override.</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Hourly Limit</span>
+                    <input type="number" step="1" min="0" name="rate_limit_hourly" value="{{ account.rate_limit_hourly if account.rate_limit_hourly is not none else '' }}" placeholder="0 = unlimited; blank uses global default" />
+                    <small class="muted">Optional per-user hourly message limit. Set 0 to disable the limit for this user.</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Daily Limit</span>
+                    <input type="number" step="1" min="0" name="rate_limit_daily" value="{{ account.rate_limit_daily if account.rate_limit_daily is not none else '' }}" placeholder="0 = unlimited; blank uses global default" />
+                    <small class="muted">Optional per-user daily message limit. Set 0 to disable the limit for this user.</small>
                   </label>
                 </div>
                 <div class="form-actions">
