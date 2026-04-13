@@ -2163,6 +2163,36 @@
 {% endif %}
 
 <script>
+  function escapeHtml(value) {
+    const element = document.createElement("div");
+    element.textContent = String(value || "");
+    return element.innerHTML;
+  }
+
+  function ensureTopNotice(message, level) {
+    const subnav = document.querySelector(".subnav");
+    if (!subnav) return null;
+
+    let notice = document.querySelector(".subnav + .notice[data-generated-notice='true']");
+    if (!notice) {
+      notice = document.createElement("div");
+      notice.setAttribute("data-generated-notice", "true");
+      subnav.insertAdjacentElement("afterend", notice);
+    }
+
+    notice.className = "notice notice-" + (level || "success");
+    notice.innerHTML =
+      "<strong>" +
+      ((level || "success") === "danger"
+        ? "Error:"
+        : (level || "success") === "warning"
+        ? "Warning:"
+        : "Success:") +
+      "</strong> " +
+      escapeHtml(message || "");
+    return notice;
+  }
+
   window.__adminPreviewTTS =
     window.__adminPreviewTTS ||
     async function () {
@@ -2396,36 +2426,6 @@
         syncSelectAllState(table.id);
       });
     });
-
-    function escapeHtml(value) {
-      const element = document.createElement("div");
-      element.textContent = String(value || "");
-      return element.innerHTML;
-    }
-
-    function ensureTopNotice(message, level) {
-      const subnav = document.querySelector(".subnav");
-      if (!subnav) return null;
-
-      let notice = document.querySelector(".subnav + .notice[data-generated-notice='true']");
-      if (!notice) {
-        notice = document.createElement("div");
-        notice.setAttribute("data-generated-notice", "true");
-        subnav.insertAdjacentElement("afterend", notice);
-      }
-
-      notice.className = "notice notice-" + (level || "success");
-      notice.innerHTML =
-        "<strong>" +
-        ((level || "success") === "danger"
-          ? "Error:"
-          : (level || "success") === "warning"
-          ? "Warning:"
-          : "Success:") +
-        "</strong> " +
-        escapeHtml(message || "");
-      return notice;
-    }
 
     async function submitModalForm(form) {
       const modal = form.closest(".modal-shell");
