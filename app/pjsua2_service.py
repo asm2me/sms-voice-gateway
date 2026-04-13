@@ -158,6 +158,7 @@ _TRUNK_ACTIVE_CALLS: dict[str, int] = {}
 _PJSUA_GLOBAL_LOCK = threading.RLock()
 _PJSUA_GLOBAL_ENDPOINT = None
 _PJSUA_GLOBAL_TRANSPORT = None
+_PJSUA_REGISTERED_THREADS: set[int] = set()
 
 
 class PJSipUASession:
@@ -190,6 +191,27 @@ class PJSipUASession:
                 + (f": {self.import_error}" if self.import_error else "")
             )
 
+    def _register_current_thread(self) -> None:
+        if self._pj is None or self._endpoint is None:
+            return
+        thread_id = threading.get_ident()
+        if thread_id in _PJSUA_REGISTERED_THREADS:
+            return
+        with suppress(Exception):
+            self._pj.threadDesc = getattr(self._pj, "threadDesc", lambda: [0] * 64)
+        try:
+            desc = self._pj.threadDesc() if callable(getattr(self._pj, "threadDesc", None)) else [0] * 64
+        except Exception:
+            desc = [0] * 64
+        name = f"py-{thread_id}"[:31]
+        with suppress(Exception):
+            self._endpoint.libRegisterThread(name)
+            _PJSUA_REGISTERED_THREADS.add(thread_id)
+            return
+        with suppress(Exception):
+            self._pj.threadRegister(name, desc)
+            _PJSUA_REGISTERED_THREADS.add(thread_id)
+
     def initialize(self) -> PJSUA2RegistrationResult:
         global _PJSUA_GLOBAL_ENDPOINT, _PJSUA_GLOBAL_TRANSPORT
 
@@ -212,6 +234,7 @@ class PJSipUASession:
                     if _PJSUA_GLOBAL_ENDPOINT is not None:
                         self._endpoint = _PJSUA_GLOBAL_ENDPOINT
                         self._transport = _PJSUA_GLOBAL_TRANSPORT
+                        self._register_current_thread()
                         return PJSUA2RegistrationResult(
                             success=True,
                             message="PJSUA2 endpoint already initialised",
@@ -267,6 +290,7 @@ class PJSipUASession:
                 self._endpoint = ep
                 self._transport = transport
 
+                self._register_current_thread()
                 return PJSUA2RegistrationResult(
                     success=True,
                     message="PJSUA2 endpoint initialised",
@@ -336,6 +360,7 @@ class PJSipUASession:
                 if not init_result.success:
                     return init_result
 
+                self._register_current_thread()
                 if not selected.enabled:
                     return PJSUA2RegistrationResult(
                         success=False,
@@ -509,6 +534,7 @@ class PJSipUASession:
                             details={"registration": reg.details},
                         )
 
+            self._register_current_thread()
             if not self._account or not self._current_profile:
                 return PJSUA2Result(
                     success=False,
@@ -731,6 +757,7 @@ class PJSipUASession:
         }
 
     def _wait_for_registration(self, account: "_GatewayAccount", *, timeout_seconds: float = 10.0) -> dict[str, Any]:
+        self._register_current_thread()
         deadline = time.time() + max(1.0, timeout_seconds)
         last_info: dict[str, Any] = {}
 
