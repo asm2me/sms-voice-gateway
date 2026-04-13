@@ -2159,7 +2159,7 @@ async def admin_batch_delete_queue_items_route(
         _admin_context(
             request,
             settings,
-            active_section="overview",
+            active_section="reports",
             success_message=f"Deleted {removed} queue item{'s' if removed != 1 else ''}.",
         ),
     )
@@ -2173,9 +2173,7 @@ async def admin_batch_update_queue_status_route(
 ):
     form = await request.form()
     item_ids = [str(value).strip() for value in form.getlist("item_ids") if str(value).strip()] if hasattr(form, "getlist") else []
-    status_value = str(form.get("status", "")).strip()
-    if not status_value:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "status is required")
+    status_value = str(form.get("status", "processed")).strip() or "processed"
     updated = batch_update_queue_item_status(settings, item_ids, status_value)
     return templates.TemplateResponse(
         request,
@@ -2183,7 +2181,7 @@ async def admin_batch_update_queue_status_route(
         _admin_context(
             request,
             settings,
-            active_section="overview",
+            active_section="reports",
             success_message=f"Updated {updated} queue item{'s' if updated != 1 else ''} to '{status_value}'.",
         ),
     )
