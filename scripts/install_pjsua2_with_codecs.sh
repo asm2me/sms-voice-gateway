@@ -128,6 +128,13 @@ if command -v ldconfig >/dev/null 2>&1; then
   ldconfig
 fi
 
+if [[ "${WITH_G729}" == "1" ]]; then
+  echo "G729 requested: verify the loaded runtime exposes bcg729-linked codecs with codecEnum2()."
+fi
+if [[ "${WITH_G7231}" == "1" ]]; then
+  echo "G723.1 requested: verify the loaded runtime exposes G723.1 support with codecEnum2()."
+fi
+
 PYTHON_INCLUDE="$(${PYTHON_BIN} - <<'PY'
 import sysconfig
 print(sysconfig.get_paths()["include"])
@@ -166,6 +173,7 @@ echo
 echo "Then restart the gateway service/container and inspect codecEnum2() / SIP SDP again."
 echo "The installer intentionally builds only the Python SWIG target and skips Java/JDK-dependent targets."
 echo "Codec build flags requested G.729/G.723 runtime exposure; verify codecEnum2() after restart."
+echo "If codecEnum2() is unchanged, the current pjproject source tree likely does not support these codecs via the selected flags alone."
 echo
 echo "Note: G.723.1 support depends on an available codec implementation in the build environment."
 echo "If your pjproject build still does not expose G723.1, you need a compatible external codec library/toolchain."
