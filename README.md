@@ -147,6 +147,17 @@ For the service to work end-to-end, make sure these are reachable:
 - SMPP port reachable at `SMPP_HOST:SMPP_PORT` if enabled
 - Asterisk can access the audio cache directory configured by `AUDIO_CACHE_DIR` and `ASTERISK_SOUNDS_DIR`
 
+### PJSUA2 / SIP runtime note
+
+This project imports the `pjsua2` Python module lazily at runtime for direct SIP user-agent features and live SIP registration tests from the admin UI.
+
+Important details:
+
+- `pjsua2` is not declared in `requirements.txt` on purpose.
+- A plain `pip install pjsua2` is not reliable across environments and may fail when no compatible wheel or full PJSIP source layout is available.
+- In many Linux deployments, `pjsua2` must be installed from your system package manager, from a prebuilt wheel that matches your Python version, or from locally built PJSIP Python bindings.
+- If `pjsua2` is unavailable, the application starts in a degraded mode and SIP registration tests from the UI cannot run.
+
 ## Web admin configuration
 
 Use the admin portal to manage operational settings.

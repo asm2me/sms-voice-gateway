@@ -24,12 +24,21 @@ source .venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
+# Install build dependencies commonly required for local PJSUA2 builds.
+if command -v apt-get >/dev/null 2>&1; then
+    if ! dpkg -s build-essential pkg-config libasound2-dev libssl-dev libopus-dev libvpx-dev libavcodec-dev libavformat-dev libswscale-dev python3-dev >/dev/null 2>&1; then
+        echo "[+] Installing system packages required for PJSUA2 builds..."
+        sudo apt-get update -y
+        sudo apt-get install -y build-essential pkg-config libasound2-dev libssl-dev libopus-dev libvpx-dev libavcodec-dev libavformat-dev libswscale-dev python3-dev
+    fi
+fi
+
 # Install PJSUA2 if available from pip; this is required for live SIP registration tests.
 if ! python -c "import pjsua2" >/dev/null 2>&1; then
     echo "[+] Installing pjsua2..."
     pip install -q pjsua2 || {
-        echo "[!] pjsua2 is not available via pip for this environment."
-        echo "[!] Install the system package or a prebuilt wheel that provides the Python module."
+        echo "[!] pjsua2 pip build failed."
+        echo "[!] This usually means a compatible wheel or full local PJSIP source/bindings are still required."
     }
 fi
 
