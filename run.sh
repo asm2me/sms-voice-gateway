@@ -50,8 +50,11 @@ install_pjsua2_from_source() {
 
     cd "${src_dir}"
     echo "[+] Building PJSIP/PJSUA2 Python bindings from source..."
+    export CFLAGS="${CFLAGS:+$CFLAGS }-fPIC"
+    export CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }-fPIC"
     ./configure --prefix="${src_dir}/build"
     make dep
+    make clean || true
     make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
     make install
 
