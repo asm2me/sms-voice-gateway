@@ -830,7 +830,7 @@
 <div class="config-page">
   {% macro render_input(field) -%}
     {% if field.is_secret %}
-    <input type="password" name="{{ field.name }}" value="" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
+    <input type="password" name="{{ field.name }}" value="{{ field.raw_value }}" placeholder="{% if field.value %}configured{% else %}not set{% endif %}" />
     {% elif field.name == 'tts_provider' %}
     <select name="{{ field.name }}">
       <option value="google" {% if field.raw_value == 'google' %}selected{% endif %}>Google</option>
@@ -1011,7 +1011,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/advanced" class="admin-form">
+              <form method="post" action="/admin/config/advanced" class="admin-form" id="voice-provider-google-form">
                 <div class="form-grid">
                   <label class="field-group field-span-2">
                     <span class="field-label">{{ google_credentials.label }}</span>
@@ -1020,9 +1020,11 @@
                   </label>
                 </div>
                 <div class="form-actions">
+                  <button type="button" class="button button-secondary js-provider-test-trigger" data-provider="google" data-target-form="voice-provider-google-form" data-target-status="provider-test-status-google">Test Provider</button>
                   <a href="#" class="button button-secondary">Cancel</a>
                   <button type="submit" class="button">Save Google Provider</button>
                 </div>
+                <div id="provider-test-status-google" class="inline-test-status" aria-live="polite"></div>
               </form>
             </section>
           </div>
@@ -1038,7 +1040,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/advanced" class="admin-form">
+              <form method="post" action="/admin/config/advanced" class="admin-form" id="voice-provider-aws-form">
                 <div class="form-grid">
                   <label class="field-group">
                     <span class="field-label">{{ aws_access_key.label }}</span>
@@ -1067,9 +1069,11 @@
                   </label>
                 </div>
                 <div class="form-actions">
+                  <button type="button" class="button button-secondary js-provider-test-trigger" data-provider="aws_polly" data-target-form="voice-provider-aws-form" data-target-status="provider-test-status-aws">Test Provider</button>
                   <a href="#" class="button button-secondary">Cancel</a>
                   <button type="submit" class="button">Save AWS Provider</button>
                 </div>
+                <div id="provider-test-status-aws" class="inline-test-status" aria-live="polite"></div>
               </form>
             </section>
           </div>
@@ -1085,7 +1089,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/advanced" class="admin-form">
+              <form method="post" action="/admin/config/advanced" class="admin-form" id="voice-provider-openai-form">
                 <div class="form-grid">
                   <label class="field-group field-span-2">
                     <span class="field-label">{{ openai_api_key.label }}</span>
@@ -1104,9 +1108,11 @@
                   </label>
                 </div>
                 <div class="form-actions">
+                  <button type="button" class="button button-secondary js-provider-test-trigger" data-provider="openai" data-target-form="voice-provider-openai-form" data-target-status="provider-test-status-openai">Test Provider</button>
                   <a href="#" class="button button-secondary">Cancel</a>
                   <button type="submit" class="button">Save OpenAI Provider</button>
                 </div>
+                <div id="provider-test-status-openai" class="inline-test-status" aria-live="polite"></div>
               </form>
             </section>
           </div>
@@ -1122,7 +1128,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/advanced" class="admin-form">
+              <form method="post" action="/admin/config/advanced" class="admin-form" id="voice-provider-elevenlabs-form">
                 <div class="form-grid">
                   <label class="field-group field-span-2">
                     <span class="field-label">{{ elevenlabs_api_key.label }}</span>
@@ -1136,9 +1142,11 @@
                   </label>
                 </div>
                 <div class="form-actions">
+                  <button type="button" class="button button-secondary js-provider-test-trigger" data-provider="elevenlabs" data-target-form="voice-provider-elevenlabs-form" data-target-status="provider-test-status-elevenlabs">Test Provider</button>
                   <a href="#" class="button button-secondary">Cancel</a>
                   <button type="submit" class="button">Save ElevenLabs Provider</button>
                 </div>
+                <div id="provider-test-status-elevenlabs" class="inline-test-status" aria-live="polite"></div>
               </form>
             </section>
           </div>
@@ -2089,6 +2097,25 @@
 
   (function () {
     const triggers = document.querySelectorAll(".js-sip-test-trigger");
+    const providerTriggers = document.querySelectorAll(".js-provider-test-trigger");
+
+    function setProviderStatus(target, payload, loading) {
+      if (!target) return;
+      if (loading) {
+        target.innerHTML = '<span class="status-badge status-pending" title="Testing provider credentials">Testing…</span>';
+        return;
+      }
+      const statusClass = payload && payload.status_class ? payload.status_class : "unknown";
+      const statusLabel = payload && payload.status_label ? payload.status_label : "Unknown";
+      const summary = payload && payload.summary ? payload.summary : "";
+      const detail = payload && payload.detail ? payload.detail : "";
+      target.innerHTML =
+        '<span class="status-badge status-' + statusClass + '">' +
+        statusLabel +
+        '</span>' +
+        (summary ? '<div class="inline-test-status__summary">' + summary + "</div>" : "") +
+        (detail ? '<div class="inline-test-status__summary muted">' + detail + "</div>" : "");
+    }
 
     function setStatus(target, payload, loading) {
       if (!target) return;
@@ -2154,9 +2181,57 @@
       }
     }
 
+    async function runProviderTest(trigger) {
+      const formId = trigger.getAttribute("data-target-form");
+      const statusId = trigger.getAttribute("data-target-status");
+      const provider = trigger.getAttribute("data-provider");
+      const form = document.getElementById(formId);
+      const status = document.getElementById(statusId);
+      if (!form || !status || !provider) return;
+
+      const formData = new FormData(form);
+      formData.set("provider", provider);
+      formData.set("sample_text", "This is a provider connectivity test.");
+
+      setProviderStatus(status, null, true);
+      trigger.disabled = true;
+
+      try {
+        const response = await fetch("/admin/config/provider-test", {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin",
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.summary || result.detail || result.detail || "Provider test failed");
+        }
+        setProviderStatus(status, result, false);
+      } catch (error) {
+        setProviderStatus(
+          status,
+          {
+            status_class: "danger",
+            status_label: "Failed",
+            summary: error && error.message ? error.message : "Provider test failed",
+            detail: "The provider test request could not be completed.",
+          },
+          false
+        );
+      } finally {
+        trigger.disabled = false;
+      }
+    }
+
     triggers.forEach((trigger) => {
       trigger.addEventListener("click", function () {
         runTest(trigger);
+      });
+    });
+
+    providerTriggers.forEach((trigger) => {
+      trigger.addEventListener("click", function () {
+        runProviderTest(trigger);
       });
     });
   })();
