@@ -79,7 +79,6 @@ if [[ "${WITH_G729}" == "1" ]]; then
   cmake -S bcg729 -B bcg729/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${PREFIX}"
   cmake --build bcg729/build -j"${JOBS}"
   cmake --install bcg729/build
-  ldconfig
 fi
 
 if [[ ! -d pjproject ]]; then
@@ -103,12 +102,15 @@ export PJMEDIA_HAS_ILBC_CODEC=1
 export PJMEDIA_HAS_SPEEX_CODEC=1
 export PJMEDIA_HAS_OPUS_CODEC=1
 export PJMEDIA_CODEC_MAX_SILENCE_PERIOD=-1
+export PJMEDIA_HAS_G729_CODEC=1
+export PJMEDIA_HAS_G723_CODEC=1
 EOF
 
 if [[ "${WITH_G729}" == "1" ]]; then
   cat >> user.mak <<EOF
 export BCG729_PREFIX=${PREFIX}
 export PJMEDIA_HAS_BCG729=1
+export PKG_CONFIG_PATH=${PREFIX}/lib/pkgconfig:${PREFIX}/lib/x86_64-linux-gnu/pkgconfig:\$PKG_CONFIG_PATH
 EOF
 fi
 
@@ -122,7 +124,9 @@ fi
 make dep
 make -j"${JOBS}"
 make install
-ldconfig
+if command -v ldconfig >/dev/null 2>&1; then
+  ldconfig
+fi
 
 PYTHON_INCLUDE="$(${PYTHON_BIN} - <<'PY'
 import sysconfig
@@ -161,6 +165,7 @@ echo "  ${PYTHON_BIN} -c \"import pjsua2 as pj; print('pjsua2 ok', pj)\""
 echo
 echo "Then restart the gateway service/container and inspect codecEnum2() / SIP SDP again."
 echo "The installer intentionally builds only the Python SWIG target and skips Java/JDK-dependent targets."
+echo "Codec build flags requested G.729/G.723 runtime exposure; verify codecEnum2() after restart."
 echo
 echo "Note: G.723.1 support depends on an available codec implementation in the build environment."
 echo "If your pjproject build still does not expose G723.1, you need a compatible external codec library/toolchain."
