@@ -1365,6 +1365,29 @@ def _provider_test_payload(provider: str, success: bool, summary: str, detail: s
     }
 
 
+def _validate_elevenlabs_api_key(api_key: str) -> tuple[bool, str]:
+    import requests
+
+    trimmed_key = (api_key or "").strip()
+    if not trimmed_key:
+        return False, "ElevenLabs API key is empty."
+
+    try:
+        response = requests.get(
+            "https://api.elevenlabs.io/v1/models",
+            headers={"xi-api-key": trimmed_key, "Content-Type": "application/json"},
+            timeout=20,
+        )
+        if response.ok:
+            return True, "ElevenLabs API key accepted by /v1/models."
+        detail = response.text.strip()
+        if len(detail) > 300:
+            detail = detail[:300] + "..."
+        return False, f"ElevenLabs API key validation failed with HTTP {response.status_code}: {detail or response.reason}"
+    except Exception as exc:
+        return False, f"ElevenLabs API key validation request failed: {exc}"
+
+
 def _build_provider_test_settings(current: Settings, provider: str, form) -> Settings:
     provider_keys: dict[str, list[str]] = {
         "google": [
@@ -1421,6 +1444,20 @@ async def admin_test_provider_config(
 
     _append_admin_log(f"Provider test started provider={provider_name} body={spoken_text[:80]!r}")
     try:
+        if provider_name == "elevenlabs":
+            key_ok, key_detail = _validate_elevenlabs_api_key(test_settings.elevenlabs_api_key or "")
+            if not key_ok:
+                _append_admin_log(f"Provider test failed provider={provider_name} error={key_detail}")
+                return JSONResponse(
+                    _provider_test_payload(
+                        provider_name,
+                        False,
+                        key_detail,
+                        "The ElevenLabs API key was rejected before attempting speech generation.",
+                    ),
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
         tts = TTSService(test_settings, AudioCache(test_settings))
         audio_path, was_cached = tts.get_or_create_audio(spoken_text)
         _append_admin_log(
