@@ -778,13 +778,27 @@ class PJSipUASession:
         }
 
     def _apply_codec_preferences(self, profile: SipAccountProfile) -> None:
-        codec_preferences = [
-            str(codec).strip().upper()
-            for codec in (profile.preferred_codecs or profile.extra.get("preferred_codecs", []) or [])
-            if str(codec).strip()
-        ]
+        raw_preferences = profile.preferred_codecs or profile.extra.get("preferred_codecs", []) or []
+        codec_aliases = {
+            "G729": {"G729", "G.729", "G729A", "G729AB"},
+            "G723": {"G723", "G723.1", "G.723", "G.723.1"},
+            "PCMU": {"PCMU", "ULAW", "MU-LAW", "G711U", "G711MU"},
+            "PCMA": {"PCMA", "ALAW", "A-LAW", "G711A"},
+        }
+        codec_preferences = [str(codec).strip().upper() for codec in raw_preferences if str(codec).strip()]
         if not codec_preferences or self._endpoint is None or self._pj is None:
             return
+
+        def _normalize_codec_name(value: str) -> str:
+            normalized = str(value or "").strip().upper().replace(".", "").replace("-", "").replace("_", "").replace("/", "")
+            for canonical, aliases in codec_aliases.items():
+                alias_tokens = {
+                    alias.upper().replace(".", "").replace("-", "").replace("_", "").replace("/", "")
+                    for alias in aliases
+                }
+                if normalized in alias_tokens or canonical.upper().replace(".", "").replace("-", "").replace("_", "").replace("/", "") in normalized:
+                    return canonical
+            return normalized
 
         try:
             codec_info_list = []
@@ -792,7 +806,9 @@ class PJSipUASession:
                 codec_info_list = list(self._endpoint.codecEnum2())
 
             available_codec_ids: list[str] = []
+            available_codec_names: dict[str, str] = {}
             matched_codec_ids: list[str] = []
+            normalized_preferences = [_normalize_codec_name(codec) for codec in codec_preferences]
 
             for info in codec_info_list:
                 codec_id = ""
@@ -807,15 +823,17 @@ class PJSipUASession:
                     continue
 
                 available_codec_ids.append(codec_id)
-                normalized_codec_id = codec_id.upper().replace(".", "").replace("-", "").replace("_", "")
-                if any(preferred in normalized_codec_id for preferred in codec_preferences):
+                normalized_codec_id = _normalize_codec_name(codec_id)
+                available_codec_names[codec_id] = normalized_codec_id
+                if normalized_codec_id in normalized_preferences:
                     matched_codec_ids.append(codec_id)
 
             if not matched_codec_ids:
                 log.warning(
-                    "Requested SIP codecs are unavailable account=%s requested=%s available=%s",
+                    "Requested SIP codecs are unavailable account=%s requested=%s normalized=%s available=%s",
                     profile.id,
                     codec_preferences,
+                    normalized_preferences,
                     available_codec_ids,
                 )
                 return
@@ -828,10 +846,12 @@ class PJSipUASession:
                     self._endpoint.codecSetPriority(codec_id, priority)
 
             log.info(
-                "Applied SIP codec preferences account=%s requested=%s matched=%s",
+                "Applied SIP codec preferences account=%s requested=%s normalized=%s matched=%s matched_normalized=%s",
                 profile.id,
                 codec_preferences,
+                normalized_preferences,
                 matched_codec_ids,
+                [available_codec_names.get(codec_id, codec_id) for codec_id in matched_codec_ids],
             )
         except Exception as exc:
             log.warning("Failed applying SIP codec preferences for account=%s: %s", profile.id, exc)

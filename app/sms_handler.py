@@ -245,8 +245,8 @@ class SMSGateway:
             if smpp_account and smpp_account.delivery_retry_interval_seconds is not None
             else self.settings.delivery_retry_interval_seconds
         )
-        max_attempts = max(1, int(retry_count) + 1)
-        retry_interval_seconds = max(0, int(retry_interval_value))
+        max_attempts = 1 if sms.provider == "admin-test" else max(1, int(retry_count) + 1)
+        retry_interval_seconds = 0 if sms.provider == "admin-test" else max(0, int(retry_interval_value))
         last_error = ""
         ami_action_id = ""
         sip_call_id = ""
