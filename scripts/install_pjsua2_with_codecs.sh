@@ -177,6 +177,7 @@ echo "The installer intentionally builds only the Python SWIG target and skips J
 echo "Codec build flags requested G.729/G.723 runtime exposure; verify codecEnum2() after restart."
 echo "If codecEnum2() is unchanged, the current pjproject source tree likely does not support these codecs via the selected flags alone."
 echo "If calls drop or the UI freezes, inspect the app's call thread handling and ensure the SIP work runs off the web request thread."
+echo "For concurrent sessions, use one SIP worker thread per session or a managed worker pool so call setup does not block HTTP handlers."
 echo
 echo "Note: G.723.1 support depends on an available codec implementation in the build environment."
 echo "If your pjproject build still does not expose G723.1, you need a compatible external codec library/toolchain."
