@@ -597,6 +597,21 @@ class PJSipUASession:
                     self._last_call = call
                     call_started = True
 
+                    with suppress(Exception):
+                        call_info = call.getInfo()
+                        media_list = getattr(call_info, "media", None)
+                        if media_list is not None:
+                            for media in list(media_list):
+                                media_status = getattr(media, "status", None)
+                                media_type = getattr(media, "type", None)
+                                log.info(
+                                    "Outbound SIP media state account=%s destination=%s type=%s status=%s",
+                                    account_id,
+                                    destination,
+                                    media_type,
+                                    media_status,
+                                )
+
                     playback_result = self.prepare_playback(
                         request.audio_path,
                         destination_number=destination,
@@ -989,7 +1004,7 @@ class _GatewayAccount:
         if pj is None:
             raise PJSUA2UnavailableError("PJSUA2 bindings are unavailable")
 
-        call = pj.Call(self._account, -1)
+        call = _GatewayCall(self._account, callback)
         prm = pj.CallOpParam(True)
 
         with suppress(Exception):
@@ -1067,6 +1082,88 @@ def _probe_audio_duration_seconds(audio_path: Path) -> float:
             return frame_count / float(frame_rate)
     except Exception:
         return 0.0
+
+
+class _GatewayCall:
+    """
+    Best-effort PJSUA2 call object that keeps Python-side callbacks reachable.
+
+    Some PJSUA2 builds only invoke `onCallState` / `onCallMediaState` when the
+    Python object itself subclasses `pj.Call`. Other builds tolerate wrapping.
+    This helper attempts the real subclass first, then falls back to delegation.
+    """
+    def __new__(cls, account: Any, callback: "_CallCallbackHolder"):
+        pj, _ = _safe_import_pjsua2()
+        if pj is None:
+            raise PJSUA2UnavailableError("PJSUA2 bindings are unavailable")
+
+        try:
+            subclass_type = type(
+                "_RuntimeGatewayCall",
+                (pj.Call,),
+                {
+                    "__module__": __name__,
+                    "__init__": lambda self, acc, cb: _gateway_call_subclass_init(self, pj, acc, cb),
+                    "onCallState": lambda self, prm=None: _gateway_call_handle_state(self, prm),
+                    "onCallMediaState": lambda self, prm=None: _gateway_call_handle_media(self, prm),
+                },
+            )
+            instance = object.__new__(subclass_type)
+            subclass_type.__init__(instance, account, callback)
+            return instance
+        except Exception:
+            instance = object.__new__(cls)
+            return instance
+
+    def __init__(self, account: Any, callback: "_CallCallbackHolder"):
+        if hasattr(self, "_callback"):
+            return
+        pj, _ = _safe_import_pjsua2()
+        if pj is None:
+            raise PJSUA2UnavailableError("PJSUA2 bindings are unavailable")
+        self._pj = pj
+        self._callback = callback
+        self._call = pj.Call(account, -1)
+
+    def makeCall(self, uri: str, prm: Any) -> None:
+        if hasattr(self, "_call"):
+            self._call.makeCall(uri, prm)
+            return
+        super(type(self), self).makeCall(uri, prm)
+
+    def getInfo(self) -> Any:
+        if hasattr(self, "_call"):
+            return self._call.getInfo()
+        return super(type(self), self).getInfo()
+
+    def __getattr__(self, name: str) -> Any:
+        if hasattr(self, "_call"):
+            return getattr(self._call, name)
+        raise AttributeError(name)
+
+    def onCallState(self, prm: Any = None) -> None:
+        self._callback.onCallState(self)
+
+    def onCallMediaState(self, prm: Any = None) -> None:
+        self._callback.onCallMediaState(self)
+
+
+def _gateway_call_subclass_init(self: Any, pj: Any, account: Any, callback: "_CallCallbackHolder") -> None:
+    pj.Call.__init__(self, account, -1)
+    self._pj = pj
+    self._callback = callback
+
+
+def _gateway_call_handle_state(call_obj: Any, prm: Any = None) -> None:
+    callback = getattr(call_obj, "_callback", None)
+    if callback is not None:
+        callback.onCallState(call_obj)
+
+
+def _gateway_call_handle_media(call_obj: Any, prm: Any = None) -> None:
+    callback = getattr(call_obj, "_callback", None)
+    if callback is not None:
+        callback.onCallMediaState(call_obj)
 
 
 class _CallCallbackHolder:
@@ -1154,8 +1251,23 @@ class _CallCallbackHolder:
                         break
 
         self._state_text = state_text or state_name or self._state_text
+        log.info(
+            "Outbound SIP call state account=%s call_id=%s state=%s status=%s",
+            self._account_id,
+            self._call_id,
+            state_text or state_name,
+            last_status_code,
+        )
+
         if last_status_code == 200 and self._answered_at is None:
             self._answered_at = time.time()
+            log.info(
+                "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s",
+                self._account_id,
+                self._call_id,
+                state_text or state_name,
+                last_status_code,
+            )
 
         if (
             state_name in self._TERMINAL_STATES
@@ -1190,6 +1302,8 @@ class _CallCallbackHolder:
             "state_text": self._state_text,
             "disconnect_reason": self._disconnect_reason,
             "completed": self._done.is_set(),
+            "answered_at": self._answered_at,
+            "disconnected_at": self._disconnected_at,
         }
 
     def __getattr__(self, name: str) -> Any:
