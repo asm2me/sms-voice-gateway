@@ -118,6 +118,10 @@ class PJSUA2UnavailableError(RuntimeError):
     pass
 
 
+_PJSUA2_ENDPOINT_LOCK = threading.RLock()
+_PJSUA2_ENDPOINT_ACTIVE = False
+
+
 class PJSipUASession:
     """
     Lightweight wrapper around a running PJSUA2 endpoint.
@@ -149,6 +153,8 @@ class PJSipUASession:
             )
 
     def initialize(self) -> PJSUA2RegistrationResult:
+        global _PJSUA2_ENDPOINT_ACTIVE
+
         with self._lock:
             if not self.available:
                 return PJSUA2RegistrationResult(
@@ -164,29 +170,39 @@ class PJSipUASession:
                         details={"already_initialised": True},
                     )
 
-                pj = self._pj
-                ep = pj.Endpoint()
-                ep.libCreate()
+                with _PJSUA2_ENDPOINT_LOCK:
+                    if _PJSUA2_ENDPOINT_ACTIVE:
+                        return PJSUA2RegistrationResult(
+                            success=False,
+                            error="PJSUA2 endpoint is already active in this process",
+                            details={"already_initialised_globally": True},
+                        )
 
-                ep_cfg = pj.EpConfig()
-                with suppress(Exception):
-                    ep_cfg.logConfig.level = 3
-                    ep_cfg.logConfig.consoleLevel = 3
+                    pj = self._pj
+                    ep = pj.Endpoint()
+                    ep.libCreate()
 
-                ep.libInit(ep_cfg)
+                    ep_cfg = pj.EpConfig()
+                    with suppress(Exception):
+                        ep_cfg.logConfig.level = 3
+                        ep_cfg.logConfig.consoleLevel = 3
 
-                transport_cfg = pj.TransportConfig()
-                with suppress(Exception):
-                    transport_cfg.port = 0
-                transport_type = getattr(pj, "PJSIP_TRANSPORT_UDP", None)
-                if transport_type is None:
-                    transport_type = getattr(pj, "PJSIP_TRANSPORT_TCP", 0)
+                    ep.libInit(ep_cfg)
 
-                transport = ep.transportCreate(transport_type, transport_cfg)
-                ep.libStart()
+                    transport_cfg = pj.TransportConfig()
+                    with suppress(Exception):
+                        transport_cfg.port = 0
+                    transport_type = getattr(pj, "PJSIP_TRANSPORT_UDP", None)
+                    if transport_type is None:
+                        transport_type = getattr(pj, "PJSIP_TRANSPORT_TCP", 0)
 
-                self._endpoint = ep
-                self._transport = transport
+                    transport = ep.transportCreate(transport_type, transport_cfg)
+                    ep.libStart()
+
+                    self._endpoint = ep
+                    self._transport = transport
+                    _PJSUA2_ENDPOINT_ACTIVE = True
+
                 return PJSUA2RegistrationResult(
                     success=True,
                     message="PJSUA2 endpoint initialised",
@@ -202,6 +218,8 @@ class PJSipUASession:
                 )
 
     def shutdown(self) -> None:
+        global _PJSUA2_ENDPOINT_ACTIVE
+
         with self._lock:
             if self._account is not None:
                 with suppress(Exception):
@@ -212,8 +230,10 @@ class PJSipUASession:
             self._last_call = None
 
             if self._endpoint is not None:
-                with suppress(Exception):
-                    self._endpoint.libDestroy()
+                with _PJSUA2_ENDPOINT_LOCK:
+                    with suppress(Exception):
+                        self._endpoint.libDestroy()
+                    _PJSUA2_ENDPOINT_ACTIVE = False
             self._endpoint = None
             self._transport = None
 
