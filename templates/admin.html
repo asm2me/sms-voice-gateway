@@ -1138,8 +1138,12 @@
                   <label class="field-group field-span-2">
                     <span class="field-label">{{ elevenlabs_voice.label }}</span>
                     {{ render_input(elevenlabs_voice) }}
-                    <small class="muted">{{ elevenlabs_voice.name }}</small>
+                    <small class="muted">{{ elevenlabs_voice.name }} — must belong to the same ElevenLabs account/workspace as the configured API key.</small>
                   </label>
+                  <div class="notice notice-warning">
+                    <strong>ElevenLabs voice IDs are account-specific.</strong>
+                    If provider testing says a voice was not found, the API key is valid but the saved <span class="mono">elevenlabs_voice_id</span> does not exist in that ElevenLabs account. Copy a voice ID from the Voices page in the same workspace as the API key, save it, then test again.
+                  </div>
                 </div>
                 <div class="form-actions">
                   <button type="button" class="button button-secondary js-provider-test-trigger" data-provider="elevenlabs" data-target-form="voice-provider-elevenlabs-form" data-target-status="provider-test-status-elevenlabs">Test Provider</button>
@@ -2204,7 +2208,7 @@
         });
         const result = await response.json();
         if (!response.ok) {
-          throw new Error(result.summary || result.detail || result.detail || "Provider test failed");
+          throw new Error(result.summary || result.detail || "Provider test failed");
         }
         setProviderStatus(status, result, false);
       } catch (error) {
@@ -2214,7 +2218,10 @@
             status_class: "danger",
             status_label: "Failed",
             summary: error && error.message ? error.message : "Provider test failed",
-            detail: "The provider test request could not be completed.",
+            detail:
+              provider === "elevenlabs"
+                ? "For ElevenLabs, this usually means the configured voice ID does not exist in the same account/workspace as the API key."
+                : "The provider test request could not be completed.",
           },
           false
         );
