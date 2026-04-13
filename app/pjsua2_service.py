@@ -597,18 +597,23 @@ class PJSipUASession:
                     self._last_call = call
                     call_started = True
 
-                    call_outcome = callback.wait_for_completion(
-                        max(1.0, float(request.timeout_seconds or 30))
-                    )
-
-                    answered = bool(call_outcome.get("answered"))
                     playback_result = self.prepare_playback(
                         request.audio_path,
                         destination_number=destination,
                         account_id=account_id,
-                        repeat_count=request.playback_repeats if answered else 0,
-                        pause_ms=request.playback_pause_ms if answered else 0,
+                        repeat_count=request.playback_repeats,
+                        pause_ms=request.playback_pause_ms,
                     )
+                    call_outcome = callback.wait_for_completion(
+                        max(
+                            1.0,
+                            float(request.timeout_seconds or 30)
+                            + float(playback_result.audio_duration_seconds or 0.0)
+                            + max(5.0, float(request.playback_pause_ms or 0) / 1000.0),
+                        )
+                    )
+
+                    answered = bool(call_outcome.get("answered"))
                     playback_seconds = float(call_outcome.get("playback_seconds") or 0.0)
                     audio_duration_seconds = float(playback_result.audio_duration_seconds or 0.0)
                     delivered = answered
@@ -692,29 +697,11 @@ class PJSipUASession:
             )
 
         try:
-            repeat_count = int(repeat_count)
+            repeat_count = max(1, int(repeat_count))
             pause_ms = max(0, int(pause_ms))
         except Exception:
             repeat_count = 1
             pause_ms = 0
-
-        if repeat_count <= 0:
-            return PJSUA2Result(
-                success=True,
-                account_id=account_id,
-                destination_number=destination_number,
-                audio_path=str(audio_file),
-                message="Playback skipped because the call was not answered",
-                audio_duration_seconds=0.0,
-                details={
-                    "manifest_path": "",
-                    "repeat_count": 0,
-                    "pause_ms": 0,
-                    "playback_mode": "skipped_unanswered",
-                    "audio_duration_seconds": 0.0,
-                    "single_audio_duration_seconds": 0.0,
-                },
-            )
 
         try:
             audio_duration_seconds = _probe_audio_duration_seconds(audio_file)
