@@ -2127,11 +2127,27 @@ async def admin_tools_test_send(
     _append_admin_log(
         f"Tools test-send finished success={outcome['result']['success']} sip_call_id={outcome['result']['sip_call_id'] or ''} sip_account_id={outcome['result']['sip_account_id'] or ''} error={outcome['result']['error'] or ''}"
     )
-    message = (
-        f"Test message queued and delivered for {phone_number} using SMPP user '{smpp_username}'."
-        if outcome["result"]["success"]
-        else f"Test message was added to the queue for {phone_number} using SMPP user '{smpp_username}', but live processing failed: {outcome['result']['error'] or 'Unknown error'}"
-    )
+    result_error = str(outcome["result"].get("error") or "").strip()
+    result_pending_reason = str((outcome["result"].get("details") or {}).get("pending_reason") or "").strip()
+    is_rate_limited = "rate limited" in result_error.lower() or "rate limit" in result_pending_reason.lower()
+
+    if outcome["result"]["success"]:
+        message = f"Test message queued and delivered for {phone_number} using SMPP user '{smpp_username}'."
+        message_level = "success"
+        response_status = status.HTTP_200_OK
+    elif is_rate_limited:
+        message = (
+            f"Selected SMPP user '{smpp_username}' is rate limited. "
+            f"Message for {phone_number} was queued, but live processing was blocked: "
+            f"{result_error or result_pending_reason or 'hourly or daily limit exceeded'}"
+        )
+        message_level = "danger"
+        response_status = status.HTTP_429_TOO_MANY_REQUESTS
+    else:
+        message = f"Test message was added to the queue for {phone_number} using SMPP user '{smpp_username}', but live processing failed: {result_error or 'Unknown error'}"
+        message_level = "warning"
+        response_status = status.HTTP_200_OK
+
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2140,7 +2156,9 @@ async def admin_tools_test_send(
             settings,
             active_section="tools",
             success_message=message,
+            message_level=message_level,
         ),
+        status_code=response_status,
     )
 
 
