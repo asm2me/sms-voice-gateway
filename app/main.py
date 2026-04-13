@@ -776,6 +776,7 @@ def _admin_context(
     success_message: str | None = None,
     message_level: str = "success",
     health_context: dict | None = None,
+    tools_form_values: dict | None = None,
 ) -> dict:
     report_summary, recent_reports = _report_context(settings)
     queue_search = str(request.query_params.get("search", "")).strip()
@@ -934,6 +935,12 @@ def _admin_context(
         ],
         "bootstrap_fields": ["host", "port", "debug", "admin_username", "admin_password"],
         "admin_managed_fields": sorted(ADMIN_MANAGED_FIELDS),
+        "tools_form_values": {
+            "smpp_username": str((tools_form_values or {}).get("smpp_username", "")).strip(),
+            "phone_number": str((tools_form_values or {}).get("phone_number", "")).strip(),
+            "body": str((tools_form_values or {}).get("body", "")),
+            "provider": str((tools_form_values or {}).get("provider", "admin-test")).strip() or "admin-test",
+        },
     }
     if success_message:
         context["success_message"] = success_message
@@ -2069,9 +2076,27 @@ async def admin_tools_test_send(
     phone_number = str(form.get("phone_number", "")).strip()
     body = str(form.get("body", "")).strip()
     provider = str(form.get("provider", "admin-test")).strip() or "admin-test"
+    tools_form_values = {
+        "smpp_username": smpp_username,
+        "phone_number": phone_number,
+        "body": body,
+        "provider": provider,
+    }
 
     if not smpp_username or not phone_number or not body:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "smpp_username, phone_number and body are required")
+        return templates.TemplateResponse(
+            request,
+            "admin.html",
+            _admin_context(
+                request,
+                settings,
+                active_section="tools",
+                success_message="smpp_username, phone_number and body are required",
+                message_level="danger",
+                tools_form_values=tools_form_values,
+            ),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
 
     _append_admin_log(
         f"Tools test-send queued smpp_username={smpp_username} phone_number={phone_number} provider={provider} body={body[:80]!r}"
@@ -2098,6 +2123,7 @@ async def admin_tools_test_send(
                 active_section="tools",
                 success_message=detail,
                 message_level="danger",
+                tools_form_values=tools_form_values,
             ),
             status_code=exc.status_code,
         )
@@ -2125,6 +2151,7 @@ async def admin_tools_test_send(
             active_section="tools",
             success_message=message,
             message_level=message_level,
+            tools_form_values=tools_form_values,
         ),
         status_code=response_status,
     )

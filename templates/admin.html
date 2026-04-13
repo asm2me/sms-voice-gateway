@@ -47,7 +47,7 @@
         <select name="smpp_username" required>
           <option value="">Select SMPP user</option>
           {% for account in smpp_accounts %}
-          <option value="{{ account.username }}">{{ account.label or account.username or account.id }}</option>
+          <option value="{{ account.username }}" {% if tools_form_values.smpp_username == account.username %}selected{% endif %}>{{ account.label or account.username or account.id }}</option>
           {% endfor %}
         </select>
         <small class="muted">The message will be routed using this SMPP identity.</small>
@@ -55,19 +55,19 @@
 
       <label class="field-group">
         <span class="field-label">Destination Phone Number</span>
-        <input type="text" name="phone_number" placeholder="+966123456789" required />
+        <input type="text" name="phone_number" placeholder="+966123456789" value="{{ tools_form_values.phone_number }}" required />
         <small class="muted">This becomes the destination for the simulated delivery job.</small>
       </label>
 
       <label class="field-group field-span-2">
         <span class="field-label">Message Body</span>
-        <textarea id="tools-message-body" name="body" rows="5" placeholder="Your OTP is 123456" required></textarea>
+        <textarea id="tools-message-body" name="body" rows="5" placeholder="Your OTP is 123456" required>{{ tools_form_values.body }}</textarea>
         <small class="muted">The body is enqueued, synthesized to speech, and delivered through the assigned SIP trunk.</small>
       </label>
 
       <label class="field-group">
         <span class="field-label">Provider Label</span>
-        <input type="text" name="provider" value="admin-test" />
+        <input type="text" name="provider" value="{{ tools_form_values.provider }}" />
         <small class="muted">Optional label for queue/report tracking.</small>
       </label>
     </div>
