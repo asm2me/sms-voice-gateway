@@ -585,28 +585,6 @@ def _simulate_smpp_test_send(
     if not smpp_account.enabled:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Selected SMPP user is disabled")
 
-    effective_hourly_limit = smpp_account.rate_limit_hourly if smpp_account.rate_limit_hourly is not None else settings.smpp_default_rate_limit_hourly
-    effective_daily_limit = smpp_account.rate_limit_daily if smpp_account.rate_limit_daily is not None else settings.smpp_default_rate_limit_daily
-    rate_limiter = RateLimiter(settings)
-    limit_target = smpp_username or phone_number
-
-    if effective_hourly_limit and effective_hourly_limit > 0:
-        hourly_check = rate_limiter.is_allowed(limit_target)
-        if isinstance(hourly_check, tuple):
-            allowed, reason = hourly_check
-        else:
-            allowed, reason = bool(hourly_check), ""
-        if not allowed:
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, f"Selected SMPP user rate limit exceeded: {reason or 'hourly limit exceeded'}")
-    if effective_daily_limit and effective_daily_limit > 0:
-        daily_check = rate_limiter.is_allowed(limit_target)
-        if isinstance(daily_check, tuple):
-            allowed, reason = daily_check
-        else:
-            allowed, reason = bool(daily_check), ""
-        if not allowed:
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, f"Selected SMPP user rate limit exceeded: {reason or 'daily limit exceeded'}")
-
     queue_store = get_queue_store(settings)
     now = _utc_now_iso()
     queue_item = record_queue_item(
@@ -2128,17 +2106,11 @@ async def admin_tools_test_send(
         f"Tools test-send finished success={outcome['result']['success']} sip_call_id={outcome['result']['sip_call_id'] or ''} sip_account_id={outcome['result']['sip_account_id'] or ''} error={outcome['result']['error'] or ''}"
     )
     result_error = str(outcome["result"].get("error") or "").strip()
-    result_pending_reason = str((outcome["result"].get("details") or {}).get("pending_reason") or "").strip()
-    is_rate_limited = "rate limited" in result_error.lower() or "rate limit" in result_pending_reason.lower()
 
     if outcome["result"]["success"]:
         message = f"Test message queued and delivered for {phone_number} using SMPP user '{smpp_username}'."
         message_level = "success"
         response_status = status.HTTP_200_OK
-    elif is_rate_limited:
-        message = f"Selected SMPP user '{smpp_username}' cannot send right now."
-        message_level = "danger"
-        response_status = status.HTTP_429_TOO_MANY_REQUESTS
     else:
         message = f"Test message was added to the queue for {phone_number} using SMPP user '{smpp_username}', but live processing failed: {result_error or 'Unknown error'}"
         message_level = "warning"
