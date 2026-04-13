@@ -1,4 +1,4 @@
-"""
+ """
 Two-level cache:
   L1 – in-process LRU (avoids Redis round-trip for hot keys)
   L2 – Redis (shared between workers / restarts)

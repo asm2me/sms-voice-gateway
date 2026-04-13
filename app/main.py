@@ -263,6 +263,8 @@ def _build_queue_context(
         provider=provider_filter,
         limit=getattr(settings, "delivery_report_max_items", 1000),
     )
+    if not isinstance(queue_summary, dict) or queue_summary.get("total_items") in (None, ""):
+        queue_summary = {**(queue_summary if isinstance(queue_summary, dict) else {}), "total_items": len(all_queue_items)}
     all_inbox_messages = query_inbox_messages(
         settings,
         search=inbox_search,
@@ -270,6 +272,8 @@ def _build_queue_context(
         provider=inbox_provider,
         limit=getattr(settings, "delivery_report_max_items", 1000),
     )
+    if not isinstance(inbox_summary, dict) or inbox_summary.get("total_items") in (None, ""):
+        inbox_summary = {**(inbox_summary if isinstance(inbox_summary, dict) else {}), "total_items": len(all_inbox_messages)}
     recent_queue_items = paginate_items(all_queue_items, page=page, page_size=page_size)
     recent_inbox_messages = paginate_items(all_inbox_messages, page=inbox_page, page_size=page_size)
     queue_filters = {
@@ -278,6 +282,8 @@ def _build_queue_context(
         "provider": provider_filter,
         "page": recent_queue_items["page"],
         "page_size": recent_queue_items["page_size"],
+        "total_items": queue_summary.get("total_items", len(all_queue_items)),
+        "total_pages": recent_queue_items["total_pages"],
         "has_filters": bool(search.strip() or status_filter.strip() or provider_filter.strip()),
     }
     inbox_filters = {
@@ -286,6 +292,8 @@ def _build_queue_context(
         "provider": inbox_provider,
         "page": recent_inbox_messages["page"],
         "page_size": recent_inbox_messages["page_size"],
+        "total_items": inbox_summary.get("total_items", len(all_inbox_messages)),
+        "total_pages": recent_inbox_messages["total_pages"],
         "has_filters": bool(inbox_search.strip() or inbox_status.strip() or inbox_provider.strip()),
     }
     return inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters
@@ -313,9 +321,29 @@ def _build_live_call_context(settings: Settings) -> dict:
             }
         )
 
+    smpp_active_calls_by_user: list[dict] = []
+    smpp_service = getattr(app.state, "smpp_service", None)
+    smpp_sessions = getattr(smpp_service, "sessions", None) if smpp_service else None
+    if isinstance(smpp_sessions, dict):
+        for smpp_username, session in smpp_sessions.items():
+            if session is None:
+                continue
+            active_count = 0
+            if isinstance(session, dict):
+                active_count = int(session.get("active_calls", session.get("active_count", 0)) or 0)
+            else:
+                active_count = int(getattr(session, "active_calls", getattr(session, "active_count", 0)) or 0)
+            smpp_active_calls_by_user.append(
+                {
+                    "smpp_username": smpp_username,
+                    "active_calls": active_count,
+                }
+            )
+
     return {
         "active_count": len(active_calls),
         "items": active_calls,
+        "smpp_active_calls_by_user": smpp_active_calls_by_user,
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
         "engine": "pjsua2",
         "available": status.get("available", False),
@@ -556,6 +584,28 @@ def _simulate_smpp_test_send(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Unknown SMPP username")
     if not smpp_account.enabled:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Selected SMPP user is disabled")
+
+    effective_hourly_limit = smpp_account.rate_limit_hourly if smpp_account.rate_limit_hourly is not None else settings.smpp_default_rate_limit_hourly
+    effective_daily_limit = smpp_account.rate_limit_daily if smpp_account.rate_limit_daily is not None else settings.smpp_default_rate_limit_daily
+    rate_limiter = RateLimiter(settings)
+    limit_target = smpp_username or phone_number
+
+    if effective_hourly_limit and effective_hourly_limit > 0:
+        hourly_check = rate_limiter.is_allowed(limit_target)
+        if isinstance(hourly_check, tuple):
+            allowed, reason = hourly_check
+        else:
+            allowed, reason = bool(hourly_check), ""
+        if not allowed:
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, f"Selected SMPP user rate limit exceeded: {reason or 'hourly limit exceeded'}")
+    if effective_daily_limit and effective_daily_limit > 0:
+        daily_check = rate_limiter.is_allowed(limit_target)
+        if isinstance(daily_check, tuple):
+            allowed, reason = daily_check
+        else:
+            allowed, reason = bool(daily_check), ""
+        if not allowed:
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, f"Selected SMPP user rate limit exceeded: {reason or 'daily limit exceeded'}")
 
     queue_store = get_queue_store(settings)
     now = _utc_now_iso()

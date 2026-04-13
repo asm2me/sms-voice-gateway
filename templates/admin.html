@@ -365,7 +365,7 @@
   </div>
 
   <div class="filter-bar">
-    <form method="get" action="/admin/reports" class="admin-form filter-form">
+    <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
       <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
       <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
       <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
@@ -384,7 +384,7 @@
       </label>
       <button type="submit" class="button button-secondary">Apply Queue Filters</button>
     </form>
-    <form method="get" action="/admin/reports" class="admin-form filter-form">
+    <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
       <input type="hidden" name="search" value="{{ queue_filters.search }}" />
       <input type="hidden" name="status" value="{{ queue_filters.status }}" />
       <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
@@ -415,7 +415,7 @@
       <table class="data-table queue-table" id="live-queue-table">
       <thead>
         <tr>
-          <th>Select</th>
+          <th><label class="table-select-all"><input type="checkbox" data-select-all="live-queue-table" /> Select all</label></th>
           <th>Created</th>
           <th>Phone</th>
           <th>Provider</th>
@@ -553,7 +553,7 @@
       <table class="data-table inbox-table">
       <thead>
         <tr>
-          <th>Select</th>
+          <th><label class="table-select-all"><input type="checkbox" data-select-all="inbox-table" /> Select all</label></th>
           <th>Received</th>
           <th>From</th>
           <th>Destination</th>
@@ -988,10 +988,10 @@
           </div>
 
           <div class="table-wrap">
-            <table class="data-table account-table">
+      <table class="data-table account-table">
               <thead>
                 <tr>
-                  <th>Provider</th>
+                  <th><label class="table-select-all"><input type="checkbox" data-select-all="provider-table" /> Select all</label></th>
                   <th>Status</th>
                   <th>Primary Configuration</th>
                   <th>Actions</th>
