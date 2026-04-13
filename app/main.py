@@ -1373,9 +1373,16 @@ def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
     domain = (account.domain or account.host or "").strip()
     username = (account.username or "").strip()
     caller_id = (account.from_user or account.display_name or username or account.id).strip()
-    sip_uri = f"sip:{username}@{domain}" if username and domain else ""
-    registrar_uri = f"sip:{domain}" if domain else ""
+    port = int(account.port or 5060)
+    domain_target = domain
+    if domain and ":" not in domain:
+        domain_target = f"{domain}:{port}"
+    sip_uri = f"sip:{username}@{domain_target}" if username and domain_target else ""
+    transport = (account.transport or "UDP").upper()
+    registrar_uri = f"sip:{domain_target};transport={transport.lower()}" if domain_target else ""
     proxy_uri = (account.outbound_proxy or "").strip()
+    if not proxy_uri and domain_target:
+        proxy_uri = f"sip:{domain_target};transport={transport.lower()}"
 
     return SipAccountProfile(
         id=account.id,
@@ -1386,7 +1393,7 @@ def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
         password=(account.password or "").strip(),
         registrar_uri=registrar_uri,
         proxy_uri=proxy_uri,
-        transport=(account.transport or "UDP").upper(),
+        transport=transport,
         caller_id=caller_id,
         enabled=bool(account.enabled),
         auth_realm="*",
