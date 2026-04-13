@@ -2136,11 +2136,7 @@ async def admin_tools_test_send(
         message_level = "success"
         response_status = status.HTTP_200_OK
     elif is_rate_limited:
-        message = (
-            f"Selected SMPP user '{smpp_username}' is rate limited. "
-            f"Message for {phone_number} was queued, but live processing was blocked: "
-            f"{result_error or result_pending_reason or 'hourly or daily limit exceeded'}"
-        )
+        message = f"Selected SMPP user '{smpp_username}' cannot send right now."
         message_level = "danger"
         response_status = status.HTTP_429_TOO_MANY_REQUESTS
     else:
