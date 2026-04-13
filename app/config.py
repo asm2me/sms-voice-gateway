@@ -130,9 +130,12 @@ class Settings(BaseSettings):
     # TTS
     tts_provider: Literal["google", "aws_polly", "openai", "elevenlabs"] = "google"
     tts_language: str = "en-US"
-    tts_voice: str = "en-US-Neural2-F"   # Google voice name
+    tts_voice: str = "en-US-Neural2-F"   # default / primary voice
     tts_speaking_rate: float = 0.90       # slightly slower for OTP clarity
     tts_audio_encoding: str = "LINEAR16"  # PCM WAV
+    tts_multilingual_mode: bool = True
+    tts_secondary_language: str = "ar-EG"
+    tts_secondary_voice: str = "ar-EG-Neural2-A"
 
     # Google Cloud TTS
     google_credentials_json: Optional[str] = None  # path to service-account JSON

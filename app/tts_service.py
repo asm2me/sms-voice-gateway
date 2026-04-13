@@ -10,6 +10,7 @@ from __future__ import annotations
 import audioop
 import io
 import logging
+import re
 import struct
 import wave
 from abc import ABC, abstractmethod
@@ -104,10 +105,28 @@ class TTSBackend(ABC):
     def synthesize(self, text: str) -> bytes:
         """Return raw WAV bytes (any format – will be normalised)."""
 
+    def synthesize_segments(self, segments: list[tuple[str, str, str]]) -> bytes:
+        wavs = [self.synthesize(segment_text) for segment_text, _language, _voice in segments if segment_text.strip()]
+        if not wavs:
+            return self.synthesize("")
+        if len(wavs) == 1:
+            return wavs[0]
+        return _concat_wavs([_ensure_wav_format(wav) for wav in wavs])
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Google Cloud TTS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _google_language_from_voice_name(voice_name: str) -> str:
+    voice = (voice_name or "").strip()
+    if not voice:
+        return ""
+    parts = voice.split("-")
+    if len(parts) >= 2 and len(parts[0]) == 2 and len(parts[1]) == 2:
+        return f"{parts[0]}-{parts[1]}".lower()
+    return ""
+
 
 class GoogleTTSBackend(TTSBackend):
     def __init__(self, settings: Settings):
@@ -116,25 +135,56 @@ class GoogleTTSBackend(TTSBackend):
         if settings.google_credentials_json:
             os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", settings.google_credentials_json)
         self.client = texttospeech.TextToSpeechClient()
-        self.voice = texttospeech.VoiceSelectionParams(
-            language_code=settings.tts_language,
-            name=settings.tts_voice,
-        )
+        self.settings = settings
+        self._tts_mod = texttospeech
         self.audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.LINEAR16,
             sample_rate_hertz=16000,
             speaking_rate=settings.tts_speaking_rate,
         )
-        self._tts_mod = texttospeech
+        self.voice = self._build_voice_params(settings.tts_language, settings.tts_voice)
 
-    def synthesize(self, text: str) -> bytes:
+    def _build_voice_params(self, language: str, voice_name: str):
+        requested_language = (language or "").strip()
+        configured_voice_name = (voice_name or "").strip()
+        voice_language = _google_language_from_voice_name(configured_voice_name)
+        effective_language = requested_language or voice_language
+        if voice_language and requested_language and requested_language.lower() != voice_language:
+            log.warning(
+                "Google TTS language/voice mismatch detected; using voice language '%s' for voice '%s' instead of requested language '%s'",
+                voice_language,
+                configured_voice_name,
+                requested_language,
+            )
+            effective_language = voice_language
+        return self._tts_mod.VoiceSelectionParams(
+            language_code=effective_language,
+            name=configured_voice_name,
+        )
+
+    def _synthesize_with_voice(self, text: str, language: str, voice_name: str) -> bytes:
         synthesis_input = self._tts_mod.SynthesisInput(text=text)
         response = self.client.synthesize_speech(
             input=synthesis_input,
-            voice=self.voice,
+            voice=self._build_voice_params(language, voice_name),
             audio_config=self.audio_config,
         )
         return response.audio_content
+
+    def synthesize(self, text: str) -> bytes:
+        return self._synthesize_with_voice(text, self.settings.tts_language, self.settings.tts_voice)
+
+    def synthesize_segments(self, segments: list[tuple[str, str, str]]) -> bytes:
+        wavs = [
+            _ensure_wav_format(self._synthesize_with_voice(segment_text, language, voice_name))
+            for segment_text, language, voice_name in segments
+            if segment_text.strip()
+        ]
+        if not wavs:
+            return self.synthesize("")
+        if len(wavs) == 1:
+            return wavs[0]
+        return _concat_wavs(wavs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -302,6 +352,71 @@ def get_backend(settings: Settings) -> TTSBackend:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _contains_arabic(text: str) -> bool:
+    return bool(re.search(r"[\u0600-\u06FF]", text or ""))
+
+
+def _contains_latin(text: str) -> bool:
+    return bool(re.search(r"[A-Za-z]", text or ""))
+
+
+def _split_multilingual_segments(text: str, settings: Settings) -> list[tuple[str, str, str]]:
+    primary_language = (settings.tts_language or "en-US").strip()
+    primary_voice = (settings.tts_voice or "").strip()
+    secondary_language = (settings.tts_secondary_language or primary_language).strip()
+    secondary_voice = (settings.tts_secondary_voice or primary_voice).strip()
+
+    if not text.strip():
+        return [(text, primary_language, primary_voice)]
+
+    if not getattr(settings, "tts_multilingual_mode", False):
+        return [(text, primary_language, primary_voice)]
+
+    if not (_contains_arabic(text) and _contains_latin(text)):
+        return [(text, primary_language, primary_voice)]
+
+    token_pattern = re.compile(r"(\s+|[A-Za-z0-9@#:_./+\-]+|[\u0600-\u06FF0-9]+|[^\w\s])", re.UNICODE)
+    tokens = [token for token in token_pattern.findall(text) if token]
+    segments: list[tuple[str, str, str]] = []
+
+    current_text = ""
+    current_language = ""
+    current_voice = ""
+
+    def classify(token: str) -> tuple[str, str]:
+        if _contains_arabic(token):
+            return secondary_language, secondary_voice
+        if _contains_latin(token):
+            return primary_language, primary_voice
+        return current_language or primary_language, current_voice or primary_voice
+
+    def flush() -> None:
+        nonlocal current_text, current_language, current_voice
+        if current_text:
+            segments.append((current_text, current_language or primary_language, current_voice or primary_voice))
+            current_text = ""
+            current_language = ""
+            current_voice = ""
+
+    for token in tokens:
+        token_language, token_voice = classify(token)
+        if not current_text:
+            current_text = token
+            current_language = token_language
+            current_voice = token_voice
+            continue
+        if token.isspace() or token_language == current_language:
+            current_text += token
+            continue
+        flush()
+        current_text = token
+        current_language = token_language
+        current_voice = token_voice
+
+    flush()
+    return segments or [(text, primary_language, primary_voice)]
+
+
 class TTSService:
     def __init__(self, settings: Settings, audio_cache: AudioCache):
         self.settings = settings
@@ -321,7 +436,12 @@ class TTSService:
 
         log.info("TTS synthesis for hash=%s text=%r", hkey, text[:60])
         backend = get_backend(self.settings)
-        raw_wav = backend.synthesize(text)
+        segments = _split_multilingual_segments(text, self.settings)
+        raw_wav = (
+            backend.synthesize_segments(segments)
+            if len(segments) > 1
+            else backend.synthesize(text)
+        )
 
         # Normalise to Asterisk-compatible format
         normalised = _ensure_wav_format(raw_wav)
