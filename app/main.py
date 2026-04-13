@@ -2098,13 +2098,32 @@ async def admin_tools_test_send(
     _append_admin_log(
         f"Tools test-send queued smpp_username={smpp_username} phone_number={phone_number} provider={provider} body={body[:80]!r}"
     )
-    outcome = _simulate_smpp_test_send(
-        settings,
-        smpp_username=smpp_username,
-        phone_number=phone_number,
-        body=body,
-        provider=provider,
-    )
+    try:
+        outcome = _simulate_smpp_test_send(
+            settings,
+            smpp_username=smpp_username,
+            phone_number=phone_number,
+            body=body,
+            provider=provider,
+        )
+    except HTTPException as exc:
+        detail = str(exc.detail or "Test send failed")
+        _append_admin_log(
+            f"Tools test-send failed smpp_username={smpp_username} phone_number={phone_number} provider={provider} error={detail}"
+        )
+        return templates.TemplateResponse(
+            request,
+            "admin.html",
+            _admin_context(
+                request,
+                settings,
+                active_section="tools",
+                success_message=detail,
+                message_level="danger",
+            ),
+            status_code=exc.status_code,
+        )
+
     _append_admin_log(
         f"Tools test-send finished success={outcome['result']['success']} sip_call_id={outcome['result']['sip_call_id'] or ''} sip_account_id={outcome['result']['sip_account_id'] or ''} error={outcome['result']['error'] or ''}"
     )
