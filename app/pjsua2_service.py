@@ -134,6 +134,9 @@ class PJSUA2UnavailableError(RuntimeError):
 
 _TRUNK_CONCURRENCY_LOCK = threading.RLock()
 _TRUNK_ACTIVE_CALLS: dict[str, int] = {}
+_PJSUA_GLOBAL_LOCK = threading.RLock()
+_PJSUA_GLOBAL_ENDPOINT = None
+_PJSUA_GLOBAL_TRANSPORT = None
 
 
 class PJSipUASession:
@@ -167,6 +170,8 @@ class PJSipUASession:
             )
 
     def initialize(self) -> PJSUA2RegistrationResult:
+        global _PJSUA_GLOBAL_ENDPOINT, _PJSUA_GLOBAL_TRANSPORT
+
         with self._lock:
             if not self.available:
                 return PJSUA2RegistrationResult(
@@ -182,42 +187,62 @@ class PJSipUASession:
                         details={"already_initialised": True},
                     )
 
-                pj = self._pj
-                ep = pj.Endpoint()
-                ep.libCreate()
+                with _PJSUA_GLOBAL_LOCK:
+                    if _PJSUA_GLOBAL_ENDPOINT is not None:
+                        self._endpoint = _PJSUA_GLOBAL_ENDPOINT
+                        self._transport = _PJSUA_GLOBAL_TRANSPORT
+                        return PJSUA2RegistrationResult(
+                            success=True,
+                            message="PJSUA2 endpoint already initialised",
+                            details={"already_initialised": True, "shared_global_endpoint": True},
+                        )
 
-                ep_cfg = pj.EpConfig()
-                with suppress(Exception):
-                    ep_cfg.logConfig.level = 3
-                    ep_cfg.logConfig.consoleLevel = 3
-                with suppress(Exception):
-                    ep_cfg.medConfig.noVad = True
-                with suppress(Exception):
-                    ep_cfg.medConfig.hasIoqueue = True
-                with suppress(Exception):
-                    ep_cfg.medConfig.clockRate = 16000
-                with suppress(Exception):
-                    ep_cfg.medConfig.sndClockRate = 16000
+                    pj = self._pj
+                    ep = pj.Endpoint()
+                    ep.libCreate()
 
-                ep.libInit(ep_cfg)
+                    ep_cfg = pj.EpConfig()
+                    with suppress(Exception):
+                        ep_cfg.logConfig.level = 3
+                        ep_cfg.logConfig.consoleLevel = 3
+                    with suppress(Exception):
+                        ep_cfg.medConfig.noVad = True
+                    with suppress(Exception):
+                        ep_cfg.medConfig.hasIoqueue = True
+                    with suppress(Exception):
+                        ep_cfg.medConfig.clockRate = 16000
+                    with suppress(Exception):
+                        ep_cfg.medConfig.sndClockRate = 16000
 
-                transport_cfg = pj.TransportConfig()
-                with suppress(Exception):
-                    transport_cfg.port = 0
-                transport_type = getattr(pj, "PJSIP_TRANSPORT_UDP", None)
-                if transport_type is None:
-                    transport_type = getattr(pj, "PJSIP_TRANSPORT_TCP", 0)
+                    ep.libInit(ep_cfg)
 
-                transport = ep.transportCreate(transport_type, transport_cfg)
-                ep.libStart()
+                    transport_cfg = pj.TransportConfig()
+                    with suppress(Exception):
+                        transport_cfg.port = 0
+                    transport_name = str(getattr(self._current_profile, "transport", "") or "").strip().upper()
+                    if transport_name == "TCP":
+                        transport_type = getattr(pj, "PJSIP_TRANSPORT_TCP", None)
+                    elif transport_name == "TLS":
+                        transport_type = getattr(pj, "PJSIP_TRANSPORT_TLS", None)
+                    else:
+                        transport_type = getattr(pj, "PJSIP_TRANSPORT_UDP", None)
+                    if transport_type is None:
+                        transport_type = getattr(pj, "PJSIP_TRANSPORT_UDP", None)
+                    if transport_type is None:
+                        transport_type = getattr(pj, "PJSIP_TRANSPORT_TCP", 0)
 
-                with suppress(Exception):
-                    aud_mgr = ep.audDevManager()
-                    if hasattr(aud_mgr, "setNullDev"):
-                        aud_mgr.setNullDev()
+                    transport = ep.transportCreate(transport_type, transport_cfg)
+                    ep.libStart()
 
-                self._endpoint = ep
-                self._transport = transport
+                    with suppress(Exception):
+                        aud_mgr = ep.audDevManager()
+                        if hasattr(aud_mgr, "setNullDev"):
+                            aud_mgr.setNullDev()
+
+                    _PJSUA_GLOBAL_ENDPOINT = ep
+                    _PJSUA_GLOBAL_TRANSPORT = transport
+                    self._endpoint = ep
+                    self._transport = transport
 
                 return PJSUA2RegistrationResult(
                     success=True,
@@ -243,9 +268,6 @@ class PJSipUASession:
             self._registered = False
             self._last_call = None
 
-            if self._endpoint is not None:
-                with suppress(Exception):
-                    self._endpoint.libDestroy()
             self._endpoint = None
             self._transport = None
 
@@ -285,6 +307,7 @@ class PJSipUASession:
                 pj = self._pj
                 assert pj is not None
                 selected = self.select_profile(profile)
+                self._current_profile = selected
 
                 if not selected.enabled:
                     return PJSUA2RegistrationResult(
