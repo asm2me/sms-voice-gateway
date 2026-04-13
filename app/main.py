@@ -1404,13 +1404,13 @@ def _build_provider_test_settings(current: Settings, provider: str, form) -> Set
 
 @app.post("/admin/config/provider-test")
 async def admin_test_provider_config(
+    request: Request,
     _: None = Depends(dep_admin_credentials),
     settings: Settings = Depends(dep_settings),
     provider: str = Form(...),
     sample_text: str = Form("This is a provider connectivity test."),
-    request: Request | None = None,
 ):
-    form = await request.form() if request is not None else {}
+    form = await request.form()
     provider_name = (provider or "").strip()
     supported_providers = {"google", "aws_polly", "openai", "elevenlabs"}
     if provider_name not in supported_providers:
