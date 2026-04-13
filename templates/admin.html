@@ -415,7 +415,7 @@
       <table class="data-table queue-table" id="live-queue-table">
       <thead>
         <tr>
-          <th><label class="table-select-all"><input type="checkbox" data-select-all="live-queue-table" /> Select all</label></th>
+          <th><label class="table-select-all"><input type="checkbox" class="js-select-all" data-select-all="live-queue-table" data-select-all-target="live-queue-table" /> Select all</label></th>
           <th>Created</th>
           <th>Phone</th>
           <th>Provider</th>
@@ -553,7 +553,7 @@
       <table class="data-table inbox-table">
       <thead>
         <tr>
-          <th><label class="table-select-all"><input type="checkbox" data-select-all="inbox-table" /> Select all</label></th>
+          <th><label class="table-select-all"><input type="checkbox" class="js-select-all" data-select-all="inbox-table" data-select-all-target="inbox-table" /> Select all</label></th>
           <th>Received</th>
           <th>From</th>
           <th>Destination</th>
@@ -2256,6 +2256,39 @@
   (function () {
     const triggers = document.querySelectorAll(".js-sip-test-trigger");
     const providerTriggers = document.querySelectorAll(".js-provider-test-trigger");
+    const selectAllCheckboxes = document.querySelectorAll("input[type='checkbox'][data-select-all-target]");
+
+    function syncSelectAllState(tableId) {
+      const table = document.getElementById(tableId);
+      if (!table) return;
+      const rowCheckboxes = table.querySelectorAll('tbody input[type="checkbox"][name="item_ids"]');
+      const selectAll = document.querySelector("input[type='checkbox'][data-select-all-target='" + tableId + "']");
+      if (!selectAll || !rowCheckboxes.length) return;
+      const checkedCount = Array.from(rowCheckboxes).filter((checkbox) => checkbox.checked).length;
+      selectAll.checked = checkedCount > 0 && checkedCount === rowCheckboxes.length;
+      selectAll.indeterminate = checkedCount > 0 && checkedCount < rowCheckboxes.length;
+    }
+
+    selectAllCheckboxes.forEach((checkbox) => {
+      checkbox.addEventListener("change", function () {
+        const tableId = checkbox.getAttribute("data-select-all-target");
+        const table = tableId ? document.getElementById(tableId) : null;
+        if (!table) return;
+        const rowCheckboxes = table.querySelectorAll('tbody input[type="checkbox"][name="item_ids"]');
+        rowCheckboxes.forEach((rowCheckbox) => {
+          rowCheckbox.checked = checkbox.checked;
+        });
+        checkbox.indeterminate = false;
+      });
+    });
+
+    document.querySelectorAll("tbody input[type='checkbox'][name='item_ids']").forEach((checkbox) => {
+      checkbox.addEventListener("change", function () {
+        const table = checkbox.closest("table");
+        if (!table || !table.id) return;
+        syncSelectAllState(table.id);
+      });
+    });
 
     function setProviderStatus(target, payload, loading) {
       if (!target) return;
@@ -2401,6 +2434,13 @@
       trigger.addEventListener("click", function () {
         runProviderTest(trigger);
       });
+    });
+
+    document.querySelectorAll("input[type='checkbox'][data-select-all-target]").forEach((checkbox) => {
+      const tableId = checkbox.getAttribute("data-select-all-target");
+      if (tableId) {
+        syncSelectAllState(tableId);
+      }
     });
   })();
 </script>
