@@ -1410,6 +1410,13 @@ def _build_provider_test_settings(current: Settings, provider: str, form) -> Set
             "elevenlabs_voice_id",
         ],
     }
+    provider_voice_defaults: dict[str, str] = {
+        "google": "",
+        "aws_polly": "aws_polly_voice_id",
+        "openai": "openai_tts_voice",
+        "elevenlabs": "elevenlabs_voice_id",
+    }
+
     update: dict[str, object] = {"tts_provider": provider}
 
     for key in provider_keys.get(provider, []):
@@ -1421,6 +1428,12 @@ def _build_provider_test_settings(current: Settings, provider: str, form) -> Set
             update[key] = raw
         elif _is_secret_field(key):
             update[key] = getattr(current, key)
+
+    voice_setting_name = provider_voice_defaults.get(provider, "")
+    if voice_setting_name:
+        voice_value = str(update.get(voice_setting_name, getattr(current, voice_setting_name, "")) or "").strip()
+        if voice_value:
+            update["tts_voice"] = voice_value
 
     return current.model_copy(update=update)
 
