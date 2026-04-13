@@ -172,6 +172,8 @@ class RateLimiter:
 
     def _check_and_increment(self, phone: str, window: str, limit: int, ttl: int) -> bool:
         """Returns True if the call is allowed, False if rate-limited."""
+        if limit <= 0:
+            return True
         r = get_redis(self.settings)
         k = _key("rate", self.settings, phone, window)
         try:
@@ -185,9 +187,9 @@ class RateLimiter:
 
     def is_allowed(self, phone: str) -> tuple[bool, str]:
         """Check hourly and daily limits.  Returns (allowed, reason)."""
-        if not self._check_and_increment(phone, "hourly", self.settings.rate_limit_hourly, 3600):
+        if self.settings.rate_limit_hourly > 0 and not self._check_and_increment(phone, "hourly", self.settings.rate_limit_hourly, 3600):
             return False, f"hourly limit ({self.settings.rate_limit_hourly}) exceeded"
-        if not self._check_and_increment(phone, "daily", self.settings.rate_limit_daily, 86400):
+        if self.settings.rate_limit_daily > 0 and not self._check_and_increment(phone, "daily", self.settings.rate_limit_daily, 86400):
             return False, f"daily limit ({self.settings.rate_limit_daily}) exceeded"
         return True, "ok"
 
