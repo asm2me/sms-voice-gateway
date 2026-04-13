@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
+import threading
 from typing import Annotated, Optional
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
@@ -83,6 +84,8 @@ security = HTTPBasic()
 
 _retry_worker_stop = Event()
 _retry_worker_thread: Thread | None = None
+_admin_test_send_jobs: dict[str, dict[str, object]] = {}
+_admin_test_send_lock = threading.Lock()
 
 
 def _retry_worker_loop() -> None:
@@ -1747,6 +1750,129 @@ def _read_admin_log(limit: int = 80) -> list[str]:
     return lines[-limit:]
 
 
+def _create_admin_test_send_job(
+    *,
+    smpp_username: str,
+    phone_number: str,
+    body: str,
+    provider: str,
+) -> str:
+    job_id = hashlib.sha1(
+        f"{time.time_ns()}:{smpp_username}:{phone_number}:{provider}:{body}".encode("utf-8")
+    ).hexdigest()[:16]
+    with _admin_test_send_lock:
+        _admin_test_send_jobs[job_id] = {
+            "job_id": job_id,
+            "status": "queued",
+            "success": False,
+            "message": f"Test message queued for {phone_number} using SMPP user '{smpp_username}'.",
+            "error": "",
+            "created_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "smpp_username": smpp_username,
+            "phone_number": phone_number,
+            "provider": provider,
+            "body": body,
+            "result": None,
+            "queue_item": None,
+        }
+    return job_id
+
+
+def _update_admin_test_send_job(job_id: str, **updates: object) -> None:
+    with _admin_test_send_lock:
+        job = _admin_test_send_jobs.get(job_id)
+        if not job:
+            return
+        job.update(updates)
+        job["updated_at"] = _utc_now_iso()
+
+
+def _get_admin_test_send_job(job_id: str) -> dict[str, object] | None:
+    with _admin_test_send_lock:
+        job = _admin_test_send_jobs.get(job_id)
+        return dict(job) if job else None
+
+
+def _run_admin_test_send_job(
+    job_id: str,
+    settings: Settings,
+    *,
+    smpp_username: str,
+    phone_number: str,
+    body: str,
+    provider: str,
+) -> None:
+    _update_admin_test_send_job(
+        job_id,
+        status="processing",
+        message=f"Test message is being processed for {phone_number} using SMPP user '{smpp_username}'.",
+    )
+    _append_admin_log(
+        f"Tools test-send worker started job_id={job_id} smpp_username={smpp_username} phone_number={phone_number} provider={provider} body={body[:80]!r}"
+    )
+    try:
+        outcome = _simulate_smpp_test_send(
+            settings,
+            smpp_username=smpp_username,
+            phone_number=phone_number,
+            body=body,
+            provider=provider,
+        )
+        result_payload = outcome["result"]
+        result_error = str(result_payload.get("error") or "").strip()
+        if result_payload.get("success"):
+            if result_payload.get("read"):
+                state_label = "read"
+            elif result_payload.get("delivered"):
+                state_label = "delivered"
+            else:
+                state_label = "processed"
+            message = f"Test message queued and {state_label} for {phone_number} using SMPP user '{smpp_username}'."
+            job_status = "completed"
+        else:
+            message = f"Test message was added to the queue for {phone_number} using SMPP user '{smpp_username}', but live processing failed: {result_error or 'Unknown error'}"
+            job_status = "failed"
+
+        _update_admin_test_send_job(
+            job_id,
+            status=job_status,
+            success=bool(result_payload.get("success")),
+            message=message,
+            error=result_error,
+            result=result_payload,
+            queue_item=outcome.get("queue_item"),
+        )
+        _append_admin_log(
+            f"Tools test-send worker finished job_id={job_id} success={result_payload.get('success')} sip_call_id={result_payload.get('sip_call_id') or ''} sip_account_id={result_payload.get('sip_account_id') or ''} error={result_error}"
+        )
+    except HTTPException as exc:
+        detail = str(exc.detail or "Test send failed")
+        _update_admin_test_send_job(
+            job_id,
+            status="failed",
+            success=False,
+            message=detail,
+            error=detail,
+        )
+        _append_admin_log(
+            f"Tools test-send worker failed job_id={job_id} smpp_username={smpp_username} phone_number={phone_number} provider={provider} error={detail}"
+        )
+    except Exception as exc:
+        detail = str(exc)
+        log.exception("Admin test-send background job failed")
+        _update_admin_test_send_job(
+            job_id,
+            status="failed",
+            success=False,
+            message=f"Test send failed: {detail}",
+            error=detail,
+        )
+        _append_admin_log(
+            f"Tools test-send worker crashed job_id={job_id} smpp_username={smpp_username} phone_number={phone_number} provider={provider} error={detail}"
+        )
+
+
 def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
     domain = (account.domain or account.host or "").strip()
     username = (account.username or "").strip()
@@ -2208,55 +2334,28 @@ async def admin_tools_test_send(
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    _append_admin_log(
-        f"Tools test-send queued smpp_username={smpp_username} phone_number={phone_number} provider={provider} body={body[:80]!r}"
+    job_id = _create_admin_test_send_job(
+        smpp_username=smpp_username,
+        phone_number=phone_number,
+        body=body,
+        provider=provider,
     )
-    try:
-        outcome = _simulate_smpp_test_send(
-            settings,
-            smpp_username=smpp_username,
-            phone_number=phone_number,
-            body=body,
-            provider=provider,
-        )
-    except HTTPException as exc:
-        detail = str(exc.detail or "Test send failed")
-        _append_admin_log(
-            f"Tools test-send failed smpp_username={smpp_username} phone_number={phone_number} provider={provider} error={detail}"
-        )
-        return templates.TemplateResponse(
-            request,
-            "admin.html",
-            _admin_context(
-                request,
-                settings,
-                active_section="tools",
-                success_message=detail,
-                message_level="danger",
-                tools_form_values=tools_form_values,
-            ),
-            status_code=exc.status_code,
-        )
-
     _append_admin_log(
-        f"Tools test-send finished success={outcome['result']['success']} sip_call_id={outcome['result']['sip_call_id'] or ''} sip_account_id={outcome['result']['sip_account_id'] or ''} error={outcome['result']['error'] or ''}"
+        f"Tools test-send queued job_id={job_id} smpp_username={smpp_username} phone_number={phone_number} provider={provider} body={body[:80]!r}"
     )
-    result_error = str(outcome["result"].get("error") or "").strip()
-
-    if outcome["result"]["success"]:
-        if outcome["result"].get("read"):
-            state_label = "read"
-        elif outcome["result"].get("delivered"):
-            state_label = "delivered"
-        else:
-            state_label = "processed"
-        message = f"Test message queued and {state_label} for {phone_number} using SMPP user '{smpp_username}'."
-        message_level = "success"
-        response_status = status.HTTP_200_OK
-    else:
-        message = f"Test message was added to the queue for {phone_number} using SMPP user '{smpp_username}', but live processing failed: {result_error or 'Unknown error'}"
-        message_level = "warning"
-        response_status = status.HTTP_200_OK
+    worker = Thread(
+        target=_run_admin_test_send_job,
+        args=(job_id, settings),
+        kwargs={
+            "smpp_username": smpp_username,
+            "phone_number": phone_number,
+            "body": body,
+            "provider": provider,
+        },
+        name=f"admin-test-send-{job_id}",
+        daemon=True,
+    )
+    worker.start()
 
     return templates.TemplateResponse(
         request,
@@ -2265,11 +2364,11 @@ async def admin_tools_test_send(
             request,
             settings,
             active_section="tools",
-            success_message=message,
-            message_level=message_level,
+            success_message=f"Test message queued for {phone_number} using SMPP user '{smpp_username}'. Processing continues in the background under job {job_id}. Refresh the page or check logs for completion.",
+            message_level="success",
             tools_form_values=tools_form_values,
         ),
-        status_code=response_status,
+        status_code=status.HTTP_202_ACCEPTED,
     )
 
 
@@ -2365,6 +2464,17 @@ async def admin_queue_audio(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Generated audio file not found")
 
     return FileResponse(audio_path, media_type="audio/wav", filename=audio_path.name)
+
+
+@app.get("/admin/tools/test-send/{job_id}")
+async def admin_tools_test_send_status(
+    job_id: str,
+    _: None = Depends(dep_admin_credentials),
+):
+    job = _get_admin_test_send_job(job_id)
+    if not job:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Test-send job not found")
+    return JSONResponse(job)
 
 
 @app.get("/admin/reports/live")
