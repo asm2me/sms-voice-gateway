@@ -204,16 +204,38 @@ class ElevenLabsTTSBackend(TTSBackend):
         self.voice_id = (settings.elevenlabs_voice_id or "").strip()
         self.requests = requests
 
+    def _voice_exists(self) -> tuple[bool, str]:
+        url = f"https://api.elevenlabs.io/v1/voices/{self.voice_id}"
+        response = self.requests.get(
+            url,
+            headers={"xi-api-key": self.api_key},
+            timeout=20,
+        )
+        if response.status_code == 404:
+            return False, f"ElevenLabs voice id '{self.voice_id}' was not found for this account."
+        if response.status_code == 401:
+            return False, "ElevenLabs API key was rejected while validating the voice id."
+        if not response.ok:
+            detail = response.text.strip()
+            if len(detail) > 300:
+                detail = detail[:300] + "..."
+            return False, f"ElevenLabs voice validation failed with HTTP {response.status_code}: {detail or response.reason}"
+        return True, "ok"
+
     def synthesize(self, text: str) -> bytes:
         if not self.api_key:
             raise ValueError("ElevenLabs API key is not configured")
         if not self.voice_id:
             raise ValueError("ElevenLabs voice id is not configured")
 
+        voice_ok, voice_detail = self._voice_exists()
+        if not voice_ok:
+            raise ValueError(voice_detail)
+
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}"
         headers = {
             "xi-api-key": self.api_key,
-            "Accept": "audio/pcm",
+            "Accept": "audio/mpeg",
             "Content-Type": "application/json",
         }
         payload = {
@@ -223,20 +245,18 @@ class ElevenLabsTTSBackend(TTSBackend):
         }
         r = self.requests.post(
             url,
-            params={"output_format": "pcm_8000"},
+            params={"output_format": "mp3_44100_128"},
             json=payload,
             headers=headers,
             timeout=30,
         )
+        if r.status_code == 404:
+            raise ValueError(
+                f"ElevenLabs text-to-speech endpoint returned 404 for voice id '{self.voice_id}'. "
+                "The configured voice may not exist in this workspace/account."
+            )
         r.raise_for_status()
-        # Wrap raw PCM in WAV
-        out = io.BytesIO()
-        with wave.open(out, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(8000)
-            w.writeframes(r.content)
-        return out.getvalue()
+        return r.content
 
 
 # ─────────────────────────────────────────────────────────────────────────────
