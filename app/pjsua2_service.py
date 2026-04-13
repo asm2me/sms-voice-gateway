@@ -219,8 +219,12 @@ class PJSipUASession:
                     ep.libInit(ep_cfg)
 
                     transport_cfg = pj.TransportConfig()
+                    local_transport_port = 0
+                    if self._current_profile is not None:
+                        with suppress(Exception):
+                            local_transport_port = int(getattr(self._current_profile, "port", 0) or 0)
                     with suppress(Exception):
-                        transport_cfg.port = 0
+                        transport_cfg.port = local_transport_port
                     transport_name = str(getattr(self._current_profile, "transport", "") or "").strip().upper()
                     if transport_name == "TCP":
                         transport_type = getattr(pj, "PJSIP_TRANSPORT_TCP", None)
@@ -356,6 +360,18 @@ class PJSipUASession:
                 registrar_uri = selected.registrar_uri or self._build_registrar_uri(selected)
                 account_cfg.regConfig.registrarUri = registrar_uri
 
+                with suppress(Exception):
+                    sip_transport = (selected.transport or "").strip().lower()
+                    if sip_transport:
+                        contact_target = _host_with_port(
+                            selected.domain or selected.host or str(selected.extra.get("host", "") or ""),
+                            selected.port or selected.extra.get("port"),
+                        )
+                        if contact_target:
+                            account_cfg.sipConfig.contactUri = (
+                                f"sip:{selected.username or selected.id}@{contact_target};transport={sip_transport}"
+                            )
+
                 if selected.username or selected.password:
                     cred_info = pj.AuthCredInfo(
                         "digest",
@@ -476,9 +492,30 @@ class PJSipUASession:
                 call_started = False
                 try:
                     call_id = f"pj_{int(time.time() * 1000)}"
+                    invite_uri = self._build_sip_uri(destination)
                     call = self._account.makeCall(
-                        self._build_sip_uri(destination),
+                        invite_uri,
                         _CallCallbackHolder(self, account_id, call_id),
+                    )
+                    log.info(
+                        "Starting outbound SIP INVITE account=%s destination=%s uri=%s transport=%s trunk_host=%s trunk_port=%s",
+                        account_id,
+                        destination,
+                        invite_uri,
+                        (self._current_profile.transport if self._current_profile else ""),
+                        (
+                            self._current_profile.domain
+                            or self._current_profile.host
+                            or str(self._current_profile.extra.get("host", "") or "")
+                            if self._current_profile
+                            else ""
+                        ),
+                        (
+                            self._current_profile.port
+                            or self._current_profile.extra.get("port")
+                            if self._current_profile
+                            else ""
+                        ),
                     )
                     self._last_call = call
                     call_started = True
@@ -673,7 +710,7 @@ class PJSipUASession:
             raise ValueError("SIP profile requires registrar_uri or domain/host")
         transport = (profile.transport or "").strip().lower()
         transport_suffix = f";transport={transport}" if transport else ""
-        return f"sip:{target}{transport_suffix}"
+        return f"sip:{target};lr{transport_suffix}"
 
     def _build_sip_uri(self, number: str) -> str:
         profile = self._current_profile
