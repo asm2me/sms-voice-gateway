@@ -1819,6 +1819,16 @@
                       {% endfor %}
                     </select>
                   </label>
+                  <label class="field-group">
+                    <span class="field-label">Delivery Retry Count</span>
+                    <input type="number" step="1" min="0" name="delivery_retry_count" placeholder="Use global default" />
+                    <small class="muted">Optional override for this SMPP user only.</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Retry Interval Seconds</span>
+                    <input type="number" step="1" min="0" name="delivery_retry_interval_seconds" placeholder="Use global default" />
+                    <small class="muted">Optional per-user retry interval override.</small>
+                  </label>
                 </div>
                 <div class="form-actions">
                   <a href="#" class="button button-secondary">Cancel</a>
@@ -1877,6 +1887,16 @@
                       <option value="{{ sip_account.id }}" {% if account.default_sip_account_id == sip_account.id %}selected{% endif %}>{{ sip_account.label or sip_account.id }}</option>
                       {% endfor %}
                     </select>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Delivery Retry Count</span>
+                    <input type="number" step="1" min="0" name="delivery_retry_count" value="{{ account.delivery_retry_count if account.delivery_retry_count is not none else '' }}" placeholder="Use global default" />
+                    <small class="muted">Optional override for this SMPP user only.</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Retry Interval Seconds</span>
+                    <input type="number" step="1" min="0" name="delivery_retry_interval_seconds" value="{{ account.delivery_retry_interval_seconds if account.delivery_retry_interval_seconds is not none else '' }}" placeholder="Use global default" />
+                    <small class="muted">Optional per-user retry interval override.</small>
                   </label>
                 </div>
                 <div class="form-actions">
@@ -2011,6 +2031,9 @@
         const result = await response.json();
         if (!response.ok) {
           throw new Error(result.detail || "Connection test failed");
+        }
+        if (result && result.details && result.details.import_error && result.summary) {
+          result.summary = result.summary + " (" + result.details.import_error + ")";
         }
         setStatus(status, result, false);
       } catch (error) {

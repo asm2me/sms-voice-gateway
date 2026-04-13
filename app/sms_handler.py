@@ -155,6 +155,14 @@ class SMSGateway:
     def _resolve_sip_account(self, sms: IncomingSMS) -> Optional[SIPAccount]:
         return get_sip_account_for_smpp_username(self.settings, sms.smpp_username)
 
+    def _resolve_smpp_account(self, sms: IncomingSMS):
+        if not sms.smpp_username:
+            return None
+        return next(
+            (account for account in self.settings.smpp_accounts if account.username == sms.smpp_username),
+            None,
+        )
+
     def process(self, sms: IncomingSMS) -> GatewayResult:
         try:
             phone, spoken_text = extract_destination(sms)
@@ -191,8 +199,19 @@ class SMSGateway:
                 )
 
         hkey = self.tts.hash_for(spoken_text)
-        max_attempts = max(1, int(self.settings.delivery_retry_count) + 1)
-        retry_interval_seconds = max(0, int(self.settings.delivery_retry_interval_seconds))
+        smpp_account = self._resolve_smpp_account(sms)
+        retry_count = (
+            smpp_account.delivery_retry_count
+            if smpp_account and smpp_account.delivery_retry_count is not None
+            else self.settings.delivery_retry_count
+        )
+        retry_interval_value = (
+            smpp_account.delivery_retry_interval_seconds
+            if smpp_account and smpp_account.delivery_retry_interval_seconds is not None
+            else self.settings.delivery_retry_interval_seconds
+        )
+        max_attempts = max(1, int(retry_count) + 1)
+        retry_interval_seconds = max(0, int(retry_interval_value))
         last_error = ""
         ami_action_id = ""
         sip_call_id = ""
@@ -362,5 +381,6 @@ class SMSGateway:
                 "retry_interval_seconds": retry_interval_seconds,
                 "sip_account_id": sip_account_id,
                 "smpp_username": sms.smpp_username or "",
+                "smpp_retry_count": retry_count,
             },
         )

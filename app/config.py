@@ -34,6 +34,8 @@ class SMPPAccount(BaseModel):
     enabled: bool = True
     default_for_inbound: bool = False
     default_sip_account_id: str = ""
+    delivery_retry_count: int | None = None
+    delivery_retry_interval_seconds: int | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

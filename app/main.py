@@ -403,6 +403,10 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
     label = str(form.get("label", "")).strip()
     username = str(form.get("username", "")).strip()
     account_id = str(form.get("account_id", "")).strip() or _slugify_identifier(label or username, "smpp-account")
+
+    delivery_retry_count_raw = str(form.get("delivery_retry_count", "")).strip()
+    delivery_retry_interval_raw = str(form.get("delivery_retry_interval_seconds", "")).strip()
+
     return SMPPAccount(
         id=account_id,
         label=label or account_id,
@@ -411,6 +415,8 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
         enabled=_form_bool(form, "enabled"),
         default_for_inbound=_form_bool(form, "default_for_inbound"),
         default_sip_account_id=str(form.get("default_sip_account_id", "")).strip(),
+        delivery_retry_count=int(delivery_retry_count_raw) if delivery_retry_count_raw != "" else None,
+        delivery_retry_interval_seconds=int(delivery_retry_interval_raw) if delivery_retry_interval_raw != "" else None,
     )
 
 
@@ -1461,10 +1467,26 @@ async def admin_test_sip_account_connection(
     service = build_pjsua2_service(settings)
     _append_admin_log(f"SIP trunk test started for account={account.id} host={account.host or account.domain or '—'}")
     result = service.register_account(_build_sip_profile_from_account(account))
+    payload = _build_sip_test_payload(account, result)
+
+    if not getattr(result, "success", False):
+        details = getattr(result, "details", {}) or {}
+        import_error = (
+            details.get("import_error")
+            or getattr(result, "error", "")
+        )
+        if import_error and "PJSUA2 bindings are unavailable" in str(getattr(result, "error", "")):
+            payload["summary"] = "PJSUA2 is not installed in this runtime, so live SIP registration tests cannot run from the UI."
+            payload["details"]["error"] = str(import_error)
+            payload["details"]["import_error"] = str(import_error)
+            payload["tooltip"] = f"account={account.id} | runtime={import_error}"
+        elif import_error and "pjsua2" in str(import_error).lower():
+            payload["details"]["import_error"] = str(import_error)
+
     _append_admin_log(
         f"SIP trunk test finished account={account.id} success={result.success} registered={getattr(result, 'registered', '')} call_id={getattr(result, 'sip_call_id', '')} error={getattr(result, 'error', '')}"
     )
-    return JSONResponse(_build_sip_test_payload(account, result))
+    return JSONResponse(payload)
 
 
 @app.post("/admin/config/sip-accounts")
