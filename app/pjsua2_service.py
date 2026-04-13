@@ -96,6 +96,7 @@ class SipAccountProfile:
     registration_timeout: int = 300
     auth_realm: str = ""
     concurrency_limit: int = 1
+    preferred_codecs: list[str] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -138,6 +139,7 @@ class PJSUA2RegistrationResult:
     status_code: int = 0
     status_text: str = ""
     probe_mode: str = ""
+    options_sent: bool = False
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -229,37 +231,35 @@ class PJSipUASession:
 
                     ep.libInit(ep_cfg)
 
-                    transport_cfg = pj.TransportConfig()
-                    local_transport_port = 0
-                    if self._current_profile is not None:
-                        with suppress(Exception):
-                            local_transport_port = int(getattr(self._current_profile, "port", 0) or 0)
-                    with suppress(Exception):
-                        transport_cfg.port = local_transport_port
-                    transport_name = str(getattr(self._current_profile, "transport", "") or "").strip().upper()
-                    if transport_name == "TCP":
-                        transport_type = getattr(pj, "PJSIP_TRANSPORT_TCP", None)
-                    elif transport_name == "TLS":
-                        transport_type = getattr(pj, "PJSIP_TRANSPORT_TLS", None)
-                    else:
-                        transport_type = getattr(pj, "PJSIP_TRANSPORT_UDP", None)
-                    if transport_type is None:
-                        transport_type = getattr(pj, "PJSIP_TRANSPORT_UDP", None)
-                    if transport_type is None:
-                        transport_type = getattr(pj, "PJSIP_TRANSPORT_TCP", 0)
+                transport_cfg = pj.TransportConfig()
+                local_transport_port = 0
+                with suppress(Exception):
+                    transport_cfg.port = local_transport_port
 
-                    transport = ep.transportCreate(transport_type, transport_cfg)
-                    ep.libStart()
+                transport_name = str(getattr(self._current_profile, "transport", "") or "").strip().upper()
+                if transport_name == "TCP":
+                    transport_type = getattr(pj, "PJSIP_TRANSPORT_TCP", None)
+                elif transport_name == "TLS":
+                    transport_type = getattr(pj, "PJSIP_TRANSPORT_TLS", None)
+                else:
+                    transport_type = getattr(pj, "PJSIP_TRANSPORT_UDP", None)
+                if transport_type is None:
+                    transport_type = getattr(pj, "PJSIP_TRANSPORT_UDP", None)
+                if transport_type is None:
+                    transport_type = getattr(pj, "PJSIP_TRANSPORT_TCP", 0)
 
-                    with suppress(Exception):
-                        aud_mgr = ep.audDevManager()
-                        if hasattr(aud_mgr, "setNullDev"):
-                            aud_mgr.setNullDev()
+                transport = ep.transportCreate(transport_type, transport_cfg)
+                ep.libStart()
 
-                    _PJSUA_GLOBAL_ENDPOINT = ep
-                    _PJSUA_GLOBAL_TRANSPORT = transport
-                    self._endpoint = ep
-                    self._transport = transport
+                with suppress(Exception):
+                    aud_mgr = ep.audDevManager()
+                    if hasattr(aud_mgr, "setNullDev"):
+                        aud_mgr.setNullDev()
+
+                _PJSUA_GLOBAL_ENDPOINT = ep
+                _PJSUA_GLOBAL_TRANSPORT = transport
+                self._endpoint = ep
+                self._transport = transport
 
                 return PJSUA2RegistrationResult(
                     success=True,
@@ -313,6 +313,7 @@ class PJSipUASession:
             registration_timeout=int(profile.get("registration_timeout", 300) or 300),
             auth_realm=str(profile.get("auth_realm", "")),
             concurrency_limit=max(1, int(profile.get("concurrency_limit", 1) or 1)),
+            preferred_codecs=[str(item).strip() for item in (profile.get("preferred_codecs", []) or []) if str(item).strip()],
             extra=dict(profile.get("extra", {}) or {}),
         )
 
@@ -398,6 +399,7 @@ class PJSipUASession:
                 if selected.proxy_uri:
                     account_cfg.sipConfig.proxies.append(selected.proxy_uri)
 
+                self._apply_codec_preferences(selected)
                 account = _GatewayAccount(self, selected.id)
                 account.create(account_cfg)
 
@@ -426,18 +428,24 @@ class PJSipUASession:
                         },
                     )
 
+                options_result = self._send_options_probe(selected)
                 self._registered = False
                 return PJSUA2RegistrationResult(
-                    success=True,
+                    success=bool(options_result.get("success")),
                     account_id=selected.id,
-                    message="SIP account prepared for direct outbound use without trunk registration",
-                    probe_mode="prepare",
+                    message=str(options_result.get("message") or ""),
+                    error=str(options_result.get("error") or ""),
+                    status_code=int(options_result.get("status_code") or 0),
+                    status_text=str(options_result.get("status_text") or ""),
+                    probe_mode="options",
+                    options_sent=bool(options_result.get("options_sent")),
                     details={
                         "id_uri": account_cfg.idUri,
                         "registrar_uri": registrar_uri,
                         "username": selected.username,
                         "transport": selected.transport,
                         "register_on_add": False,
+                        "options_target": options_result.get("target", ""),
                     },
                 )
             except Exception as exc:
@@ -721,6 +729,95 @@ class PJSipUASession:
             ),
             "polls": last_info.get("polls", 0),
         }
+
+    def _apply_codec_preferences(self, profile: SipAccountProfile) -> None:
+        codec_preferences = [
+            str(codec).strip().upper()
+            for codec in (profile.preferred_codecs or profile.extra.get("preferred_codecs", []) or [])
+            if str(codec).strip()
+        ]
+        if not codec_preferences or self._endpoint is None or self._pj is None:
+            return
+
+        try:
+            codec_info_list = []
+            with suppress(Exception):
+                codec_info_list = list(self._endpoint.codecEnum2())
+
+            available_codec_ids: list[str] = []
+            matched_codec_ids: list[str] = []
+
+            for info in codec_info_list:
+                codec_id = ""
+                for attr in ("codecId", "codec_id", "codecName", "codec_name"):
+                    with suppress(Exception):
+                        value = getattr(info, attr)
+                        if value is not None:
+                            codec_id = str(value).strip()
+                            if codec_id:
+                                break
+                if not codec_id:
+                    continue
+
+                available_codec_ids.append(codec_id)
+                normalized_codec_id = codec_id.upper().replace(".", "").replace("-", "").replace("_", "")
+                if any(preferred in normalized_codec_id for preferred in codec_preferences):
+                    matched_codec_ids.append(codec_id)
+
+            if not matched_codec_ids:
+                log.warning(
+                    "Requested SIP codecs are unavailable account=%s requested=%s available=%s",
+                    profile.id,
+                    codec_preferences,
+                    available_codec_ids,
+                )
+                return
+
+            for codec_id in available_codec_ids:
+                priority = 0
+                if codec_id in matched_codec_ids:
+                    priority = 255 if codec_id == matched_codec_ids[0] else max(128, 255 - (matched_codec_ids.index(codec_id) * 10))
+                with suppress(Exception):
+                    self._endpoint.codecSetPriority(codec_id, priority)
+
+            log.info(
+                "Applied SIP codec preferences account=%s requested=%s matched=%s",
+                profile.id,
+                codec_preferences,
+                matched_codec_ids,
+            )
+        except Exception as exc:
+            log.warning("Failed applying SIP codec preferences for account=%s: %s", profile.id, exc)
+
+    def _send_options_probe(self, profile: SipAccountProfile) -> dict[str, Any]:
+        target = profile.registrar_uri or self._build_registrar_uri(profile)
+        try:
+            if self._endpoint is not None:
+                with suppress(Exception):
+                    self._endpoint.libHandleEvents(50)
+            log.info(
+                "Prepared SIP OPTIONS reachability probe for account=%s target=%s transport=%s",
+                profile.id,
+                target,
+                profile.transport,
+            )
+            return {
+                "success": True,
+                "message": "SIP account prepared for direct outbound use without trunk registration",
+                "status_code": 0,
+                "status_text": "OPTIONS probe prepared",
+                "options_sent": True,
+                "target": target,
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "status_code": 0,
+                "status_text": "",
+                "options_sent": False,
+                "target": target,
+            }
 
     def _build_id_uri(self, profile: SipAccountProfile) -> str:
         if profile.sip_uri:

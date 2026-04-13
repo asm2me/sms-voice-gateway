@@ -19,6 +19,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
@@ -463,6 +464,26 @@ def _form_bool(form, key: str) -> bool:
     return str(form.get(key, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _parse_codec_list(raw: str) -> list[str]:
+    seen: set[str] = set()
+    codecs: list[str] = []
+    alias_map = {
+        "g729": "G729",
+        "g.729": "G729",
+        "g723": "G723",
+        "g723.1": "G723",
+        "g.723": "G723",
+        "g.723.1": "G723",
+    }
+    for part in re.split(r"[,;\s]+", str(raw or "").strip()):
+        normalized = alias_map.get(part.strip().lower(), part.strip().upper())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        codecs.append(normalized)
+    return codecs
+
+
 def _save_account_collections(
     *,
     sip_accounts: list[SIPAccount] | None = None,
@@ -511,6 +532,7 @@ def _build_sip_account_from_form(form) -> SIPAccount:
         register=_form_bool(form, "register"),
         outbound_proxy=str(form.get("outbound_proxy", "")).strip(),
         concurrency_limit=max(1, int(concurrency_limit_raw or "1")),
+        preferred_codecs=_parse_codec_list(str(form.get("preferred_codecs", "")).strip()),
     )
 
 
@@ -772,6 +794,15 @@ def _build_sip_trunk_health_context(settings: Settings) -> dict:
     }
 
 
+def _normalize_message_level(message_level: str | None) -> str:
+    normalized = str(message_level or "success").strip().lower()
+    if normalized in {"error", "danger", "failed", "failure"}:
+        return "danger"
+    if normalized in {"warn", "warning", "partial", "degraded"}:
+        return "warning"
+    return "success"
+
+
 def _admin_context(
     request: Request,
     settings: Settings,
@@ -948,7 +979,7 @@ def _admin_context(
     }
     if success_message:
         context["success_message"] = success_message
-        context["message_level"] = message_level
+        context["message_level"] = _normalize_message_level(message_level)
     return context
 
 
@@ -1706,6 +1737,7 @@ def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
             "port": account.port,
             "from_domain": (account.from_domain or "").strip(),
             "register": bool(account.register),
+            "preferred_codecs": list(account.preferred_codecs or []),
         },
     )
 
@@ -1812,6 +1844,7 @@ async def admin_test_sip_account_connection(
                 or "1"
             ),
         ),
+        preferred_codecs=_parse_codec_list(str(payload.get("preferred_codecs", "")).strip()),
     )
     settings = dep_settings()
     service = build_pjsua2_service(settings)
@@ -2290,7 +2323,7 @@ async def admin_reports_live(
     settings: Settings = Depends(dep_settings),
 ):
     report_summary, recent_reports = _report_context(settings)
-    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters = _build_queue_context(settings)
+    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(settings)
     live_calls = _build_live_call_context(settings)
     return {
         "report_summary": report_summary,
@@ -2300,6 +2333,7 @@ async def admin_reports_live(
         "queue_summary": queue_summary,
         "recent_queue_items": recent_queue_items,
         "queue_filters": queue_filters,
+        "inbox_filters": inbox_filters,
         "live_calls": live_calls,
         "updated_at": live_calls.get("updated_at", ""),
     }

@@ -1322,6 +1322,7 @@
                   <th>Host</th>
                   <th>Username</th>
                   <th>Transport</th>
+                  <th>Preferred Codecs</th>
                   <th>Concurrency Limit</th>
                   <th>Enabled</th>
                   <th>Default</th>
@@ -1339,6 +1340,7 @@
                   <td class="mono">{{ account.host or account.domain or '—' }}{% if account.port %}:{{ account.port }}{% endif %}</td>
                   <td class="mono">{{ account.username or '—' }}</td>
                   <td>{{ account.transport or '—' }}</td>
+                  <td class="mono">{{ account.preferred_codecs|join(', ') if account.preferred_codecs else '—' }}</td>
                   <td class="mono">{{ account.max_concurrent_channels or account.concurrency_limit or account.channel_limit or '—' }}</td>
                   <td><span class="status-badge status-{% if account.enabled %}success{% else %}danger{% endif %}">{% if account.enabled %}enabled{% else %}disabled{% endif %}</span></td>
                   <td><span class="status-badge status-{% if account.default_for_outbound %}success{% else %}unknown{% endif %}">{% if account.default_for_outbound %}default{% else %}secondary{% endif %}</span></td>
@@ -1442,6 +1444,11 @@
                     <span class="field-label">Outbound Proxy</span>
                     <input type="text" name="outbound_proxy" placeholder="sip:proxy.example.com;transport=udp" />
                   </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Preferred Codecs</span>
+                    <input type="text" name="preferred_codecs" value="G729,G723" placeholder="G729,G723,PCMU,PCMA" />
+                    <small class="muted">Comma-separated codec preference order. Example: G729,G723</small>
+                  </label>
                   <label class="field-group">
                     <span class="field-label">SIP Channels Concurrency Limit</span>
                     <input type="number" step="1" min="1" name="max_concurrent_channels" value="1" />
@@ -1510,6 +1517,11 @@
                   <label class="field-group"><span class="field-label">From User</span><input type="text" name="from_user" value="{{ account.from_user or '' }}" /></label>
                   <label class="field-group"><span class="field-label">From Domain</span><input type="text" name="from_domain" value="{{ account.from_domain or '' }}" /></label>
                   <label class="field-group field-span-2"><span class="field-label">Outbound Proxy</span><input type="text" name="outbound_proxy" value="{{ account.outbound_proxy or '' }}" /></label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Preferred Codecs</span>
+                    <input type="text" name="preferred_codecs" value="{{ account.preferred_codecs|join(',') if account.preferred_codecs else '' }}" placeholder="G729,G723,PCMU,PCMA" />
+                    <small class="muted">Comma-separated codec preference order. Example: G729,G723</small>
+                  </label>
                   <label class="field-group">
                     <span class="field-label">SIP Channels Concurrency Limit</span>
                     <input type="number" step="1" min="1" name="max_concurrent_channels" value="{{ account.max_concurrent_channels or account.concurrency_limit or account.channel_limit or 1 }}" />
