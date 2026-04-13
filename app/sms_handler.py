@@ -57,6 +57,9 @@ class GatewayResult:
     sip_call_id: str = ""
     sip_account_id: str = ""
     error: str = ""
+    delivered: bool = False
+    read: bool = False
+    answered: bool = False
     details: dict = field(default_factory=dict)
 
 
@@ -315,6 +318,9 @@ class SMSGateway:
                     was_cached=was_cached,
                     sip_call_id=sip_call_id,
                     sip_account_id=sip_account_id,
+                    delivered=bool(sip_result.delivered),
+                    read=bool(sip_result.read),
+                    answered=bool(sip_result.answered),
                     details={
                         "transport": "sip-ua",
                         "sip_result": sip_result.details,
@@ -326,6 +332,11 @@ class SMSGateway:
                         "retry_interval_seconds": retry_interval_seconds,
                         "sip_account_id": sip_account_id,
                         "smpp_username": sms.smpp_username or "",
+                        "delivery_state": "DELIVRD" if sip_result.delivered else "UNDELIV",
+                        "read_state": "READ" if sip_result.read else "UNREAD",
+                        "answered": bool(sip_result.answered),
+                        "playback_seconds": float(sip_result.playback_seconds or 0.0),
+                        "audio_duration_seconds": float(sip_result.audio_duration_seconds or 0.0),
                     },
                 )
 

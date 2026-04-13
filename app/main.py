@@ -355,9 +355,10 @@ def _build_live_call_context(settings: Settings) -> dict:
 
 def _record_gateway_result(provider: str, result, *, phone_number: str = "", message: str = "") -> None:
     try:
+        status_value = "read" if getattr(result, "read", False) else "delivered" if getattr(result, "delivered", False) else "error"
         record_delivery_report(
             dep_settings(),
-            status="success" if result.success else "error",
+            status=status_value,
             provider=provider,
             phone_number=result.phone_number or phone_number,
             message=message,
@@ -373,6 +374,38 @@ def _record_gateway_result(provider: str, result, *, phone_number: str = "", mes
         )
     except Exception as exc:
         log.debug("Unable to persist delivery report: %s", exc)
+
+
+def _emit_smpp_receipt(
+    *,
+    smpp_username: str,
+    queue_item_id: str,
+    phone_number: str,
+    message: str,
+    result,
+) -> None:
+    if not smpp_username:
+        return
+    smpp_service = getattr(app.state, "smpp_service", None)
+    if smpp_service is None or not hasattr(smpp_service, "send_delivery_receipt"):
+        return
+    delivery_state = "DELIVRD" if getattr(result, "delivered", False) else "UNDELIV"
+    read_state = "READ" if getattr(result, "read", False) else "UNREAD"
+    try:
+        smpp_service.send_delivery_receipt(
+            smpp_username=smpp_username,
+            message_id=queue_item_id,
+            source_addr="sms-voice-gateway",
+            destination_addr=phone_number,
+            delivery_state=delivery_state,
+            read_state=read_state,
+            delivered=bool(getattr(result, "delivered", False)),
+            read=bool(getattr(result, "read", False)),
+            answered=bool(getattr(result, "answered", False)),
+            error=(result.error or message or "")[:20],
+        )
+    except Exception as exc:
+        log.debug("Unable to emit SMPP receipt for %s: %s", smpp_username, exc)
 
 
 def _save_admin_config(form, keys: list[str]) -> Settings:
@@ -637,13 +670,21 @@ def _simulate_smpp_test_send(
     current_queue_item = queue_store.get(queue_item.id)
     if current_queue_item is not None:
         current_queue_item.updated_at = _utc_now_iso()
-        current_queue_item.status = "delivered" if result.success else "queued"
+        current_queue_item.status = "read" if result.read else "delivered" if result.delivered else "queued"
         current_queue_item.last_error = "" if result.success else result.error or "Test send failed"
         current_queue_item.ami_action_id = result.ami_action_id or getattr(current_queue_item, "ami_action_id", "")
         current_queue_item.sip_call_id = result.sip_call_id or getattr(current_queue_item, "sip_call_id", "")
         current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
         current_queue_item.audio_path = result.audio_path or getattr(current_queue_item, "audio_path", "")
         queue_store.upsert(current_queue_item)
+
+    _emit_smpp_receipt(
+        smpp_username=smpp_username,
+        queue_item_id=queue_item.id,
+        phone_number=phone_number,
+        message=body,
+        result=result,
+    )
 
     return {
         "queue_item": (get_queue_item(settings, queue_item.id) or queue_item.to_dict()),
@@ -657,6 +698,9 @@ def _simulate_smpp_test_send(
             "sip_call_id": result.sip_call_id,
             "sip_account_id": result.sip_account_id,
             "error": result.error,
+            "delivered": result.delivered,
+            "read": result.read,
+            "answered": result.answered,
             "details": result.details,
         },
     }
@@ -2200,7 +2244,13 @@ async def admin_tools_test_send(
     result_error = str(outcome["result"].get("error") or "").strip()
 
     if outcome["result"]["success"]:
-        message = f"Test message queued and delivered for {phone_number} using SMPP user '{smpp_username}'."
+        if outcome["result"].get("read"):
+            state_label = "read"
+        elif outcome["result"].get("delivered"):
+            state_label = "delivered"
+        else:
+            state_label = "processed"
+        message = f"Test message queued and {state_label} for {phone_number} using SMPP user '{smpp_username}'."
         message_level = "success"
         response_status = status.HTTP_200_OK
     else:
@@ -2517,6 +2567,9 @@ async def generic_webhook(
         "text_spoken": result.text_spoken,
         "audio_cached": result.was_cached,
         "ami_action_id": result.ami_action_id,
+        "delivered": result.delivered,
+        "read": result.read,
+        "answered": result.answered,
         "details": result.details,
     }
 

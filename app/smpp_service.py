@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import socket
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Optional
 
 from .admin_reports import record_inbox_message
@@ -60,6 +61,15 @@ class SMPPResult:
     details: dict = None
 
 
+@dataclass
+class SMPPSession:
+    conn: socket.socket
+    smpp_username: str = ""
+    client_addr: str = ""
+    active_calls: int = 0
+    submitted_messages: dict[str, dict] = field(default_factory=dict)
+
+
 class SMPPService:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -67,7 +77,8 @@ class SMPPService:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._last_error: str = ""
-        self._active_clients: dict[socket.socket, dict[str, str]] = {}
+        self._active_clients: dict[socket.socket, SMPPSession] = {}
+        self.sessions: dict[str, SMPPSession] = {}
 
     @property
     def enabled(self) -> bool:
@@ -180,10 +191,14 @@ class SMPPService:
                         )
                         break
                     if self._authenticate(body):
-                        self._active_clients[conn] = {
-                            "smpp_username": bind_fields["system_id"],
-                            "client_addr": f"{addr[0]}:{addr[1]}",
-                        }
+                        session = SMPPSession(
+                            conn=conn,
+                            smpp_username=bind_fields["system_id"],
+                            client_addr=f"{addr[0]}:{addr[1]}",
+                        )
+                        self._active_clients[conn] = session
+                        if session.smpp_username:
+                            self.sessions[session.smpp_username] = session
                         self._send_pdu(conn, bind_response_command_id, 0, sequence, b"\x00")
                         log.info(
                             "SMPP bind success from %s:%s using interface_version=0x%02x",
@@ -200,7 +215,7 @@ class SMPPService:
                     log.info("SMPP enquire_link handled for %s:%s", addr[0], addr[1])
                 elif command_id == _SM_PP_SUBMIT_SM:
                     submit_fields = self._parse_submit_sm(body)
-                    smpp_username = self._active_clients.get(conn, {}).get("smpp_username", "")
+                    smpp_username = self._active_clients.get(conn, SMPPSession(conn=conn)).smpp_username
                     sip_account = get_sip_account_for_smpp_username(self.settings, smpp_username)
                     record_inbox_message(
                         self.settings,
@@ -220,7 +235,18 @@ class SMPPService:
                         smpp_username,
                         sip_account.id if sip_account else "",
                     )
-                    message_id = f"smpp-{sequence}".encode("ascii", "ignore") + b"\x00"
+                    message_id_value = f"smpp-{sequence}"
+                    session = self._active_clients.get(conn)
+                    if session is not None:
+                        session.submitted_messages[message_id_value] = {
+                            "sequence": sequence,
+                            "source_addr": submit_fields["source_addr"],
+                            "destination_addr": submit_fields["destination_addr"],
+                            "registered_delivery": submit_fields["registered_delivery"],
+                            "short_message": submit_fields["short_message"],
+                            "data_coding": submit_fields["data_coding"],
+                        }
+                    message_id = message_id_value.encode("ascii", "ignore") + b"\x00"
                     self._send_pdu(conn, _SM_PP_SUBMIT_SM_RESP, 0, sequence, message_id)
                     log.info(
                         "SMPP submit_sm acknowledged for %s:%s from=%s to=%s text=%r",
@@ -247,7 +273,11 @@ class SMPPService:
             log.debug("SMPP client error: %s", exc)
         finally:
             try:
-                self._active_clients.pop(conn, None)
+                session = self._active_clients.pop(conn, None)
+                if session is not None and session.smpp_username:
+                    existing = self.sessions.get(session.smpp_username)
+                    if existing is session:
+                        self.sessions.pop(session.smpp_username, None)
             except Exception:
                 pass
             try:
@@ -397,6 +427,59 @@ class SMPPService:
                 interface_version,
             )
         return auth_ok
+
+    def send_delivery_receipt(
+        self,
+        *,
+        smpp_username: str,
+        message_id: str,
+        source_addr: str,
+        destination_addr: str,
+        delivery_state: str,
+        read_state: str,
+        delivered: bool,
+        read: bool,
+        answered: bool,
+        error: str = "",
+    ) -> SMPPResult:
+        session = self.sessions.get((smpp_username or "").strip())
+        if session is None:
+            return SMPPResult(ok=False, message="No active SMPP session for user", details={"smpp_username": smpp_username})
+
+        sequence = int(time.time() * 1000) & 0x7FFFFFFF
+        stat_value = (delivery_state or "UNDELIV").strip().upper()[:7] or "UNDELIV"
+        text_value = (error or "").strip()[:20]
+        body = (
+            f"id:{message_id} sub:001 dlvrd:{1 if delivered else 0:03d} "
+            f"submit date:0000000000 done date:0000000000 stat:{stat_value:<7} "
+            f"err:000 text:{text_value}"
+        ).encode("latin-1", "ignore")[:254]
+        payload = (
+            b"\x00"
+            + bytes([0, 0])
+            + (source_addr or "").encode("ascii", "ignore") + b"\x00"
+            + bytes([0, 0])
+            + (destination_addr or "").encode("ascii", "ignore") + b"\x00"
+            + bytes([4, 0, 0])
+            + b"\x00"
+            + b"\x00"
+            + bytes([1])
+            + body
+        )
+        self._send_pdu(session.conn, _SM_PP_DELIVER_SM, 0, sequence, payload)
+        return SMPPResult(
+            ok=True,
+            message="Delivery receipt sent",
+            details={
+                "smpp_username": smpp_username,
+                "message_id": message_id,
+                "delivery_state": delivery_state,
+                "read_state": read_state,
+                "delivered": delivered,
+                "read": read,
+                "answered": answered,
+            },
+        )
 
     def _send_pdu(self, conn: socket.socket, command_id: int, command_status: int, sequence: int, body: bytes) -> None:
         length = 16 + len(body)

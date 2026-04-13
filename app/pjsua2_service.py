@@ -24,6 +24,7 @@ import re
 import tempfile
 import threading
 import time
+import wave
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -123,6 +124,11 @@ class PJSUA2Result:
     audio_path: str = ""
     message: str = ""
     error: str = ""
+    answered: bool = False
+    delivered: bool = False
+    read: bool = False
+    playback_seconds: float = 0.0
+    audio_duration_seconds: float = 0.0
     details: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -537,9 +543,10 @@ class PJSipUASession:
                 try:
                     call_id = f"pj_{int(time.time() * 1000)}"
                     invite_uri = self._build_sip_uri(destination)
+                    callback = _CallCallbackHolder(self, account_id, call_id)
                     call = self._account.makeCall(
                         invite_uri,
-                        _CallCallbackHolder(self, account_id, call_id),
+                        callback,
                     )
                     log.info(
                         "Starting outbound SIP INVITE account=%s destination=%s uri=%s transport=%s trunk_host=%s trunk_port=%s",
@@ -571,23 +578,57 @@ class PJSipUASession:
                         repeat_count=request.playback_repeats,
                         pause_ms=request.playback_pause_ms,
                     )
+                    call_outcome = callback.wait_for_completion(
+                        max(
+                            1.0,
+                            float(request.timeout_seconds or 30)
+                            + float(playback_result.audio_duration_seconds or 0.0)
+                            + max(5.0, float(request.playback_pause_ms or 0) / 1000.0),
+                        )
+                    )
+
+                    answered = bool(call_outcome.get("answered"))
+                    playback_seconds = float(call_outcome.get("playback_seconds") or 0.0)
+                    audio_duration_seconds = float(playback_result.audio_duration_seconds or 0.0)
+                    delivered = answered
+                    read = delivered and audio_duration_seconds > 0 and playback_seconds >= (audio_duration_seconds * 0.5)
 
                     return PJSUA2Result(
-                        success=True,
+                        success=delivered,
                         account_id=account_id,
                         call_id=call_id,
                         destination_number=destination,
                         registered=True,
                         audio_path=request.audio_path,
-                        message="Outbound SIP call started",
+                        message=(
+                            "Outbound SIP call answered and playback completed"
+                            if read
+                            else "Outbound SIP call answered"
+                            if delivered
+                            else "Outbound SIP call was not answered"
+                        ),
+                        answered=answered,
+                        delivered=delivered,
+                        read=read,
+                        playback_seconds=playback_seconds,
+                        audio_duration_seconds=audio_duration_seconds,
                         details={
-                            "playback": playback_result.details,
-                            "call_state": "initiated",
+                            "playback": {
+                                **(playback_result.details or {}),
+                                "playback_seconds": playback_seconds,
+                                "read_threshold_seconds": audio_duration_seconds * 0.5 if audio_duration_seconds > 0 else 0.0,
+                            },
+                            "call_state": str(call_outcome.get("state_text") or "completed"),
                             "display_name": request.display_name,
                             "caller_id": request.caller_id or self._current_profile.caller_id,
                             "extra_vars": request.extra_vars,
                             "active_calls": _TRUNK_ACTIVE_CALLS.get(account_id, 0),
                             "concurrency_limit": concurrency_limit,
+                            "answered": answered,
+                            "delivered": delivered,
+                            "read": read,
+                            "last_status_code": int(call_outcome.get("last_status_code") or 0),
+                            "disconnect_reason": str(call_outcome.get("disconnect_reason") or ""),
                         },
                     )
                 finally:
@@ -637,6 +678,7 @@ class PJSipUASession:
             pause_ms = 0
 
         try:
+            audio_duration_seconds = _probe_audio_duration_seconds(audio_file)
             tmp_manifest = tempfile.NamedTemporaryFile("w", delete=False, prefix="pjsua2_playback_", suffix=".txt", encoding="utf-8")
             manifest_path = Path(tmp_manifest.name)
             with tmp_manifest:
@@ -646,17 +688,22 @@ class PJSipUASession:
                     if pause_ms and idx < repeat_count - 1:
                         tmp_manifest.write(f"PAUSE_MS={pause_ms}\n")
 
+            total_duration_seconds = max(0.0, audio_duration_seconds * repeat_count) + max(0.0, (pause_ms / 1000.0) * max(0, repeat_count - 1))
+
             return PJSUA2Result(
                 success=True,
                 account_id=account_id,
                 destination_number=destination_number,
                 audio_path=str(audio_file),
                 message="Playback manifest prepared",
+                audio_duration_seconds=total_duration_seconds,
                 details={
                     "manifest_path": str(manifest_path),
                     "repeat_count": repeat_count,
                     "pause_ms": pause_ms,
                     "playback_mode": "manifest",
+                    "audio_duration_seconds": total_duration_seconds,
+                    "single_audio_duration_seconds": audio_duration_seconds,
                 },
             )
         except Exception as exc:
@@ -963,6 +1010,18 @@ class _GatewayAccount:
         self._poll_count = 0
 
 
+def _probe_audio_duration_seconds(audio_path: Path) -> float:
+    try:
+        with wave.open(str(audio_path), "rb") as wav_file:
+            frame_rate = int(wav_file.getframerate() or 0)
+            frame_count = int(wav_file.getnframes() or 0)
+            if frame_rate <= 0 or frame_count <= 0:
+                return 0.0
+            return frame_count / float(frame_rate)
+    except Exception:
+        return 0.0
+
+
 class _CallCallbackHolder:
     """
     Lightweight callback adapter that releases per-trunk concurrency slots when a
@@ -984,6 +1043,12 @@ class _CallCallbackHolder:
         self._call_id = call_id
         self._released = False
         self._lock = threading.Lock()
+        self._done = threading.Event()
+        self._answered_at: float | None = None
+        self._disconnected_at: float | None = None
+        self._last_status_code = 0
+        self._state_text = ""
+        self._disconnect_reason = ""
 
     def _release_slot(self) -> None:
         with self._lock:
@@ -1004,6 +1069,7 @@ class _CallCallbackHolder:
             self._call_id,
             _TRUNK_ACTIVE_CALLS.get(self._account_id, 0),
         )
+        self._done.set()
 
     def onCallState(self, *args: Any, **kwargs: Any) -> None:
         call_obj = args[0] if args else None
@@ -1031,6 +1097,7 @@ class _CallCallbackHolder:
                     if value is not None:
                         last_status_code = int(value)
                         break
+            self._last_status_code = last_status_code
 
             for attr in ("state", "callState", "call_state"):
                 with suppress(Exception):
@@ -1039,12 +1106,44 @@ class _CallCallbackHolder:
                         state_name = str(value)
                         break
 
+        self._state_text = state_text or state_name or self._state_text
+        if last_status_code == 200 and self._answered_at is None:
+            self._answered_at = time.time()
+
         if (
             state_name in self._TERMINAL_STATES
             or state_text.upper() == "DISCONNECTED"
             or last_status_code >= 300
         ):
+            self._disconnected_at = time.time()
+            self._disconnect_reason = state_text or state_name or self._disconnect_reason
             self._release_slot()
+
+    def wait_for_completion(self, timeout_seconds: float) -> dict[str, Any]:
+        deadline = time.time() + max(1.0, timeout_seconds)
+        while time.time() < deadline:
+            with suppress(Exception):
+                endpoint = self._session._endpoint
+                if endpoint is not None:
+                    endpoint.libHandleEvents(50)
+            if self._done.wait(0.1):
+                break
+
+        answered = self._answered_at is not None
+        if answered:
+            end_time = self._disconnected_at or time.time()
+            playback_seconds = max(0.0, end_time - float(self._answered_at or end_time))
+        else:
+            playback_seconds = 0.0
+
+        return {
+            "answered": answered,
+            "playback_seconds": playback_seconds,
+            "last_status_code": self._last_status_code,
+            "state_text": self._state_text,
+            "disconnect_reason": self._disconnect_reason,
+            "completed": self._done.is_set(),
+        }
 
     def __getattr__(self, name: str) -> Any:
         def _noop(*args: Any, **kwargs: Any) -> None:
