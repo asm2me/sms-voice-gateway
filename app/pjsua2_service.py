@@ -698,7 +698,22 @@ class _GatewayAccount:
     def makeCall(self, uri: str, callback: Any) -> Any:
         if self._account is None:
             raise RuntimeError("SIP account is not initialised")
-        call = self._account.makeCall(uri, callback)
+
+        pj = self._session._pj
+        if pj is None:
+            raise PJSUA2UnavailableError("PJSUA2 bindings are unavailable")
+
+        call = pj.Call(self._account, -1)
+        prm = pj.CallOpParam(True)
+
+        with suppress(Exception):
+            call_prm = getattr(prm, "opt", None)
+            if call_prm is not None and hasattr(call_prm, "audioCount"):
+                call_prm.audioCount = 1
+            if call_prm is not None and hasattr(call_prm, "videoCount"):
+                call_prm.videoCount = 0
+
+        call.makeCall(uri, prm)
         return call
 
     def registration_info(self) -> dict[str, Any]:
