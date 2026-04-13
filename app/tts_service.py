@@ -255,6 +255,16 @@ class ElevenLabsTTSBackend(TTSBackend):
                 f"ElevenLabs text-to-speech endpoint returned 404 for voice id '{self.voice_id}'. "
                 "The configured voice may not exist in this workspace/account."
             )
+        if r.status_code == 402:
+            detail = r.text.strip()
+            if len(detail) > 300:
+                detail = detail[:300] + "..."
+            raise ValueError(
+                "ElevenLabs rejected synthesis with HTTP 402 Payment Required. "
+                "The voice id is valid, but this API key/account does not currently have access to generate audio "
+                "(for example due to billing, quota, or plan limits). "
+                f"{detail or ''}".strip()
+            )
         r.raise_for_status()
         return r.content
 
