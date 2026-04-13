@@ -49,6 +49,19 @@ def _normalise_number(raw: str) -> str:
     return cleaned
 
 
+def _host_with_port(host: str, port: int | str | None) -> str:
+    host = (host or "").strip()
+    if not host:
+        return ""
+    if host.startswith("[") and "]" in host:
+        return host if not port else f"{host}:{int(port)}"
+    if ":" in host and host.count(":") > 1:
+        return host if not port else f"[{host}]:{int(port)}"
+    if ":" in host:
+        return host
+    return host if not port else f"{host}:{int(port)}"
+
+
 @dataclass
 class SipAccountProfile:
     """
@@ -620,23 +633,36 @@ class PJSipUASession:
         if profile.sip_uri:
             return profile.sip_uri
         user = profile.username or profile.id
-        domain = profile.domain or self.settings.sip_gateway_domain if hasattr(self.settings, "sip_gateway_domain") else ""
-        if not domain:
-            raise ValueError("SIP profile requires either sip_uri or domain")
-        return f"sip:{user}@{domain}"
+        host = profile.domain or str(profile.extra.get("host", "") or "")
+        port = profile.extra.get("port")
+        target = _host_with_port(host, port)
+        if not target:
+            fallback = self.settings.sip_gateway_domain if hasattr(self.settings, "sip_gateway_domain") else ""
+            target = _host_with_port(fallback, port)
+        if not target:
+            raise ValueError("SIP profile requires either sip_uri or domain/host")
+        return f"sip:{user}@{target}"
 
     def _build_registrar_uri(self, profile: SipAccountProfile) -> str:
         if profile.registrar_uri:
             return profile.registrar_uri
-        domain = profile.domain or ""
-        if not domain:
-            raise ValueError("SIP profile requires registrar_uri or domain")
-        return f"sip:{domain}"
+        host = profile.domain or str(profile.extra.get("host", "") or "")
+        port = profile.extra.get("port")
+        target = _host_with_port(host, port)
+        if not target:
+            raise ValueError("SIP profile requires registrar_uri or domain/host")
+        transport = (profile.transport or "").strip().lower()
+        transport_suffix = f";transport={transport}" if transport else ""
+        return f"sip:{target}{transport_suffix}"
 
     def _build_sip_uri(self, number: str) -> str:
         profile = self._current_profile
-        if profile and profile.domain:
-            return f"sip:{number}@{profile.domain}"
+        if profile:
+            host = profile.domain or str(profile.extra.get("host", "") or "")
+            port = profile.extra.get("port")
+            target = _host_with_port(host, port)
+            if target:
+                return f"sip:{number}@{target}"
         return f"sip:{number}"
 
     def close(self) -> None:
