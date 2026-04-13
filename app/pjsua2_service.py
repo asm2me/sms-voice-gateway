@@ -74,6 +74,8 @@ class SipAccountProfile:
     display_name: str = ""
     sip_uri: str = ""
     domain: str = ""
+    host: str = ""
+    port: int = 0
     username: str = ""
     password: str = ""
     registrar_uri: str = ""
@@ -284,6 +286,8 @@ class PJSipUASession:
             display_name=str(profile.get("display_name", "")),
             sip_uri=str(profile.get("sip_uri", "")),
             domain=str(profile.get("domain", "")),
+            host=str(profile.get("host", "")),
+            port=int(profile.get("port", 0) or 0),
             username=str(profile.get("username", "")),
             password=str(profile.get("password", "")),
             registrar_uri=str(profile.get("registrar_uri", "")),
