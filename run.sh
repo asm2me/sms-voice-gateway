@@ -28,7 +28,7 @@ install_pjsua2_from_source() {
     local build_root="${SCRIPT_DIR}/.cache/pjsip"
     local src_dir="${build_root}/pjproject"
     local version="${PJSIP_VERSION:-2.14.1}"
-    local archive="${build_root}/pjproject-${version}.tar.bz2"
+    local archive="${build_root}/pjproject-${version}.tar.gz"
     local url="https://github.com/pjsip/pjproject/archive/refs/tags/${version}.tar.gz"
 
     mkdir -p "${build_root}"
@@ -36,15 +36,15 @@ install_pjsua2_from_source() {
     if command -v apt-get >/dev/null 2>&1; then
         echo "[+] Installing system packages required for PJSUA2 source builds..."
         apt-get update -y
-        apt-get install -y build-essential pkg-config libasound2-dev libssl-dev libopus-dev libvpx-dev libavcodec-dev libavformat-dev libswscale-dev python3-dev swig wget tar
+        apt-get install -y build-essential pkg-config libasound2-dev libssl-dev libopus-dev libvpx-dev libavcodec-dev libavformat-dev libswscale-dev python3-dev python3-setuptools python3-dev swig wget tar make
     fi
 
     if [ ! -d "${src_dir}" ]; then
         echo "[+] Downloading pjproject ${version}..."
         rm -f "${build_root}"/pjproject-*.tar.gz
-        wget -O "${archive}.gz" "${url}"
         rm -rf "${src_dir}" "${build_root}/pjproject-${version}"
-        tar -xzf "${archive}.gz" -C "${build_root}"
+        wget -O "${archive}" "${url}"
+        tar -xzf "${archive}" -C "${build_root}"
         mv "${build_root}/pjproject-${version}" "${src_dir}"
     fi
 
@@ -54,7 +54,16 @@ install_pjsua2_from_source() {
     make dep
     make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)"
     make install
-    cd pjsip-apps/src/swig/python
+
+    cd "${src_dir}/pjsip-apps/src/swig"
+    make
+    cd "${src_dir}/pjsip-apps/src/swig/python"
+
+    if [ ! -f "pjsua2.py" ] || [ ! -f "pjsua2_wrap.cpp" ]; then
+        echo "[!] SWIG wrapper generation failed: missing pjsua2.py or pjsua2_wrap.cpp"
+        return 1
+    fi
+
     python setup.py install
     cd "${SCRIPT_DIR}"
 }
