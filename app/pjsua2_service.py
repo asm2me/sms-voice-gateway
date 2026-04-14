@@ -204,13 +204,15 @@ def _release_player(call_id: str) -> None:
     if not player_state:
         return
 
-    player = player_state.get("player")
     wav_path = player_state.get("wav_path")
-    try:
-        if player is not None and hasattr(player, "destroyPlayer"):
-            player.destroyPlayer()
-    except Exception:
-        pass
+
+    # Some PJSUA2 builds assert if AudioMediaPlayer destruction happens from a
+    # different callback/event thread than the one owning the underlying group
+    # lock. Keep teardown Python-side only here and let process/session cleanup
+    # release the native player object naturally instead of forcing
+    # destroyPlayer() during disconnect callbacks.
+    player_state["player"] = None
+    player_state["player_media"] = None
 
     if wav_path:
         with suppress(Exception):
@@ -1467,6 +1469,11 @@ class _CallCallbackHolder:
             self._player_media = player_media
             self._playback_started = True
             self._playback_started_at = time.time()
+            self._playback_finished_at = (
+                self._playback_started_at + self._playback_audio_duration_seconds
+                if self._playback_audio_duration_seconds > 0
+                else None
+            )
 
             log.info(
                 "Outbound SIP playback started account=%s call_id=%s path=%s duration=%.3f repeats=%s pause_ms=%s",
@@ -1613,9 +1620,13 @@ class _CallCallbackHolder:
         else:
             playback_seconds = 0.0
 
-        if self._playback_started and self._playback_started_at is not None and self._playback_finished_at is None:
+        if self._playback_started and self._playback_started_at is not None:
             expected_end = self._playback_started_at + self._playback_audio_duration_seconds
-            if self._playback_audio_duration_seconds > 0 and time.time() >= expected_end:
+            if (
+                self._playback_audio_duration_seconds > 0
+                and self._playback_finished_at is None
+                and time.time() >= expected_end
+            ):
                 self._playback_finished_at = expected_end
                 log.info(
                     "Outbound SIP playback finished account=%s call_id=%s duration=%.3f",
