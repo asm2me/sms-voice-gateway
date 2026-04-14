@@ -304,6 +304,21 @@ def _build_queue_context(
     return inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters
 
 
+def _live_call_status_meta(state: str) -> dict[str, str]:
+    normalized = str(state or "").strip().lower()
+    if normalized == "read":
+        return {"label": "Read", "class": "success"}
+    if normalized == "delivered":
+        return {"label": "Delivered", "class": "success"}
+    if normalized == "answered":
+        return {"label": "Answered", "class": "pending"}
+    if normalized in {"dialing", "calling", "trying", "ringing", "active"}:
+        return {"label": "Dialing", "class": "pending"}
+    if normalized == "registered":
+        return {"label": "Registered", "class": "unknown"}
+    return {"label": normalized.title() if normalized else "Unknown", "class": "unknown"}
+
+
 def _build_live_call_context(settings: Settings) -> dict:
     service = build_pjsua2_service(settings)
     status = service.status_detail()
@@ -317,6 +332,8 @@ def _build_live_call_context(settings: Settings) -> dict:
         for account_id, count in all_active_calls.items():
             normalized_count = max(0, int(count or 0))
             for index in range(normalized_count):
+                state = "dialing"
+                status_meta = _live_call_status_meta(state)
                 active_calls.append(
                     {
                         "channel": f"sip:{account_id or 'unknown'}#{index + 1}",
@@ -324,7 +341,9 @@ def _build_live_call_context(settings: Settings) -> dict:
                         "caller_id_name": account_id or "active-call",
                         "connected_line_num": "",
                         "connected_line_name": "",
-                        "state": "active",
+                        "state": state,
+                        "state_label": status_meta["label"],
+                        "state_class": status_meta["class"],
                         "context": "pjsua2",
                         "extension": "",
                         "application": "direct-sip-ua",
@@ -332,6 +351,8 @@ def _build_live_call_context(settings: Settings) -> dict:
                     }
                 )
     elif current_account_id and status.get("registered"):
+        state = "registered"
+        status_meta = _live_call_status_meta(state)
         active_calls.append(
             {
                 "channel": f"sip:{current_account_id}",
@@ -339,7 +360,9 @@ def _build_live_call_context(settings: Settings) -> dict:
                 "caller_id_name": current_account_id,
                 "connected_line_num": "",
                 "connected_line_name": "",
-                "state": "registered",
+                "state": state,
+                "state_label": status_meta["label"],
+                "state_class": status_meta["class"],
                 "context": "pjsua2",
                 "extension": "",
                 "application": "direct-sip-ua",
@@ -2171,6 +2194,14 @@ async def admin_add_sip_account(
         smpp_sip_assignments=dict(current.smpp_sip_assignments),
         system_users=list(current.system_users),
     )
+    _record_admin_audit(
+        request=request,
+        action="config.sip_account.save",
+        section="config",
+        detail=f"Saved SIP trunk '{new_account.label}' ({new_account.id}).",
+        target=new_account.id,
+        metadata={"label": new_account.label, "host": new_account.host, "username": new_account.username},
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2197,6 +2228,14 @@ async def admin_add_smpp_account(
         smpp_accounts=smpp_accounts,
         smpp_sip_assignments=assignments,
     )
+    _record_admin_audit(
+        request=request,
+        action="config.smpp_account.save",
+        section="config",
+        detail=f"Saved SMPP user '{new_account.label}' ({new_account.username or new_account.id}).",
+        target=new_account.username or new_account.id,
+        metadata={"label": new_account.label, "default_sip_account_id": new_account.default_sip_account_id},
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2217,6 +2256,14 @@ async def admin_assign_smpp_to_sip(
     if smpp_username and sip_account_id:
         assignments[smpp_username] = sip_account_id
     settings = _save_account_collections(smpp_sip_assignments=assignments)
+    _record_admin_audit(
+        request=request,
+        action="config.assignment.save",
+        section="config",
+        detail=f"Assigned SMPP user '{smpp_username}' to SIP account '{sip_account_id}'.",
+        target=smpp_username,
+        metadata={"sip_account_id": sip_account_id},
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2233,6 +2280,13 @@ async def admin_delete_sip_account(
     current = ensure_default_accounts(load_settings_from_store())
     account_id = str(form.get("account_id", "")).strip()
     settings = _delete_sip_account(current, account_id)
+    _record_admin_audit(
+        request=request,
+        action="config.sip_account.delete",
+        section="config",
+        detail=f"Deleted SIP trunk '{account_id}'.",
+        target=account_id,
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2249,6 +2303,13 @@ async def admin_delete_smpp_account(
     current = ensure_default_accounts(load_settings_from_store())
     account_id = str(form.get("account_id", "")).strip()
     settings = _delete_smpp_account(current, account_id)
+    _record_admin_audit(
+        request=request,
+        action="config.smpp_account.delete",
+        section="config",
+        detail=f"Deleted SMPP user '{account_id}'.",
+        target=account_id,
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2272,6 +2333,14 @@ async def admin_save_system_user(
         smpp_accounts=list(current.smpp_accounts),
         smpp_sip_assignments=dict(current.smpp_sip_assignments),
     )
+    _record_admin_audit(
+        request=request,
+        action="config.system_user.save",
+        section="config",
+        detail=f"Saved system user '{new_user.username}' ({new_user.id}).",
+        target=new_user.id,
+        metadata={"username": new_user.username, "role": new_user.role, "enabled": new_user.enabled},
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2293,6 +2362,13 @@ async def admin_delete_system_user(
         sip_accounts=list(current.sip_accounts),
         smpp_accounts=list(current.smpp_accounts),
         smpp_sip_assignments=dict(current.smpp_sip_assignments),
+    )
+    _record_admin_audit(
+        request=request,
+        action="config.system_user.delete",
+        section="config",
+        detail=f"Deleted system user '{user_id}'.",
+        target=user_id,
     )
     return templates.TemplateResponse(
         request,
@@ -2506,6 +2582,14 @@ async def admin_delete_queue_item_route(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "item_id is required")
     removed = delete_queue_item(settings, item_id)
     message = f"Queue item '{item_id}' deleted." if removed else f"Queue item '{item_id}' was not found."
+    _record_admin_audit(
+        request=request,
+        action="queue.item.delete",
+        section="reports",
+        detail=message,
+        status="success" if removed else "warning",
+        target=item_id,
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2522,6 +2606,16 @@ async def admin_batch_delete_queue_items_route(
     form = await request.form()
     item_ids = [str(value).strip() for value in form.getlist("item_ids") if str(value).strip()] if hasattr(form, "getlist") else []
     removed = batch_delete_queue_items(settings, item_ids)
+    message = f"Deleted {removed} queue item{'s' if removed != 1 else ''}."
+    _record_admin_audit(
+        request=request,
+        action="queue.batch_delete",
+        section="reports",
+        detail=message,
+        status="success" if removed else "warning",
+        target="queue",
+        metadata={"item_ids": item_ids, "removed": removed},
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2529,7 +2623,7 @@ async def admin_batch_delete_queue_items_route(
             request,
             settings,
             active_section="reports",
-            success_message=f"Deleted {removed} queue item{'s' if removed != 1 else ''}.",
+            success_message=message,
         ),
     )
 
@@ -2544,6 +2638,16 @@ async def admin_batch_update_queue_status_route(
     item_ids = [str(value).strip() for value in form.getlist("item_ids") if str(value).strip()] if hasattr(form, "getlist") else []
     status_value = str(form.get("status", "processed")).strip() or "processed"
     updated = batch_update_queue_item_status(settings, item_ids, status_value)
+    message = f"Updated {updated} queue item{'s' if updated != 1 else ''} to '{status_value}'."
+    _record_admin_audit(
+        request=request,
+        action="queue.batch_status",
+        section="reports",
+        detail=message,
+        status="success" if updated else "warning",
+        target="queue",
+        metadata={"item_ids": item_ids, "updated": updated, "status": status_value},
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2551,7 +2655,7 @@ async def admin_batch_update_queue_status_route(
             request,
             settings,
             active_section="reports",
-            success_message=f"Updated {updated} queue item{'s' if updated != 1 else ''} to '{status_value}'.",
+            success_message=message,
         ),
     )
 
@@ -2565,6 +2669,16 @@ async def admin_batch_delete_inbox_messages_route(
     form = await request.form()
     item_ids = [str(value).strip() for value in form.getlist("item_ids") if str(value).strip()] if hasattr(form, "getlist") else []
     removed = batch_delete_inbox_messages(settings, item_ids)
+    message = f"Deleted {removed} inbox message{'s' if removed != 1 else ''}."
+    _record_admin_audit(
+        request=request,
+        action="inbox.batch_delete",
+        section="reports",
+        detail=message,
+        status="success" if removed else "warning",
+        target="inbox",
+        metadata={"item_ids": item_ids, "removed": removed},
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2572,7 +2686,7 @@ async def admin_batch_delete_inbox_messages_route(
             request,
             settings,
             active_section="reports",
-            success_message=f"Deleted {removed} inbox message{'s' if removed != 1 else ''}.",
+            success_message=message,
         ),
     )
 
@@ -2696,6 +2810,13 @@ async def admin_clear_old_reports(
     collector = get_delivery_report_collector(settings)
     if hasattr(collector, "clear_old_reports"):
         collector.clear_old_reports()
+    _record_admin_audit(
+        request=request,
+        action="reports.clear",
+        section="reports",
+        detail="Cleared old delivery reports from the admin portal.",
+        target="delivery-reports",
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2713,6 +2834,15 @@ async def admin_restart_service(
     result = _restart_action_result(settings, action.strip())
     health_context = _build_health_context(settings)
     health_context["restart_result"] = result
+    _record_admin_audit(
+        request=request,
+        action="health.restart",
+        section="health",
+        detail=result["message"],
+        status="success" if result.get("ok") else "error",
+        target=action.strip(),
+        metadata={"result": result},
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
