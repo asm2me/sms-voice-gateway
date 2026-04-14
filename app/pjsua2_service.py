@@ -194,6 +194,27 @@ _PJSUA_GLOBAL_LOCK = threading.RLock()
 _PJSUA_GLOBAL_ENDPOINT = None
 _PJSUA_GLOBAL_TRANSPORT = None
 _PJSUA_REGISTERED_THREADS: set[int] = set()
+_PJSUA_PLAYER_LOCK = threading.RLock()
+_PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
+
+
+def _release_player(call_id: str) -> None:
+    with _PJSUA_PLAYER_LOCK:
+        player_state = _PJSUA_ACTIVE_PLAYERS.pop(call_id, None)
+    if not player_state:
+        return
+
+    player = player_state.get("player")
+    wav_path = player_state.get("wav_path")
+    try:
+        if player is not None and hasattr(player, "destroyPlayer"):
+            player.destroyPlayer()
+    except Exception:
+        pass
+
+    if wav_path:
+        with suppress(Exception):
+            Path(str(wav_path)).unlink(missing_ok=True)
 
 
 class PJSipUASession:
@@ -658,6 +679,12 @@ class PJSipUASession:
                         repeat_count=request.playback_repeats,
                         pause_ms=request.playback_pause_ms,
                     )
+                    callback.set_playback_context(
+                        audio_path=playback_result.audio_path or request.audio_path,
+                        audio_duration_seconds=float(playback_result.audio_duration_seconds or 0.0),
+                        repeat_count=request.playback_repeats,
+                        pause_ms=request.playback_pause_ms,
+                    )
                     call_outcome = callback.wait_for_completion(
                         max(
                             1.0,
@@ -1015,9 +1042,7 @@ class PJSipUASession:
         target = _host_with_port(host, port)
         if not target:
             raise ValueError("SIP profile requires registrar_uri or domain/host")
-        transport = (profile.transport or "").strip().lower()
-        transport_suffix = f";transport={transport}" if transport else ""
-        return f"sip:{target};lr{transport_suffix}"
+        return f"sip:{target};lr"
 
     def _build_sip_uri(self, number: str) -> str:
         profile = self._current_profile
@@ -1025,10 +1050,8 @@ class PJSipUASession:
             host = profile.domain or profile.host or str(profile.extra.get("host", "") or "")
             port = profile.port or profile.extra.get("port")
             target = _host_with_port(host, port)
-            transport = (profile.transport or "").strip().lower()
-            transport_suffix = f";transport={transport}" if transport else ""
             if target:
-                return f"sip:{number}@{target}{transport_suffix}"
+                return f"sip:{number}@{target}"
         return f"sip:{number}"
 
     def close(self) -> None:
@@ -1267,6 +1290,16 @@ class _CallCallbackHolder:
         self._last_status_code = 0
         self._state_text = ""
         self._disconnect_reason = ""
+        self._playback_started_at: float | None = None
+        self._playback_finished_at: float | None = None
+        self._playback_audio_path = ""
+        self._playback_audio_duration_seconds = 0.0
+        self._playback_repeat_count = 1
+        self._playback_pause_ms = 0
+        self._playback_started = False
+        self._playback_error = ""
+        self._player = None
+        self._player_media = None
 
     def _set_runtime_state(
         self,
@@ -1301,6 +1334,8 @@ class _CallCallbackHolder:
                 return
             self._released = True
 
+        _release_player(self._call_id)
+
         with _TRUNK_CONCURRENCY_LOCK:
             current = _TRUNK_ACTIVE_CALLS.get(self._account_id, 0)
             if current <= 1:
@@ -1331,6 +1366,125 @@ class _CallCallbackHolder:
             _TRUNK_ACTIVE_CALLS.get(self._account_id, 0),
         )
         self._done.set()
+
+    def set_playback_context(
+        self,
+        *,
+        audio_path: str,
+        audio_duration_seconds: float,
+        repeat_count: int,
+        pause_ms: int,
+    ) -> None:
+        self._playback_audio_path = str(audio_path or "")
+        self._playback_audio_duration_seconds = max(0.0, float(audio_duration_seconds or 0.0))
+        self._playback_repeat_count = max(1, int(repeat_count or 1))
+        self._playback_pause_ms = max(0, int(pause_ms or 0))
+
+    def _try_start_playback(self, call_obj: Any) -> None:
+        if self._playback_started:
+            return
+        if not self._playback_audio_path:
+            self._playback_error = "Playback audio path is empty"
+            log.warning(
+                "Outbound SIP playback skipped account=%s call_id=%s reason=%s",
+                self._account_id,
+                self._call_id,
+                self._playback_error,
+            )
+            return
+
+        wav_path = Path(self._playback_audio_path)
+        if not wav_path.exists():
+            self._playback_error = "Playback audio file does not exist"
+            log.warning(
+                "Outbound SIP playback skipped account=%s call_id=%s path=%s reason=%s",
+                self._account_id,
+                self._call_id,
+                self._playback_audio_path,
+                self._playback_error,
+            )
+            return
+
+        try:
+            self._session._register_current_thread()
+            pj = self._session._pj
+            if pj is None:
+                self._playback_error = "PJSUA2 bindings are unavailable during playback"
+                return
+
+            call_audio_media = None
+            with suppress(Exception):
+                call_info = call_obj.getInfo()
+                media_list = getattr(call_info, "media", None)
+                if media_list is not None:
+                    for idx, media in enumerate(list(media_list)):
+                        media_type = getattr(media, "type", None)
+                        media_status = getattr(media, "status", None)
+                        log.info(
+                            "Outbound SIP media candidate account=%s call_id=%s index=%s type=%s status=%s",
+                            self._account_id,
+                            self._call_id,
+                            idx,
+                            media_type,
+                            media_status,
+                        )
+                        with suppress(Exception):
+                            call_audio_media = call_obj.getAudioMedia(idx)
+                            if call_audio_media is not None:
+                                break
+
+            if call_audio_media is None:
+                with suppress(Exception):
+                    call_audio_media = call_obj.getAudioMedia(-1)
+
+            if call_audio_media is None:
+                self._playback_error = "Call audio media is unavailable"
+                log.warning(
+                    "Outbound SIP playback failed account=%s call_id=%s reason=%s",
+                    self._account_id,
+                    self._call_id,
+                    self._playback_error,
+                )
+                return
+
+            player = pj.AudioMediaPlayer()
+            player.createPlayer(str(wav_path))
+            player_media = player
+
+            with suppress(Exception):
+                player_media = player.getAudioMedia()
+
+            player_media.startTransmit(call_audio_media)
+
+            with _PJSUA_PLAYER_LOCK:
+                _PJSUA_ACTIVE_PLAYERS[self._call_id] = {
+                    "player": player,
+                    "player_media": player_media,
+                    "wav_path": "",
+                }
+
+            self._player = player
+            self._player_media = player_media
+            self._playback_started = True
+            self._playback_started_at = time.time()
+
+            log.info(
+                "Outbound SIP playback started account=%s call_id=%s path=%s duration=%.3f repeats=%s pause_ms=%s",
+                self._account_id,
+                self._call_id,
+                str(wav_path),
+                self._playback_audio_duration_seconds,
+                self._playback_repeat_count,
+                self._playback_pause_ms,
+            )
+        except Exception as exc:
+            self._playback_error = f"{type(exc).__name__}: {exc}"
+            log.exception(
+                "Outbound SIP playback start failed account=%s call_id=%s path=%s",
+                self._account_id,
+                self._call_id,
+                self._playback_audio_path,
+            )
 
     def onCallState(self, *args: Any, **kwargs: Any) -> None:
         call_obj = args[0] if args else None
@@ -1415,13 +1569,14 @@ class _CallCallbackHolder:
         if (
             state_text.upper() == "CONFIRMED"
             or state_name.upper() == "CONFIRMED"
-        ) and self._answered_at is None:
-            self._answered_at = time.time()
-            self._set_runtime_state(
-                state="ACTIVE",
-                last_status_code=last_status_code,
-                destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
-            )
+        ):
+            if self._answered_at is None:
+                self._answered_at = time.time()
+                self._set_runtime_state(
+                    state="ACTIVE",
+                    last_status_code=last_status_code,
+                    destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
+                )
             log.info(
                 "Outbound SIP call confirmed account=%s call_id=%s state=%s status=%s",
                 self._account_id,
@@ -1429,6 +1584,8 @@ class _CallCallbackHolder:
                 state_text or state_name,
                 last_status_code,
             )
+            if call_obj is not None:
+                self._try_start_playback(call_obj)
 
         if (
             state_name in self._TERMINAL_STATES
@@ -1456,6 +1613,17 @@ class _CallCallbackHolder:
         else:
             playback_seconds = 0.0
 
+        if self._playback_started and self._playback_started_at is not None and self._playback_finished_at is None:
+            expected_end = self._playback_started_at + self._playback_audio_duration_seconds
+            if self._playback_audio_duration_seconds > 0 and time.time() >= expected_end:
+                self._playback_finished_at = expected_end
+                log.info(
+                    "Outbound SIP playback finished account=%s call_id=%s duration=%.3f",
+                    self._account_id,
+                    self._call_id,
+                    self._playback_audio_duration_seconds,
+                )
+
         return {
             "answered": answered,
             "playback_seconds": playback_seconds,
@@ -1465,6 +1633,10 @@ class _CallCallbackHolder:
             "completed": self._done.is_set(),
             "answered_at": self._answered_at,
             "disconnected_at": self._disconnected_at,
+            "playback_started": self._playback_started,
+            "playback_error": self._playback_error,
+            "playback_started_at": self._playback_started_at,
+            "playback_finished_at": self._playback_finished_at,
         }
 
     def __getattr__(self, name: str) -> Any:
