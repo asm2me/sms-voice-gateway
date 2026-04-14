@@ -368,8 +368,15 @@ if STATIC_DIR.exists():
 
 
 @app.get("/admin", response_class=HTMLResponse)
-async def admin_root(request: Request, settings: Annotated[Settings, Depends(dep_settings)]):
-    return await admin_overview(request=request, settings=settings)
+async def admin_root(request: Request):
+    settings = ensure_default_accounts(load_settings_from_store())
+    return templates.TemplateResponse(
+        "admin.html",
+        {
+            "request": request,
+            "settings": settings,
+        },
+    )
 
 
 def dep_settings() -> Settings:
