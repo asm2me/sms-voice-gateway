@@ -2147,25 +2147,26 @@ def _run_admin_test_send_job(
 
 
 def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
-    domain = (account.domain or account.host or "").strip()
+    host = (account.host or "").strip()
+    domain = (account.domain or host).strip()
     username = (account.username or "").strip()
     caller_id = (account.from_user or account.display_name or username or account.id).strip()
     port = int(account.port or 5060)
     domain_target = domain
-    if domain and ":" not in domain:
-        domain_target = f"{domain}:{port}"
+    if domain_target and ":" not in domain_target:
+        domain_target = f"{domain_target}:{port}"
     sip_uri = f"sip:{username}@{domain_target}" if username and domain_target else ""
     transport = (account.transport or "UDP").upper()
-    registrar_uri = f"sip:{domain_target};transport={transport.lower()}" if domain_target else ""
+    registrar_uri = f"sip:{domain_target};lr" if domain_target and account.register_enabled else ""
     proxy_uri = (account.outbound_proxy or "").strip()
-    if not proxy_uri and domain_target:
-        proxy_uri = f"sip:{domain_target};transport={transport.lower()}"
 
     return SipAccountProfile(
         id=account.id,
         display_name=(account.display_name or account.label or account.id).strip(),
         sip_uri=sip_uri,
         domain=domain,
+        host=host,
+        port=port,
         username=username,
         password=(account.password or "").strip(),
         registrar_uri=registrar_uri,
@@ -2176,8 +2177,8 @@ def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
         auth_realm="*",
         concurrency_limit=max(1, int(getattr(account, "concurrency_limit", 1) or 1)),
         extra={
-            "host": (account.host or "").strip(),
-            "port": account.port,
+            "host": host,
+            "port": port,
             "from_domain": (account.from_domain or "").strip(),
             "register": bool(account.register_enabled),
             "preferred_codecs": list(account.preferred_codecs or []),
