@@ -208,9 +208,9 @@ def _report_context(settings: Settings) -> tuple[dict, list[dict]]:
     collector = get_delivery_report_collector(settings)
     summary = collector.summary()
     recent_reports = collector.list_reports(limit=10)
-    status_counts = {item["status"]: item["count"] for item in summary.get("status_counts", [])}
+    status_counts = summary.get("by_status", {}) if isinstance(summary, dict) else {}
     report_summary = {
-        "total": summary.get("total", 0),
+        "total": summary.get("total", 0) if isinstance(summary, dict) else 0,
         "status_counts": [
             {"status": "success", "count": status_counts.get("success", 0)},
             {"status": "error", "count": status_counts.get("error", 0)},
