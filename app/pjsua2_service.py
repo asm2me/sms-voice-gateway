@@ -193,6 +193,7 @@ _TRUNK_CALL_STATE_RETENTION_SECONDS = 30.0
 _PJSUA_GLOBAL_LOCK = threading.RLock()
 _PJSUA_GLOBAL_ENDPOINT = None
 _PJSUA_GLOBAL_TRANSPORT = None
+_PJSUA_GLOBAL_SESSION: "PJSipUASession | None" = None
 _PJSUA_REGISTERED_THREADS: set[int] = set()
 _PJSUA_PLAYER_LOCK = threading.RLock()
 _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
@@ -1301,6 +1302,7 @@ class _CallCallbackHolder:
         self._playback_started = False
         self._playback_pending = False
         self._playback_error = ""
+        self._playback_hangup_requested = False
         self._player = None
         self._player_media = None
 
@@ -1616,6 +1618,52 @@ class _CallCallbackHolder:
                 call_obj = getattr(self._session, "_last_call", None)
                 if call_obj is not None:
                     self._try_start_playback(call_obj)
+
+            if self._playback_started and self._playback_started_at is not None:
+                expected_end = self._playback_started_at + self._playback_audio_duration_seconds
+                if (
+                    self._playback_audio_duration_seconds > 0
+                    and self._playback_finished_at is None
+                    and time.time() >= expected_end
+                ):
+                    self._playback_finished_at = expected_end
+                    log.info(
+                        "Outbound SIP playback finished account=%s call_id=%s duration=%.3f",
+                        self._account_id,
+                        self._call_id,
+                        self._playback_audio_duration_seconds,
+                    )
+
+                if (
+                    self._playback_finished_at is not None
+                    and not self._playback_hangup_requested
+                    and not self._done.is_set()
+                ):
+                    self._playback_hangup_requested = True
+                    call_obj = getattr(self._session, "_last_call", None)
+                    if call_obj is not None:
+                        try:
+                            pj = self._session._pj
+                            self._session._register_current_thread()
+                            if pj is not None:
+                                hangup_param = pj.CallOpParam()
+                                with suppress(Exception):
+                                    hangup_param.statusCode = 200
+                                call_obj.hangup(hangup_param)
+                                log.info(
+                                    "Outbound SIP playback complete; hanging up call account=%s call_id=%s",
+                                    self._account_id,
+                                    self._call_id,
+                                )
+                        except Exception as exc:
+                            self._playback_error = f"hangup failed: {type(exc).__name__}: {exc}"
+                            log.warning(
+                                "Outbound SIP auto-hangup failed account=%s call_id=%s error=%s",
+                                self._account_id,
+                                self._call_id,
+                                self._playback_error,
+                            )
+
             if self._done.wait(0.1):
                 break
 
@@ -1625,21 +1673,6 @@ class _CallCallbackHolder:
             playback_seconds = max(0.0, end_time - float(self._answered_at or end_time))
         else:
             playback_seconds = 0.0
-
-        if self._playback_started and self._playback_started_at is not None:
-            expected_end = self._playback_started_at + self._playback_audio_duration_seconds
-            if (
-                self._playback_audio_duration_seconds > 0
-                and self._playback_finished_at is None
-                and time.time() >= expected_end
-            ):
-                self._playback_finished_at = expected_end
-                log.info(
-                    "Outbound SIP playback finished account=%s call_id=%s duration=%.3f",
-                    self._account_id,
-                    self._call_id,
-                    self._playback_audio_duration_seconds,
-                )
 
         return {
             "answered": answered,
@@ -1664,4 +1697,10 @@ class _CallCallbackHolder:
 
 
 def build_pjsua2_service(settings: Settings) -> PJSipUASession:
-    return PJSipUASession(settings)
+    global _PJSUA_GLOBAL_SESSION
+    with _PJSUA_GLOBAL_LOCK:
+        if _PJSUA_GLOBAL_SESSION is None:
+            _PJSUA_GLOBAL_SESSION = PJSipUASession(settings)
+        else:
+            _PJSUA_GLOBAL_SESSION.settings = settings
+        return _PJSUA_GLOBAL_SESSION
