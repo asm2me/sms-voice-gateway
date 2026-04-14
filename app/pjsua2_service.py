@@ -1482,6 +1482,10 @@ class _CallCallbackHolder:
             self._playback_started = True
             self._playback_started_at = time.time()
             self._playback_finished_at = None
+            if self._playback_audio_duration_seconds > 0:
+                scheduled_from_playback_start = self._playback_started_at + self._playback_audio_duration_seconds + 1.5
+                if self._scheduled_hangup_at is None or scheduled_from_playback_start > self._scheduled_hangup_at:
+                    self._scheduled_hangup_at = scheduled_from_playback_start
 
             log.info(
                 "Outbound SIP playback started account=%s call_id=%s path=%s duration=%.3f repeats=%s pause_ms=%s",
@@ -1569,7 +1573,7 @@ class _CallCallbackHolder:
         if last_status_code == 200 and self._answered_at is None:
             self._answered_at = time.time()
             if self._playback_audio_duration_seconds > 0:
-                self._scheduled_hangup_at = self._answered_at + self._playback_audio_duration_seconds + 1.0
+                self._scheduled_hangup_at = self._answered_at + self._playback_audio_duration_seconds + 3.0
             self._set_runtime_state(
                 state="ANSWERED",
                 last_status_code=last_status_code,
