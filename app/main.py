@@ -113,7 +113,7 @@ def _next_attempt_due(item) -> bool:
 
 
 def _queue_item_status_finished(status_value: str) -> bool:
-    return str(status_value or "").strip().lower() in {"delivered", "read", "failed", "cancelled", "canceled", "error", "answered"}
+    return str(status_value or "").strip().lower() in {"delivered", "read", "failed", "cancelled", "canceled", "error", "answered", "completed"}
 
 
 def _update_queue_item_attempt_metadata(
@@ -187,7 +187,7 @@ def _deliver_queue_item(settings: Settings, item) -> tuple[bool, str]:
     item.audio_path = getattr(result, "audio_path", "") or getattr(item, "audio_path", "") or ""
 
     if result.success:
-        item.status = "answered" if result.read else "delivered"
+        item.status = "answered" if result.answered else ("completed" if result.read else "delivered")
         item.last_error = ""
         item.next_attempt_at = None
         item.updated_at = _utc_now_iso()
@@ -209,8 +209,16 @@ def _retry_worker_loop() -> None:
                 status="retry_scheduled",
                 limit=getattr(settings, "delivery_report_max_items", 1000),
             )
+            answered_items = queue_store.query_items(
+                status="answered",
+                limit=getattr(settings, "delivery_report_max_items", 1000),
+            )
+            completed_items = queue_store.query_items(
+                status="completed",
+                limit=getattr(settings, "delivery_report_max_items", 1000),
+            )
             due_items = []
-            for item in queue_items + retry_items:
+            for item in queue_items + retry_items + answered_items + completed_items:
                 if _queue_item_status_finished(getattr(item, "status", "")):
                     continue
                 if getattr(item, "attempts", 0) >= max(1, int(getattr(item, "max_attempts", 1) or 1)):
