@@ -1310,6 +1310,7 @@ class _CallCallbackHolder:
         self._playback_pending = False
         self._playback_error = ""
         self._playback_hangup_requested = False
+        self._scheduled_hangup_at: float | None = None
         self._player = None
         self._player_media = None
 
@@ -1391,6 +1392,7 @@ class _CallCallbackHolder:
         self._playback_audio_duration_seconds = max(0.0, float(audio_duration_seconds or 0.0))
         self._playback_repeat_count = max(1, int(repeat_count or 1))
         self._playback_pause_ms = max(0, int(pause_ms or 0))
+        self._scheduled_hangup_at = None
 
     def _try_start_playback(self, call_obj: Any) -> None:
         if self._playback_started:
@@ -1566,17 +1568,21 @@ class _CallCallbackHolder:
 
         if last_status_code == 200 and self._answered_at is None:
             self._answered_at = time.time()
+            if self._playback_audio_duration_seconds > 0:
+                self._scheduled_hangup_at = self._answered_at + self._playback_audio_duration_seconds + 1.0
             self._set_runtime_state(
                 state="ANSWERED",
                 last_status_code=last_status_code,
                 destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
             )
             log.info(
-                "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s",
+                "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s scheduled_hangup_at=%s playback_duration=%.3f",
                 self._account_id,
                 self._call_id,
                 state_text or state_name,
                 last_status_code,
+                self._scheduled_hangup_at,
+                self._playback_audio_duration_seconds,
             )
 
         if (
@@ -1637,36 +1643,40 @@ class _CallCallbackHolder:
                         self._playback_audio_duration_seconds,
                     )
 
-                if (
-                    self._playback_finished_at is not None
-                    and not self._playback_hangup_requested
-                    and not self._done.is_set()
-                    and time.time() >= (self._playback_finished_at + 0.25)
-                ):
-                    self._playback_hangup_requested = True
-                    call_obj = getattr(self._session, "_last_call", None)
-                    if call_obj is not None:
-                        try:
-                            pj = self._session._pj
-                            self._session._register_current_thread()
-                            if pj is not None:
-                                hangup_param = pj.CallOpParam()
-                                with suppress(Exception):
-                                    hangup_param.statusCode = 200
-                                call_obj.hangup(hangup_param)
-                                log.info(
-                                    "Outbound SIP playback complete; hanging up call account=%s call_id=%s",
-                                    self._account_id,
-                                    self._call_id,
-                                )
-                        except Exception as exc:
-                            self._playback_error = f"hangup failed: {type(exc).__name__}: {exc}"
-                            log.warning(
-                                "Outbound SIP auto-hangup failed account=%s call_id=%s error=%s",
+                if self._playback_finished_at is None and self._scheduled_hangup_at is not None:
+                    self._playback_finished_at = self._scheduled_hangup_at
+
+            if (
+                self._scheduled_hangup_at is not None
+                and not self._playback_hangup_requested
+                and not self._done.is_set()
+                and time.time() >= self._scheduled_hangup_at
+            ):
+                self._playback_hangup_requested = True
+                call_obj = getattr(self._session, "_last_call", None)
+                if call_obj is not None:
+                    try:
+                        pj = self._session._pj
+                        self._session._register_current_thread()
+                        if pj is not None:
+                            hangup_param = pj.CallOpParam()
+                            with suppress(Exception):
+                                hangup_param.statusCode = 200
+                            call_obj.hangup(hangup_param)
+                            log.info(
+                                "Outbound SIP scheduled hangup fired account=%s call_id=%s scheduled_hangup_at=%s",
                                 self._account_id,
                                 self._call_id,
-                                self._playback_error,
+                                self._scheduled_hangup_at,
                             )
+                    except Exception as exc:
+                        self._playback_error = f"hangup failed: {type(exc).__name__}: {exc}"
+                        log.warning(
+                            "Outbound SIP scheduled hangup failed account=%s call_id=%s error=%s",
+                            self._account_id,
+                            self._call_id,
+                            self._playback_error,
+                        )
 
             if self._done.wait(0.1):
                 break
