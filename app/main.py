@@ -308,8 +308,25 @@ def _build_live_call_context(settings: Settings) -> dict:
     status = service.status_detail()
     active_calls: list[dict] = []
     current_account_id = status.get("current_account_id", "")
+    active_call_count = int(status.get("active_calls", 0) or 0)
 
-    if current_account_id:
+    if active_call_count > 0:
+        for index in range(active_call_count):
+            active_calls.append(
+                {
+                    "channel": f"sip:{current_account_id or 'unknown'}#{index + 1}",
+                    "caller_id_num": "",
+                    "caller_id_name": current_account_id or "active-call",
+                    "connected_line_num": "",
+                    "connected_line_name": "",
+                    "state": "active",
+                    "context": "pjsua2",
+                    "extension": "",
+                    "application": "direct-sip-ua",
+                    "duration": "",
+                }
+            )
+    elif current_account_id and status.get("registered"):
         active_calls.append(
             {
                 "channel": f"sip:{current_account_id}",
@@ -317,7 +334,7 @@ def _build_live_call_context(settings: Settings) -> dict:
                 "caller_id_name": current_account_id,
                 "connected_line_num": "",
                 "connected_line_name": "",
-                "state": "registered" if status.get("registered") else "idle",
+                "state": "registered",
                 "context": "pjsua2",
                 "extension": "",
                 "application": "direct-sip-ua",
@@ -332,20 +349,20 @@ def _build_live_call_context(settings: Settings) -> dict:
         for smpp_username, session in smpp_sessions.items():
             if session is None:
                 continue
-            active_count = 0
+            session_active_count = 0
             if isinstance(session, dict):
-                active_count = int(session.get("active_calls", session.get("active_count", 0)) or 0)
+                session_active_count = int(session.get("active_calls", session.get("active_count", 0)) or 0)
             else:
-                active_count = int(getattr(session, "active_calls", getattr(session, "active_count", 0)) or 0)
+                session_active_count = int(getattr(session, "active_calls", getattr(session, "active_count", 0)) or 0)
             smpp_active_calls_by_user.append(
                 {
                     "smpp_username": smpp_username,
-                    "active_calls": active_count,
+                    "active_calls": session_active_count,
                 }
             )
 
     return {
-        "active_count": len(active_calls),
+        "active_count": active_call_count,
         "items": active_calls,
         "smpp_active_calls_by_user": smpp_active_calls_by_user,
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
