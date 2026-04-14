@@ -371,8 +371,9 @@ if STATIC_DIR.exists():
 async def admin_root(request: Request):
     settings = ensure_default_accounts(load_settings_from_store())
     return templates.TemplateResponse(
-        "admin.html",
-        {
+        request=request,
+        name="admin.html",
+        context={
             "request": request,
             "settings": settings,
         },
