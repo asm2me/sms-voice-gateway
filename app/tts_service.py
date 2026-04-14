@@ -467,19 +467,7 @@ class TTSService:
         # Normalise to Asterisk-compatible format
         normalised = _ensure_wav_format(raw_wav)
 
-        # Build final WAV with repeats + silence gaps
-        if self.settings.playback_repeats > 1:
-            silence = _generate_silence(self.settings.playback_pause_ms)
-            parts: list[bytes] = []
-            for i in range(self.settings.playback_repeats):
-                parts.append(normalised)
-                if i < self.settings.playback_repeats - 1:
-                    parts.append(silence)
-            final_wav = _concat_wavs(parts)
-        else:
-            final_wav = normalised
-
-        path = self.cache.store_audio(hkey, final_wav)
+        path = self.cache.store_audio(hkey, normalised)
         return path, False
 
     def hash_for(self, text: str) -> str:

@@ -284,8 +284,8 @@ class SMSGateway:
                     display_name=sip_account.display_name or sip_account.label,
                     caller_id=sip_account.from_user or self.settings.outbound_caller_id,
                     timeout_seconds=self.settings.call_answer_timeout,
-                    playback_repeats=self.settings.playback_repeats,
-                    playback_pause_ms=self.settings.playback_pause_ms,
+                    playback_repeats=1,
+                    playback_pause_ms=0,
                     enable_recording=bool(getattr(self.settings, "enable_call_recording", False)),
                     extra_vars={
                         "OTP_TEXT": spoken_text[:80],
