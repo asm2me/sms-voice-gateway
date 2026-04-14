@@ -113,7 +113,7 @@ def _next_attempt_due(item) -> bool:
 
 
 def _queue_item_status_finished(status_value: str) -> bool:
-    return str(status_value or "").strip().lower() in {"delivered", "read", "failed", "cancelled", "canceled", "error"}
+    return str(status_value or "").strip().lower() in {"delivered", "read", "failed", "cancelled", "canceled", "error", "answered"}
 
 
 def _update_queue_item_attempt_metadata(
@@ -187,7 +187,7 @@ def _deliver_queue_item(settings: Settings, item) -> tuple[bool, str]:
     item.audio_path = getattr(result, "audio_path", "") or getattr(item, "audio_path", "") or ""
 
     if result.success:
-        item.status = "read" if result.read else "delivered"
+        item.status = "answered" if result.read else "delivered"
         item.last_error = ""
         item.next_attempt_at = None
         item.updated_at = _utc_now_iso()
@@ -357,6 +357,11 @@ app = FastAPI(
 
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_root(request: Request, settings: Annotated[Settings, Depends(dep_settings)]):
+    return await admin_overview(request=request, settings=settings)
 
 
 def dep_settings() -> Settings:
