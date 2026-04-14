@@ -156,6 +156,7 @@ class PJSUA2UnavailableError(RuntimeError):
 _TRUNK_CONCURRENCY_LOCK = threading.RLock()
 _TRUNK_ACTIVE_CALLS: dict[str, int] = {}
 _TRUNK_CALL_STATES: dict[str, dict[str, Any]] = {}
+_TRUNK_CALL_STATE_RETENTION_SECONDS = 30.0
 _PJSUA_GLOBAL_LOCK = threading.RLock()
 _PJSUA_GLOBAL_ENDPOINT = None
 _PJSUA_GLOBAL_TRANSPORT = None
@@ -765,14 +766,24 @@ class PJSipUASession:
 
     def status_detail(self) -> dict[str, Any]:
         current_account_id = self._current_profile.id if self._current_profile else ""
+        now = time.time()
         with _TRUNK_CONCURRENCY_LOCK:
+            expired_call_ids = [
+                call_id
+                for call_id, item in _TRUNK_CALL_STATES.items()
+                if float(item.get("expires_at") or 0.0) and float(item.get("expires_at") or 0.0) <= now
+            ]
+            for call_id in expired_call_ids:
+                _TRUNK_CALL_STATES.pop(call_id, None)
+
             active_calls = _TRUNK_ACTIVE_CALLS.get(current_account_id, 0) if current_account_id else 0
             all_active_calls = dict(_TRUNK_ACTIVE_CALLS)
             total_active_calls = sum(int(value or 0) for value in all_active_calls.values())
-            active_call_items = [
-                dict(item)
-                for item in _TRUNK_CALL_STATES.values()
-            ]
+            active_call_items = sorted(
+                (dict(item) for item in _TRUNK_CALL_STATES.values()),
+                key=lambda item: float(item.get("updated_at") or 0.0),
+                reverse=True,
+            )
         return {
             "available": self.available,
             "registered": self._registered,
@@ -1218,16 +1229,20 @@ class _CallCallbackHolder:
     ) -> None:
         with _TRUNK_CONCURRENCY_LOCK:
             current = _TRUNK_CALL_STATES.get(self._call_id, {})
+            now = time.time()
+            normalized_state = str(state or "").strip()
             _TRUNK_CALL_STATES[self._call_id] = {
                 **current,
                 "call_id": self._call_id,
                 "account_id": self._account_id,
-                "state": str(state or "").strip(),
+                "state": normalized_state,
                 "last_status_code": int(last_status_code or 0),
                 "destination_number": destination_number or str(current.get("destination_number", "") or ""),
-                "answered": self._answered_at is not None,
-                "updated_at": time.time(),
+                "answered": self._answered_at is not None or normalized_state.upper() in {"ACTIVE", "ANSWERED", "CONFIRMED"},
+                "updated_at": now,
                 "connected_at": self._answered_at,
+                "hangup_at": current.get("hangup_at"),
+                "expires_at": current.get("expires_at", now + _TRUNK_CALL_STATE_RETENTION_SECONDS),
             }
 
     def _release_slot(self) -> None:
@@ -1242,7 +1257,22 @@ class _CallCallbackHolder:
                 _TRUNK_ACTIVE_CALLS.pop(self._account_id, None)
             else:
                 _TRUNK_ACTIVE_CALLS[self._account_id] = current - 1
-            _TRUNK_CALL_STATES.pop(self._call_id, None)
+            retained = dict(_TRUNK_CALL_STATES.get(self._call_id, {}))
+            now = time.time()
+            retained.update(
+                {
+                    "call_id": self._call_id,
+                    "account_id": self._account_id,
+                    "state": "HUNGUP" if self._answered_at is not None else "MISSED",
+                    "answered": self._answered_at is not None,
+                    "connected_at": self._answered_at,
+                    "hangup_at": self._disconnected_at or now,
+                    "updated_at": now,
+                    "expires_at": now + _TRUNK_CALL_STATE_RETENTION_SECONDS,
+                    "last_status_code": self._last_status_code,
+                }
+            )
+            _TRUNK_CALL_STATES[self._call_id] = retained
 
         log.info(
             "Released SIP trunk concurrency slot account=%s call_id=%s active_calls=%s",
@@ -1316,6 +1346,11 @@ class _CallCallbackHolder:
 
         if last_status_code == 200 and self._answered_at is None:
             self._answered_at = time.time()
+            self._set_runtime_state(
+                state="ANSWERED",
+                last_status_code=last_status_code,
+                destination_number=_normalise_number(remote_uri) if remote_uri else "",
+            )
             log.info(
                 "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s",
                 self._account_id,

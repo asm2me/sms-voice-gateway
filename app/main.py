@@ -310,10 +310,16 @@ def _live_call_status_meta(state: str) -> dict[str, str]:
         return {"label": "Read", "class": "success"}
     if normalized == "delivered":
         return {"label": "Delivered", "class": "success"}
-    if normalized == "answered":
-        return {"label": "Answered", "class": "pending"}
-    if normalized in {"dialing", "calling", "trying", "ringing", "active"}:
+    if normalized in {"answered", "active"}:
+        return {"label": "Answered", "class": "success"}
+    if normalized == "ringing":
+        return {"label": "Ringing", "class": "pending"}
+    if normalized in {"dialing", "calling", "trying", "early"}:
         return {"label": "Dialing", "class": "pending"}
+    if normalized == "hungup":
+        return {"label": "Hung Up", "class": "warning"}
+    if normalized == "missed":
+        return {"label": "Missed", "class": "warning"}
     if normalized == "registered":
         return {"label": "Registered", "class": "unknown"}
     return {"label": normalized.title() if normalized else "Unknown", "class": "unknown"}
@@ -327,8 +333,47 @@ def _build_live_call_context(settings: Settings) -> dict:
     active_call_count = int(status.get("active_calls", 0) or 0)
     total_active_calls = int(status.get("total_active_calls", active_call_count) or 0)
     all_active_calls = status.get("all_active_calls", {}) or {}
+    active_call_items = status.get("active_call_items", []) or []
+    now = time.time()
 
-    if total_active_calls > 0:
+    if active_call_items:
+        for index, item in enumerate(active_call_items, start=1):
+            state = str(item.get("state", "")).strip().lower() or "unknown"
+            status_meta = _live_call_status_meta(state)
+            connected_at = float(item.get("connected_at") or 0.0)
+            hangup_at = float(item.get("hangup_at") or 0.0)
+            updated_at = float(item.get("updated_at") or 0.0)
+            duration_seconds = 0
+            if connected_at > 0:
+                duration_end = hangup_at if hangup_at > 0 else now
+                duration_seconds = max(0, int(duration_end - connected_at))
+            elif updated_at > 0:
+                duration_seconds = max(0, int(now - updated_at))
+
+            destination_number = str(item.get("destination_number", "")).strip()
+            account_id = str(item.get("account_id", "")).strip() or current_account_id or "unknown"
+            active_calls.append(
+                {
+                    "channel": f"sip:{account_id}#{index}",
+                    "caller_id_num": "",
+                    "caller_id_name": account_id,
+                    "connected_line_num": destination_number,
+                    "connected_line_name": destination_number,
+                    "state": state,
+                    "state_label": status_meta["label"],
+                    "state_class": status_meta["class"],
+                    "context": "pjsua2",
+                    "extension": destination_number,
+                    "application": "direct-sip-ua",
+                    "duration": str(duration_seconds),
+                    "call_id": str(item.get("call_id", "")).strip(),
+                    "answered": bool(item.get("answered")),
+                    "last_status_code": int(item.get("last_status_code", 0) or 0),
+                    "hangup_at": hangup_at,
+                    "updated_at": updated_at,
+                }
+            )
+    elif total_active_calls > 0:
         for account_id, count in all_active_calls.items():
             normalized_count = max(0, int(count or 0))
             for index in range(normalized_count):
@@ -400,6 +445,7 @@ def _build_live_call_context(settings: Settings) -> dict:
         "import_error": status.get("import_error", ""),
         "current_account_id": current_account_id,
         "all_active_calls": all_active_calls,
+        "active_call_items": active_call_items,
     }
 
 
