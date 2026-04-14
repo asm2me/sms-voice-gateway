@@ -440,6 +440,7 @@
           <th>Next Attempt</th>
           <th>SIP/Call Reference</th>
           <th>Audio</th>
+          <th>Recording</th>
           <th>Message</th>
           <th>Last Error</th>
         </tr>
@@ -466,6 +467,19 @@
               title="Play generated audio"
               aria-label="Play generated audio for queued message"
               onclick="window.__adminPlayQueueAudio('/admin/queue/audio/{{ item.id }}', this)"
+            >▶</button>
+            {% else %}
+            <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if item.recording_path %}
+            <button
+              type="button"
+              class="button button-secondary button-small"
+              title="Play call recording"
+              aria-label="Play call recording for queued message"
+              onclick="window.__adminPlayQueueAudio('/admin/queue/recording/{{ item.id }}', this)"
             >▶</button>
             {% else %}
             <span class="muted">—</span>
@@ -867,6 +881,7 @@
               <th>Next Attempt</th>
               <th>SIP/Call Reference</th>
               <th>Audio</th>
+              <th>Recording</th>
               <th>Body Preview</th>
               <th>Last Error</th>
             </tr>
@@ -892,6 +907,19 @@
                   title="Play generated audio"
                   aria-label="Play generated audio for queued message"
                   onclick="window.__adminPlayQueueAudio('/admin/queue/audio/{{ item.id }}', this)"
+                >▶</button>
+                {% else %}
+                <span class="muted">—</span>
+                {% endif %}
+              </td>
+              <td>
+                {% if item.recording_path %}
+                <button
+                  type="button"
+                  class="button button-secondary button-small"
+                  title="Play call recording"
+                  aria-label="Play call recording for queued message"
+                  onclick="window.__adminPlayQueueAudio('/admin/queue/recording/{{ item.id }}', this)"
                 >▶</button>
                 {% else %}
                 <span class="muted">—</span>
@@ -2279,7 +2307,7 @@
       if (!player || !url) return;
 
       if (button) {
-        document.querySelectorAll('[aria-label="Play generated audio for queued message"]').forEach((candidate) => {
+        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"]').forEach((candidate) => {
           if (candidate !== button) candidate.textContent = "▶";
         });
       }
@@ -2303,13 +2331,13 @@
 
       player.onended = function () {
         player.dataset.currentUrl = "";
-        document.querySelectorAll('[aria-label="Play generated audio for queued message"]').forEach((candidate) => {
+        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"]').forEach((candidate) => {
           candidate.textContent = "▶";
         });
       };
       player.onpause = function () {
         if (!player.dataset.currentUrl) return;
-        document.querySelectorAll('[aria-label="Play generated audio for queued message"]').forEach((candidate) => {
+        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"]').forEach((candidate) => {
           candidate.textContent = "▶";
         });
       };
@@ -2485,6 +2513,12 @@
                 itemId +
                 '\', this)">▶</button>'
               : '<span class="muted">—</span>';
+          const recordingButton =
+            item && item.recording_path
+              ? '<button type="button" class="button button-secondary button-small" title="Play call recording" aria-label="Play call recording for queued message" onclick="window.__adminPlayQueueAudio(\'/admin/queue/recording/' +
+                itemId +
+                '\', this)">▶</button>'
+              : '<span class="muted">—</span>';
 
           return (
             "<tr>" +
@@ -2498,6 +2532,7 @@
             '<td class="mono">' + nextAttempt + "</td>" +
             '<td class="mono">' + callReference + "</td>" +
             "<td>" + audioButton + "</td>" +
+            "<td>" + recordingButton + "</td>" +
             '<td class="message-preview">' + messagePreview + "</td>" +
             "<td>" + lastError + "</td>" +
             "</tr>"

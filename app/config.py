@@ -217,6 +217,9 @@ class Settings(BaseSettings):
     playback_repeats: int = 3     # how many times to repeat the OTP audio
     playback_pause_ms: int = 1500  # silence between repeats (ms)
 
+    # Call recording
+    enable_call_recording: bool = False
+
     # Reporting
     delivery_report_max_items: int = 1000
 

@@ -152,6 +152,7 @@ class QueueItem:
     sip_account_id: str = ""
     smpp_username: str = ""
     audio_path: str = ""
+    recording_path: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -180,6 +181,7 @@ class QueueItem:
             sip_account_id=_coerce_text(data.get("sip_account_id")),
             smpp_username=_coerce_text(data.get("smpp_username")),
             audio_path=_coerce_text(data.get("audio_path")),
+            recording_path=_coerce_text(data.get("recording_path")),
         )
 
 
@@ -409,6 +411,7 @@ class FileBackedQueueStore:
                     sip_account_id=existing.sip_account_id,
                     smpp_username=existing.smpp_username,
                     audio_path=existing.audio_path,
+                    recording_path=existing.recording_path,
                 )
                 updated += 1
             if updated:
@@ -448,6 +451,7 @@ class FileBackedQueueStore:
                     item.sip_call_id or "",
                     item.sip_account_id or "",
                     item.audio_path or "",
+                    item.recording_path or "",
                 ]
             ).lower():
                 continue
@@ -555,6 +559,7 @@ def record_queue_item(
     sip_call_id: str | None = None,
     sip_account_id: str = "",
     audio_path: str = "",
+    recording_path: str = "",
     smpp_username: str = "",
     item_id: str | None = None,
 ) -> QueueItem:
@@ -578,6 +583,7 @@ def record_queue_item(
         sip_account_id=sip_account_id,
         smpp_username=smpp_username,
         audio_path=audio_path,
+        recording_path=recording_path,
     )
     return get_queue_store(settings).upsert(item)
 

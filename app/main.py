@@ -430,25 +430,27 @@ def _build_live_call_context(settings: Settings) -> dict:
 
             destination_number = str(item.get("destination_number", "")).strip()
             account_id = str(item.get("account_id", "")).strip() or current_account_id or "unknown"
+            extension = str(item.get("remote_uri_user", "")).strip() or destination_number
             active_calls.append(
-                    {
-                        "channel": f"sip:{account_id}#{index}",
-                        "caller_id_num": "",
-                        "caller_id_name": account_id,
-                        "connected_line_num": destination_number,
-                        "connected_line_name": destination_number,
-                        "state": state,
-                        "state_label": status_meta["label"],
-                        "state_class": status_meta["class"],
-                        "extension": destination_number,
-                        "application": "direct-sip-ua",
-                        "duration": str(duration_seconds),
-                        "call_id": str(item.get("call_id", "")).strip(),
-                        "answered": bool(item.get("answered")),
-                        "last_status_code": int(item.get("last_status_code", 0) or 0),
-                        "hangup_at": hangup_at,
-                        "updated_at": updated_at,
-                    }
+                {
+                    "channel": f"sip:{account_id}#{index}",
+                    "caller_id_num": "",
+                    "caller_id_name": account_id,
+                    "connected_line_num": destination_number,
+                    "connected_line_name": destination_number,
+                    "state": state,
+                    "state_label": status_meta["label"],
+                    "state_class": status_meta["class"],
+                    "extension": extension,
+                    "destination_number": destination_number,
+                    "application": "direct-sip-ua",
+                    "duration": str(duration_seconds),
+                    "call_id": str(item.get("call_id", "")).strip(),
+                    "answered": bool(item.get("answered")),
+                    "last_status_code": int(item.get("last_status_code", 0) or 0),
+                    "hangup_at": hangup_at,
+                    "updated_at": updated_at,
+                }
             )
     elif total_active_calls > 0:
         for account_id, count in all_active_calls.items():
@@ -1118,6 +1120,7 @@ def _admin_context(
                 ("strip_call_prefix", "Strip Call Prefix"),
                 ("playback_repeats", "Playback Repeats"),
                 ("playback_pause_ms", "Playback Pause (ms)"),
+                ("enable_call_recording", "Enable Call Recording"),
             ],
         ),
         "security_settings": _build_setting_items(
@@ -1698,6 +1701,7 @@ async def admin_update_basic_config(
             "strip_call_prefix",
             "playback_repeats",
             "playback_pause_ms",
+            "enable_call_recording",
         ],
     )
     _record_admin_audit(
@@ -2186,6 +2190,39 @@ def _queue_audio_url(item: dict[str, object] | None) -> str:
     if not item_id or not audio_path:
         return ""
     return f"/admin/queue/audio/{item_id}"
+
+
+def _queue_recording_url(item: dict[str, object] | None) -> str:
+    if not item:
+        return ""
+    item_id = str(item.get("id", "")).strip()
+    recording_path = str(item.get("recording_path", "")).strip()
+    if not item_id or not recording_path:
+        return ""
+    return f"/admin/queue/recording/{item_id}"
+
+
+def _resolve_queue_media_path(settings: Settings, raw_media_path: str) -> Path:
+    media_path = Path(str(raw_media_path or "").strip())
+    if not media_path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Requested media path is empty")
+
+    if not media_path.is_absolute():
+        media_path = (BASE_DIR / media_path).resolve()
+    else:
+        media_path = media_path.resolve()
+
+    allowed_roots = [
+        (BASE_DIR / settings.audio_cache_dir).resolve(),
+        (BASE_DIR / "audio_cache").resolve(),
+        (BASE_DIR / "data").resolve(),
+        (BASE_DIR / "logs").resolve(),
+    ]
+    if not any(media_path.is_relative_to(root) for root in allowed_roots):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Media path is outside the allowed gateway directories")
+    if not media_path.exists() or not media_path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Requested media file was not found")
+    return media_path
 
 
 def _build_sip_test_payload(account: SIPAccount, result) -> dict:
@@ -2885,22 +2922,26 @@ async def admin_queue_audio(
     if not raw_audio_path:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Queue item has no generated audio")
 
-    audio_path = Path(raw_audio_path)
-    if not audio_path.is_absolute():
-        audio_path = (BASE_DIR / audio_path).resolve()
-    else:
-        audio_path = audio_path.resolve()
-
-    allowed_roots = [
-        (BASE_DIR / settings.audio_cache_dir).resolve(),
-        (BASE_DIR / "audio_cache").resolve(),
-    ]
-    if not any(audio_path.is_relative_to(root) for root in allowed_roots):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Audio path is outside the allowed cache directories")
-    if not audio_path.exists() or not audio_path.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Generated audio file not found")
-
+    audio_path = _resolve_queue_media_path(settings, raw_audio_path)
     return FileResponse(audio_path, media_type="audio/wav", filename=audio_path.name)
+
+
+@app.get("/admin/queue/recording/{item_id}")
+async def admin_queue_recording(
+    item_id: str,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    item = get_queue_item(settings, item_id)
+    if not item:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Queue item not found")
+
+    raw_recording_path = str(item.get("recording_path", "")).strip()
+    if not raw_recording_path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Queue item has no call recording")
+
+    recording_path = _resolve_queue_media_path(settings, raw_recording_path)
+    return FileResponse(recording_path, media_type="audio/wav", filename=recording_path.name)
 
 
 @app.get("/admin/tools/test-send/{job_id}")
@@ -2922,6 +2963,18 @@ async def admin_reports_live(
     report_summary, recent_reports = _report_context(settings)
     sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(settings)
     live_calls = _build_live_call_context(settings)
+    queue_items = []
+    for item in recent_queue_items.get("items", []):
+        enriched = dict(item)
+        enriched["audio_url"] = _queue_audio_url(item)
+        enriched["recording_url"] = _queue_recording_url(item)
+        queue_items.append(enriched)
+
+    recent_queue_items = {
+        **recent_queue_items,
+        "items": queue_items,
+    }
+
     return {
         "report_summary": report_summary,
         "recent_reports": recent_reports,
