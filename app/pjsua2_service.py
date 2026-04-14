@@ -569,7 +569,14 @@ class PJSipUASession:
                 try:
                     call_id = f"pj_{int(time.time() * 1000)}"
                     invite_uri = self._build_sip_uri(destination)
-                    callback = _CallCallbackHolder(self, account_id, call_id)
+                    callback = _CallCallbackHolder(
+                        self,
+                        account_id,
+                        call_id,
+                        audio_path=request.audio_path,
+                        repeat_count=request.playback_repeats,
+                        pause_ms=request.playback_pause_ms,
+                    )
                     call = self._account.makeCall(
                         invite_uri,
                         callback,
@@ -1185,10 +1192,22 @@ class _CallCallbackHolder:
         "CALL_DISCONNECTED",
     }
 
-    def __init__(self, session: PJSipUASession, account_id: str, call_id: str):
+    def __init__(
+        self,
+        session: PJSipUASession,
+        account_id: str,
+        call_id: str,
+        *,
+        audio_path: str = "",
+        repeat_count: int = 1,
+        pause_ms: int = 0,
+    ):
         self._session = session
         self._account_id = account_id
         self._call_id = call_id
+        self._audio_path = audio_path
+        self._repeat_count = max(1, int(repeat_count or 1))
+        self._pause_ms = max(0, int(pause_ms or 0))
         self._released = False
         self._lock = threading.Lock()
         self._done = threading.Event()
@@ -1197,6 +1216,10 @@ class _CallCallbackHolder:
         self._last_status_code = 0
         self._state_text = ""
         self._disconnect_reason = ""
+        self._player = None
+        self._playback_started = False
+        self._playback_finished = False
+        self._playback_error = ""
 
     def _release_slot(self) -> None:
         with self._lock:
@@ -1218,6 +1241,68 @@ class _CallCallbackHolder:
             _TRUNK_ACTIVE_CALLS.get(self._account_id, 0),
         )
         self._done.set()
+
+    def _start_playback_if_possible(self, call_obj: Any) -> None:
+        if self._playback_started or not self._audio_path:
+            return
+        audio_file = Path(self._audio_path)
+        if not audio_file.exists():
+            self._playback_error = f"Audio file does not exist: {self._audio_path}"
+            return
+
+        pj = self._session._pj
+        if pj is None:
+            self._playback_error = "PJSUA2 bindings are unavailable"
+            return
+
+        try:
+            self._session._register_current_thread()
+            player = pj.AudioMediaPlayer()
+            player.createPlayer(str(audio_file))
+            audio_media = call_obj.getAudioMedia(-1)
+            player.startTransmit(audio_media)
+            self._player = player
+            self._playback_started = True
+            log.info(
+                "Started SIP audio playback account=%s call_id=%s audio=%s repeats=%s pause_ms=%s",
+                self._account_id,
+                self._call_id,
+                str(audio_file),
+                self._repeat_count,
+                self._pause_ms,
+            )
+
+            def _play_and_hangup() -> None:
+                duration = max(0.0, _probe_audio_duration_seconds(audio_file))
+                total_duration = (duration * self._repeat_count) + ((self._pause_ms / 1000.0) * max(0, self._repeat_count - 1))
+                if total_duration > 0:
+                    time.sleep(total_duration + 0.5)
+                self._playback_finished = True
+                with suppress(Exception):
+                    prm = pj.CallOpParam()
+                    prm.statusCode = 200
+                    call_obj.hangup(prm)
+                self._disconnect_reason = self._disconnect_reason or "PLAYBACK_COMPLETE"
+                log.info(
+                    "Completed SIP audio playback and requested hangup account=%s call_id=%s duration=%ss",
+                    self._account_id,
+                    self._call_id,
+                    total_duration,
+                )
+
+            threading.Thread(target=_play_and_hangup, name=f"pjsua2-playback-{self._call_id}", daemon=True).start()
+        except Exception as exc:
+            self._playback_error = str(exc)
+            log.warning(
+                "Failed to start SIP audio playback account=%s call_id=%s: %s",
+                self._account_id,
+                self._call_id,
+                exc,
+            )
+            with suppress(Exception):
+                prm = pj.CallOpParam()
+                prm.statusCode = 500
+                call_obj.hangup(prm)
 
     def onCallState(self, *args: Any, **kwargs: Any) -> None:
         call_obj = args[0] if args else None
@@ -1273,18 +1358,18 @@ class _CallCallbackHolder:
                 last_status_code,
             )
 
-        if (
-            state_text.upper() == "CONFIRMED"
-            or state_name.upper() == "CONFIRMED"
-        ) and self._answered_at is None:
-            self._answered_at = time.time()
-            log.info(
-                "Outbound SIP call confirmed account=%s call_id=%s state=%s status=%s",
-                self._account_id,
-                self._call_id,
-                state_text or state_name,
-                last_status_code,
-            )
+        if state_text.upper() == "CONFIRMED" or state_name.upper() == "CONFIRMED":
+            if self._answered_at is None:
+                self._answered_at = time.time()
+                log.info(
+                    "Outbound SIP call confirmed account=%s call_id=%s state=%s status=%s",
+                    self._account_id,
+                    self._call_id,
+                    state_text or state_name,
+                    last_status_code,
+                )
+            if call_obj is not None:
+                self._start_playback_if_possible(call_obj)
 
         if (
             state_name in self._TERMINAL_STATES
@@ -1294,6 +1379,11 @@ class _CallCallbackHolder:
             self._disconnected_at = time.time()
             self._disconnect_reason = state_text or state_name or self._disconnect_reason
             self._release_slot()
+
+    def onCallMediaState(self, *args: Any, **kwargs: Any) -> None:
+        call_obj = args[0] if args else None
+        if self._answered_at is not None and call_obj is not None:
+            self._start_playback_if_possible(call_obj)
 
     def wait_for_completion(self, timeout_seconds: float) -> dict[str, Any]:
         deadline = time.time() + max(1.0, timeout_seconds)
@@ -1321,6 +1411,9 @@ class _CallCallbackHolder:
             "completed": self._done.is_set(),
             "answered_at": self._answered_at,
             "disconnected_at": self._disconnected_at,
+            "playback_started": self._playback_started,
+            "playback_finished": self._playback_finished,
+            "playback_error": self._playback_error,
         }
 
     def __getattr__(self, name: str) -> Any:
