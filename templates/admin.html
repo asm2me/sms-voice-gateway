@@ -364,45 +364,60 @@
     </div>
   </div>
 
-  <div class="filter-bar">
-    <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
-      <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
-      <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
-      <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
-      <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
-      <label class="field-group">
-        <span class="field-label">Queue Search</span>
-        <input type="text" name="search" value="{{ queue_filters.search }}" placeholder="Search queue items" />
-      </label>
-      <label class="field-group">
-        <span class="field-label">Status</span>
-        <input type="text" name="status" value="{{ queue_filters.status }}" placeholder="queued, delivered, failed" />
-      </label>
-      <label class="field-group">
-        <span class="field-label">Provider</span>
-        <input type="text" name="provider" value="{{ queue_filters.provider }}" placeholder="twilio, generic, admin-test" />
-      </label>
-      <button type="submit" class="button button-secondary">Apply Queue Filters</button>
-    </form>
-    <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
-      <input type="hidden" name="search" value="{{ queue_filters.search }}" />
-      <input type="hidden" name="status" value="{{ queue_filters.status }}" />
-      <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
-      <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
-      <label class="field-group">
-        <span class="field-label">Inbox Search</span>
-        <input type="text" name="inbox_search" value="{{ inbox_filters.search }}" placeholder="Search inbox messages" />
-      </label>
-      <label class="field-group">
-        <span class="field-label">Inbox Status</span>
-        <input type="text" name="inbox_status" value="{{ inbox_filters.status }}" placeholder="received" />
-      </label>
-      <label class="field-group">
-        <span class="field-label">Inbox Provider</span>
-        <input type="text" name="inbox_provider" value="{{ inbox_filters.provider }}" placeholder="smpp, twilio, generic" />
-      </label>
-      <button type="submit" class="button button-secondary">Apply Inbox Filters</button>
-    </form>
+  <div class="dockable-filter-grid">
+    <div class="table-filter-shell">
+      <button type="button" class="table-filter-button" data-table-filter-toggle="queue-filters">Queue filters</button>
+      <div class="dockable-filter-panel" id="queue-filters" data-table-filter-panel>
+        <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
+          <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
+          <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
+          <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
+          <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
+          <label class="field-group">
+            <span class="field-label">Queue Search</span>
+            <input type="text" name="search" value="{{ queue_filters.search }}" placeholder="Search queue items" />
+          </label>
+          <label class="field-group">
+            <span class="field-label">Status</span>
+            <input type="text" name="status" value="{{ queue_filters.status }}" placeholder="queued, delivered, failed" />
+          </label>
+          <label class="field-group">
+            <span class="field-label">Provider</span>
+            <input type="text" name="provider" value="{{ queue_filters.provider }}" placeholder="twilio, generic, admin-test" />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="button button-secondary">Apply Queue Filters</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="table-filter-shell">
+      <button type="button" class="table-filter-button" data-table-filter-toggle="inbox-filters">Inbox filters</button>
+      <div class="dockable-filter-panel" id="inbox-filters" data-table-filter-panel>
+        <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
+          <input type="hidden" name="search" value="{{ queue_filters.search }}" />
+          <input type="hidden" name="status" value="{{ queue_filters.status }}" />
+          <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
+          <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
+          <label class="field-group">
+            <span class="field-label">Inbox Search</span>
+            <input type="text" name="inbox_search" value="{{ inbox_filters.search }}" placeholder="Search inbox messages" />
+          </label>
+          <label class="field-group">
+            <span class="field-label">Inbox Status</span>
+            <input type="text" name="inbox_status" value="{{ inbox_filters.status }}" placeholder="received" />
+          </label>
+          <label class="field-group">
+            <span class="field-label">Inbox Provider</span>
+            <input type="text" name="inbox_provider" value="{{ inbox_filters.provider }}" placeholder="smpp, twilio, generic" />
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="button button-secondary">Apply Inbox Filters</button>
+          </div>
+        </form>
+      </div>
+    </div>
   </div>
 
   {% if recent_queue_items %}
@@ -508,7 +523,6 @@
           <th>Caller ID</th>
           <th>Connected Line</th>
           <th>State</th>
-          <th>Context</th>
           <th>Extension</th>
           <th>Application</th>
           <th>Duration</th>
@@ -521,7 +535,6 @@
           <td class="mono">{{ call.caller_id_num or call.caller_id_name or '—' }}</td>
           <td class="mono">{{ call.connected_line_num or call.connected_line_name or '—' }}</td>
           <td><span class="status-badge status-pending">{{ call.state or 'unknown' }}</span></td>
-          <td class="mono">{{ call.context or '—' }}</td>
           <td class="mono">{{ call.extension or '—' }}</td>
           <td>{{ call.application or '—' }}</td>
           <td class="mono">{{ call.duration or '—' }}</td>
@@ -550,6 +563,12 @@
 
   {% if recent_inbox_messages %}
   <form method="post" action="/admin/inbox/batch-delete" class="admin-form">
+    <div class="table-filter-shell">
+      <button type="button" class="table-filter-button" data-table-filter-toggle="inbox-table-filters">Inbox filters</button>
+      <div class="dockable-filter-panel" id="inbox-table-filters" data-table-filter-panel>
+        <div class="muted">Filters for this table remain docked here and hidden by default.</div>
+      </div>
+    </div>
     <div class="table-wrap">
     <table class="data-table inbox-table" id="inbox-table">
       <thead>
@@ -2539,7 +2558,6 @@
             (call && (call.connected_line_num || call.connected_line_name)) || "—"
           );
           const state = escapeHtml(call && call.state ? call.state : "unknown");
-          const context = escapeHtml(call && call.context ? call.context : "—");
           const extension = escapeHtml(call && call.extension ? call.extension : "—");
           const application = escapeHtml(call && call.application ? call.application : "—");
           const duration = escapeHtml(call && call.duration ? call.duration : "—");
@@ -2550,7 +2568,6 @@
             '<td class="mono">' + callerId + "</td>" +
             '<td class="mono">' + connectedLine + "</td>" +
             '<td><span class="status-badge status-pending">' + state + "</span></td>" +
-            '<td class="mono">' + context + "</td>" +
             '<td class="mono">' + extension + "</td>" +
             "<td>" + application + "</td>" +
             '<td class="mono">' + duration + "</td>" +
@@ -2917,6 +2934,16 @@
       window.__adminClearReportsLivePoll();
       window.__adminPollReportsLive();
     }
+
+    document.querySelectorAll("[data-table-filter-toggle]").forEach((button) => {
+      button.addEventListener("click", function () {
+        const targetId = button.getAttribute("data-table-filter-toggle");
+        const panel = targetId ? document.getElementById(targetId) : null;
+        if (!panel) return;
+        const isOpen = panel.classList.toggle("is-open");
+        button.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      });
+    });
   })();
 </script>
 

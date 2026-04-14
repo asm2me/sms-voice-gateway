@@ -431,25 +431,24 @@ def _build_live_call_context(settings: Settings) -> dict:
             destination_number = str(item.get("destination_number", "")).strip()
             account_id = str(item.get("account_id", "")).strip() or current_account_id or "unknown"
             active_calls.append(
-                {
-                    "channel": f"sip:{account_id}#{index}",
-                    "caller_id_num": "",
-                    "caller_id_name": account_id,
-                    "connected_line_num": destination_number,
-                    "connected_line_name": destination_number,
-                    "state": state,
-                    "state_label": status_meta["label"],
-                    "state_class": status_meta["class"],
-                    "context": "pjsua2",
-                    "extension": destination_number,
-                    "application": "direct-sip-ua",
-                    "duration": str(duration_seconds),
-                    "call_id": str(item.get("call_id", "")).strip(),
-                    "answered": bool(item.get("answered")),
-                    "last_status_code": int(item.get("last_status_code", 0) or 0),
-                    "hangup_at": hangup_at,
-                    "updated_at": updated_at,
-                }
+                    {
+                        "channel": f"sip:{account_id}#{index}",
+                        "caller_id_num": "",
+                        "caller_id_name": account_id,
+                        "connected_line_num": destination_number,
+                        "connected_line_name": destination_number,
+                        "state": state,
+                        "state_label": status_meta["label"],
+                        "state_class": status_meta["class"],
+                        "extension": destination_number,
+                        "application": "direct-sip-ua",
+                        "duration": str(duration_seconds),
+                        "call_id": str(item.get("call_id", "")).strip(),
+                        "answered": bool(item.get("answered")),
+                        "last_status_code": int(item.get("last_status_code", 0) or 0),
+                        "hangup_at": hangup_at,
+                        "updated_at": updated_at,
+                    }
             )
     elif total_active_calls > 0:
         for account_id, count in all_active_calls.items():
@@ -467,7 +466,6 @@ def _build_live_call_context(settings: Settings) -> dict:
                         "state": state,
                         "state_label": status_meta["label"],
                         "state_class": status_meta["class"],
-                        "context": "pjsua2",
                         "extension": "",
                         "application": "direct-sip-ua",
                         "duration": "",
@@ -477,20 +475,19 @@ def _build_live_call_context(settings: Settings) -> dict:
         state = "registered"
         status_meta = _live_call_status_meta(state)
         active_calls.append(
-            {
-                "channel": f"sip:{current_account_id}",
-                "caller_id_num": "",
-                "caller_id_name": current_account_id,
-                "connected_line_num": "",
-                "connected_line_name": "",
-                "state": state,
-                "state_label": status_meta["label"],
-                "state_class": status_meta["class"],
-                "context": "pjsua2",
-                "extension": "",
-                "application": "direct-sip-ua",
-                "duration": "",
-            }
+                {
+                    "channel": f"sip:{current_account_id}",
+                    "caller_id_num": "",
+                    "caller_id_name": current_account_id,
+                    "connected_line_num": "",
+                    "connected_line_name": "",
+                    "state": state,
+                    "state_label": status_meta["label"],
+                    "state_class": status_meta["class"],
+                    "extension": "",
+                    "application": "direct-sip-ua",
+                    "duration": "",
+                }
         )
 
     smpp_active_calls_by_user: list[dict] = []
