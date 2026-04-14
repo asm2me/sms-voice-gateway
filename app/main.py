@@ -135,6 +135,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
     latest.sip_call_id = result.sip_call_id or latest.sip_call_id
     latest.sip_account_id = result.sip_account_id or latest.sip_account_id
     latest.audio_path = result.audio_path or latest.audio_path
+    latest.recording_path = result.recording_path or latest.recording_path
 
     if result.success:
         latest.status = "read" if result.read else "delivered" if (result.delivered or result.answered or result.success) else "processed"
@@ -860,6 +861,7 @@ def _simulate_smpp_test_send(
         current_queue_item.sip_call_id = result.sip_call_id or getattr(current_queue_item, "sip_call_id", "")
         current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
         current_queue_item.audio_path = result.audio_path or getattr(current_queue_item, "audio_path", "")
+        current_queue_item.recording_path = result.recording_path or getattr(current_queue_item, "recording_path", "")
         queue_store.upsert(current_queue_item)
 
     _emit_smpp_receipt(
@@ -881,6 +883,7 @@ def _simulate_smpp_test_send(
             "ami_action_id": result.ami_action_id,
             "sip_call_id": result.sip_call_id,
             "sip_account_id": result.sip_account_id,
+            "recording_path": result.recording_path,
             "error": result.error,
             "delivered": result.delivered,
             "read": result.read,

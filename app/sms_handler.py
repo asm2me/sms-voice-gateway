@@ -52,6 +52,7 @@ class GatewayResult:
     phone_number: str = ""
     text_spoken: str = ""
     audio_path: str = ""
+    recording_path: str = ""
     was_cached: bool = False
     ami_action_id: str = ""
     sip_call_id: str = ""
@@ -285,6 +286,7 @@ class SMSGateway:
                     timeout_seconds=self.settings.call_answer_timeout,
                     playback_repeats=self.settings.playback_repeats,
                     playback_pause_ms=self.settings.playback_pause_ms,
+                    enable_recording=bool(getattr(self.settings, "enable_call_recording", False)),
                     extra_vars={
                         "OTP_TEXT": spoken_text[:80],
                         "SIP_ACCOUNT_ID": sip_account.id,
@@ -313,6 +315,7 @@ class SMSGateway:
                 },
             )
             sip_call_id = sip_result.call_id or sip_call_id
+            recording_path = sip_result.recording_path or ""
 
             if sip_result.success:
                 return GatewayResult(
@@ -323,6 +326,7 @@ class SMSGateway:
                     was_cached=was_cached,
                     sip_call_id=sip_call_id,
                     sip_account_id=sip_account_id,
+                    recording_path=recording_path,
                     delivered=bool(sip_result.delivered),
                     read=bool(sip_result.read),
                     answered=bool(sip_result.answered),
@@ -342,6 +346,7 @@ class SMSGateway:
                         "answered": bool(sip_result.answered),
                         "playback_seconds": float(sip_result.playback_seconds or 0.0),
                         "audio_duration_seconds": float(sip_result.audio_duration_seconds or 0.0),
+                        "recording_path": recording_path,
                     },
                 )
 
@@ -358,6 +363,7 @@ class SMSGateway:
                     was_cached=was_cached,
                     sip_call_id=sip_call_id,
                     sip_account_id=sip_account_id,
+                    recording_path=recording_path,
                     error=last_error,
                     details={
                         "pending_reason": pending_reason,
@@ -371,6 +377,7 @@ class SMSGateway:
                         "sip_account_id": sip_account_id,
                         "smpp_username": sms.smpp_username or "",
                         "smpp_retry_count": retry_count,
+                        "recording_path": recording_path,
                     },
                 )
 
@@ -406,6 +413,7 @@ class SMSGateway:
             was_cached=was_cached,
             sip_call_id=sip_call_id,
             sip_account_id=sip_account_id,
+            recording_path=recording_path,
             error=last_error or "Outbound voice call failed",
             details={
                 "pending_reason": _derive_pending_reason(stage="sip_trunk", detail=last_error or "outbound voice call failed"),
@@ -419,5 +427,6 @@ class SMSGateway:
                 "sip_account_id": sip_account_id,
                 "smpp_username": sms.smpp_username or "",
                 "smpp_retry_count": retry_count,
+                "recording_path": recording_path,
             },
         )

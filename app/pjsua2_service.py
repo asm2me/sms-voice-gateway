@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import wave
+import os
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -141,6 +142,7 @@ class SipCallRequest:
     timeout_seconds: int = 30
     playback_repeats: int = 1
     playback_pause_ms: int = 0
+    enable_recording: bool = False
     extra_vars: dict[str, str] = field(default_factory=dict)
 
 
@@ -152,6 +154,7 @@ class PJSUA2Result:
     destination_number: str = ""
     registered: bool = False
     audio_path: str = ""
+    recording_path: str = ""
     message: str = ""
     error: str = ""
     answered: bool = False
