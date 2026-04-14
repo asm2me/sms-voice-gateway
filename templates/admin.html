@@ -345,22 +345,22 @@
     </div>
   </div>
 
-  <div class="status-grid report-summary-grid">
+  <div class="status-grid report-summary-grid" id="live-queue-summary">
     <div class="stat-card">
       <span class="stat-label">Queue Total</span>
-      <strong>{{ queue_summary.total }}</strong>
+      <strong id="live-queue-total">{{ queue_summary.total }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Active</span>
-      <strong>{{ queue_summary.active_label or '0 active' }}</strong>
+      <strong id="live-queue-active">{{ queue_summary.active_label or '0 active' }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Inbox Total</span>
-      <strong>{{ sms_inbox_summary.total }}</strong>
+      <strong id="live-inbox-total">{{ sms_inbox_summary.total }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Latest Inbox</span>
-      <strong class="mono">{{ sms_inbox_summary.latest_timestamp or '—' }}</strong>
+      <strong class="mono" id="live-inbox-latest">{{ sms_inbox_summary.latest_timestamp or '—' }}</strong>
     </div>
   </div>
 
@@ -406,7 +406,7 @@
   </div>
 
   {% if recent_queue_items %}
-  <form method="post" action="/admin/queue/batch-delete" class="admin-form">
+  <form method="post" action="/admin/queue/batch-delete" class="admin-form" id="live-queue-form">
     <div class="form-actions">
       <button type="submit" class="button button-danger button-small">Delete Selected Queue Items</button>
       <button type="submit" formaction="/admin/queue/batch-status" class="button button-secondary button-small">Mark Selected as Processed</button>
@@ -464,6 +464,10 @@
       </table>
     </div>
   </form>
+  <div class="empty-state" id="live-queue-empty" style="display: none;">
+    <h3>No delivery queue items yet</h3>
+    <p>Queued voice delivery jobs and their statuses will appear here once traffic is processed.</p>
+  </div>
   <div class="pagination-row">
     <span class="muted">Page {{ queue_pagination.page }} of {{ queue_pagination.total_pages }}</span>
     <div class="page-actions">
@@ -476,7 +480,7 @@
     </div>
   </div>
   {% else %}
-  <div class="empty-state">
+  <div class="empty-state" id="live-queue-empty">
     <h3>No delivery queue items yet</h3>
     <p>Queued voice delivery jobs and their statuses will appear here once traffic is processed.</p>
   </div>
@@ -2388,6 +2392,158 @@
       }
     };
 
+  window.__adminReportsLiveState = window.__adminReportsLiveState || { timer: null, busy: false };
+
+  window.__adminClearReportsLivePoll =
+    window.__adminClearReportsLivePoll ||
+    function () {
+      const state = window.__adminReportsLiveState;
+      if (state && state.timer) {
+        window.clearTimeout(state.timer);
+        state.timer = null;
+      }
+      if (state) {
+        state.busy = false;
+      }
+    };
+
+  window.__adminRenderQueueSummary =
+    window.__adminRenderQueueSummary ||
+    function (payload) {
+      const queueSummary = payload && payload.queue_summary ? payload.queue_summary : {};
+      const inboxSummary = payload && payload.sms_inbox_summary ? payload.sms_inbox_summary : {};
+      const queueTotal = document.getElementById("live-queue-total");
+      const queueActive = document.getElementById("live-queue-active");
+      const inboxTotal = document.getElementById("live-inbox-total");
+      const inboxLatest = document.getElementById("live-inbox-latest");
+
+      if (queueTotal) queueTotal.textContent = String(queueSummary.total || 0);
+      if (queueActive) queueActive.textContent = String(queueSummary.active_label || "0 active");
+      if (inboxTotal) inboxTotal.textContent = String(inboxSummary.total || 0);
+      if (inboxLatest) inboxLatest.textContent = String(inboxSummary.latest_timestamp || "—");
+    };
+
+  window.__adminRenderQueueRows =
+    window.__adminRenderQueueRows ||
+    function (payload) {
+      const queueData = payload && payload.recent_queue_items ? payload.recent_queue_items : {};
+      const items = Array.isArray(queueData.items) ? queueData.items : [];
+      const body = document.getElementById("live-queue-body");
+      const emptyState = document.getElementById("live-queue-empty");
+      const form = document.getElementById("live-queue-form");
+      if (!body) return;
+
+      if (!items.length) {
+        body.innerHTML = "";
+        if (form) form.style.display = "none";
+        if (emptyState) emptyState.style.display = "";
+        return;
+      }
+
+      const rows = items
+        .map(function (item) {
+          const itemId = escapeHtml(item && item.id ? item.id : "");
+          const createdAt = escapeHtml(item && item.created_at ? item.created_at : "—");
+          const phoneNumber = escapeHtml(item && item.phone_number ? item.phone_number : "—");
+          const provider = escapeHtml(item && item.provider ? item.provider : "—");
+          const statusValue = escapeHtml(item && item.status ? item.status : "unknown");
+          const statusClass = escapeHtml(item && item.status_class ? item.status_class : "unknown");
+          const attempts = escapeHtml(String(item && item.attempts != null ? item.attempts : 0));
+          const maxAttempts = escapeHtml(String(item && item.max_attempts != null ? item.max_attempts : 0));
+          const retryInterval = escapeHtml(String(item && item.retry_interval_seconds != null ? item.retry_interval_seconds : 0));
+          const nextAttempt = escapeHtml(item && item.next_attempt_at ? item.next_attempt_at : "—");
+          const callReference = escapeHtml(
+            (item && (item.sip_call_id || item.sip_account_id || item.ami_action_id)) || "—"
+          );
+          const messagePreview = escapeHtml(
+            (item && (item.body_preview || item.body)) || "—"
+          );
+          const lastError = escapeHtml(item && item.last_error ? item.last_error : "—");
+          const audioButton =
+            item && item.audio_path
+              ? '<button type="button" class="button button-secondary button-small" title="Play generated audio" aria-label="Play generated audio for queued message" onclick="window.__adminPlayQueueAudio(\'/admin/queue/audio/' +
+                itemId +
+                '\', this)">▶</button>'
+              : '<span class="muted">—</span>';
+
+          return (
+            "<tr>" +
+            '<td><input type="checkbox" name="item_ids" value="' + itemId + '" /></td>' +
+            '<td class="mono">' + createdAt + "</td>" +
+            '<td class="mono">' + phoneNumber + "</td>" +
+            "<td>" + provider + "</td>" +
+            '<td><span class="status-badge status-' + statusClass + '">' + statusValue + "</span></td>" +
+            '<td class="mono">' + attempts + "/" + maxAttempts + "</td>" +
+            '<td class="mono">' + retryInterval + "s</td>" +
+            '<td class="mono">' + nextAttempt + "</td>" +
+            '<td class="mono">' + callReference + "</td>" +
+            "<td>" + audioButton + "</td>" +
+            '<td class="message-preview">' + messagePreview + "</td>" +
+            "<td>" + lastError + "</td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+
+      body.innerHTML = rows;
+      if (form) form.style.display = "";
+      if (emptyState) emptyState.style.display = "none";
+
+      document.querySelectorAll("tbody input[type='checkbox'][name='item_ids']").forEach((checkbox) => {
+        checkbox.addEventListener("change", function () {
+          const table = checkbox.closest("table");
+          if (!table || !table.id) return;
+          const sync = window.__adminSyncSelectAllState;
+          if (typeof sync === "function") sync(table.id);
+        });
+      });
+
+      document.querySelectorAll("input[type='checkbox'][data-select-all-target]").forEach((checkbox) => {
+        const tableId = checkbox.getAttribute("data-select-all-target");
+        if (tableId && typeof window.__adminSyncSelectAllState === "function") {
+          window.__adminSyncSelectAllState(tableId);
+        }
+      });
+    };
+
+  window.__adminPollReportsLive =
+    window.__adminPollReportsLive ||
+    async function () {
+      const state = window.__adminReportsLiveState;
+      if (!state || state.busy) return;
+      if (window.location.pathname.indexOf("/admin/reports") !== 0) return;
+
+      state.busy = true;
+      try {
+        const response = await fetch("/admin/reports/live", {
+          method: "GET",
+          credentials: "same-origin",
+          headers: {
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json",
+          },
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error((payload && payload.detail) || "Unable to refresh live queue data");
+        }
+
+        window.__adminRenderQueueSummary(payload);
+        window.__adminRenderQueueRows(payload);
+
+        const updatedAt = payload && payload.updated_at ? payload.updated_at : "";
+        if (updatedAt) {
+          const liveUpdatedAt = document.getElementById("live-updated-at");
+          if (liveUpdatedAt) liveUpdatedAt.textContent = updatedAt;
+        }
+      } catch (error) {
+        console.warn((error && error.message) || "Unable to refresh live queue data");
+      } finally {
+        state.busy = false;
+        state.timer = window.setTimeout(window.__adminPollReportsLive, 3000);
+      }
+    };
+
   (function () {
     const triggers = document.querySelectorAll(".js-sip-test-trigger");
     const providerTriggers = document.querySelectorAll(".js-provider-test-trigger");
@@ -2405,6 +2561,8 @@
       selectAll.checked = checkedCount > 0 && checkedCount === rowCheckboxes.length;
       selectAll.indeterminate = checkedCount > 0 && checkedCount < rowCheckboxes.length;
     }
+
+    window.__adminSyncSelectAllState = syncSelectAllState;
 
     selectAllCheckboxes.forEach((checkbox) => {
       checkbox.addEventListener("change", function () {
@@ -2695,6 +2853,11 @@
         syncSelectAllState(tableId);
       }
     });
+
+    if (window.location.pathname.indexOf("/admin/reports") === 0) {
+      window.__adminClearReportsLivePoll();
+      window.__adminPollReportsLive();
+    }
   })();
 </script>
 
