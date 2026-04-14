@@ -155,6 +155,7 @@ class PJSUA2UnavailableError(RuntimeError):
 
 _TRUNK_CONCURRENCY_LOCK = threading.RLock()
 _TRUNK_ACTIVE_CALLS: dict[str, int] = {}
+_TRUNK_CALL_STATES: dict[str, dict[str, Any]] = {}
 _PJSUA_GLOBAL_LOCK = threading.RLock()
 _PJSUA_GLOBAL_ENDPOINT = None
 _PJSUA_GLOBAL_TRANSPORT = None
@@ -768,6 +769,10 @@ class PJSipUASession:
             active_calls = _TRUNK_ACTIVE_CALLS.get(current_account_id, 0) if current_account_id else 0
             all_active_calls = dict(_TRUNK_ACTIVE_CALLS)
             total_active_calls = sum(int(value or 0) for value in all_active_calls.values())
+            active_call_items = [
+                dict(item)
+                for item in _TRUNK_CALL_STATES.values()
+            ]
         return {
             "available": self.available,
             "registered": self._registered,
@@ -778,6 +783,7 @@ class PJSipUASession:
             "active_calls": active_calls,
             "total_active_calls": total_active_calls,
             "all_active_calls": all_active_calls,
+            "active_call_items": active_call_items,
         }
 
     def _wait_for_registration(self, account: "_GatewayAccount", *, timeout_seconds: float = 10.0) -> dict[str, Any]:
@@ -1203,6 +1209,27 @@ class _CallCallbackHolder:
         self._state_text = ""
         self._disconnect_reason = ""
 
+    def _set_runtime_state(
+        self,
+        *,
+        state: str,
+        last_status_code: int = 0,
+        destination_number: str = "",
+    ) -> None:
+        with _TRUNK_CONCURRENCY_LOCK:
+            current = _TRUNK_CALL_STATES.get(self._call_id, {})
+            _TRUNK_CALL_STATES[self._call_id] = {
+                **current,
+                "call_id": self._call_id,
+                "account_id": self._account_id,
+                "state": str(state or "").strip(),
+                "last_status_code": int(last_status_code or 0),
+                "destination_number": destination_number or str(current.get("destination_number", "") or ""),
+                "answered": self._answered_at is not None,
+                "updated_at": time.time(),
+                "connected_at": self._answered_at,
+            }
+
     def _release_slot(self) -> None:
         with self._lock:
             if self._released:
@@ -1215,6 +1242,7 @@ class _CallCallbackHolder:
                 _TRUNK_ACTIVE_CALLS.pop(self._account_id, None)
             else:
                 _TRUNK_ACTIVE_CALLS[self._account_id] = current - 1
+            _TRUNK_CALL_STATES.pop(self._call_id, None)
 
         log.info(
             "Released SIP trunk concurrency slot account=%s call_id=%s active_calls=%s",
@@ -1235,6 +1263,7 @@ class _CallCallbackHolder:
         state_name = ""
         state_text = ""
         last_status_code = 0
+        remote_uri = ""
 
         if info_obj is not None:
             for attr in ("stateText", "state_text"):
@@ -1252,6 +1281,13 @@ class _CallCallbackHolder:
                         break
             self._last_status_code = last_status_code
 
+            for attr in ("remoteUri", "remote_uri"):
+                with suppress(Exception):
+                    value = getattr(info_obj, attr)
+                    if value is not None:
+                        remote_uri = str(value)
+                        break
+
             for attr in ("state", "callState", "call_state"):
                 with suppress(Exception):
                     value = getattr(info_obj, attr)
@@ -1260,6 +1296,16 @@ class _CallCallbackHolder:
                         break
 
         self._state_text = state_text or state_name or self._state_text
+        normalized_state = (state_text or state_name or "").strip()
+        if self._answered_at is not None and normalized_state.upper() == "CONFIRMED":
+            normalized_state = "ACTIVE"
+        elif normalized_state.upper() == "EARLY":
+            normalized_state = "RINGING"
+        self._set_runtime_state(
+            state=normalized_state or self._state_text,
+            last_status_code=last_status_code,
+            destination_number=_normalise_number(remote_uri) if remote_uri else "",
+        )
         log.info(
             "Outbound SIP call state account=%s call_id=%s state=%s status=%s",
             self._account_id,
@@ -1283,6 +1329,11 @@ class _CallCallbackHolder:
             or state_name.upper() == "CONFIRMED"
         ) and self._answered_at is None:
             self._answered_at = time.time()
+            self._set_runtime_state(
+                state="ACTIVE",
+                last_status_code=last_status_code,
+                destination_number=_normalise_number(remote_uri) if remote_uri else "",
+            )
             log.info(
                 "Outbound SIP call confirmed account=%s call_id=%s state=%s status=%s",
                 self._account_id,
