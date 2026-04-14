@@ -129,8 +129,11 @@ def _queue_retry(
     body: str,
     body_preview: str,
     attempts: int,
+    max_attempts: int,
+    retry_interval_seconds: int,
     last_error: str,
     sip_account_id: str | None = None,
+    smpp_username: str = "",
     audio_path: str = "",
 ) -> dict:
     store = get_queue_store(settings)
@@ -145,11 +148,12 @@ def _queue_retry(
         body_preview=body_preview[:160],
         status="retry_scheduled",
         attempts=attempts,
-        max_attempts=settings.delivery_retry_count + 1,
-        retry_interval_seconds=settings.delivery_retry_interval_seconds,
-        next_attempt_at=_schedule_next_attempt(settings.delivery_retry_interval_seconds),
+        max_attempts=max_attempts,
+        retry_interval_seconds=retry_interval_seconds,
+        next_attempt_at=_schedule_next_attempt(retry_interval_seconds),
         last_error=last_error,
         sip_account_id=sip_account_id or "",
+        smpp_username=smpp_username,
         audio_path=audio_path,
     )
     store.upsert(item)
@@ -378,8 +382,11 @@ class SMSGateway:
                     body=sms.body,
                     body_preview=spoken_text,
                     attempts=attempt,
+                    max_attempts=max_attempts,
+                    retry_interval_seconds=retry_interval_seconds,
                     last_error=pending_reason,
                     sip_account_id=sip_account_id,
+                    smpp_username=sms.smpp_username or "",
                     audio_path=audio_path,
                 )
                 log.info(

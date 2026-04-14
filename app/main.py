@@ -89,13 +89,91 @@ _admin_test_send_jobs: dict[str, dict[str, object]] = {}
 _admin_test_send_lock = threading.Lock()
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _queue_item_ready_for_retry(item, *, now: datetime) -> bool:
+    if str(getattr(item, "status", "")).strip().lower() != "retry_scheduled":
+        return False
+    next_attempt_at = _parse_iso_datetime(getattr(item, "next_attempt_at", None))
+    if next_attempt_at is None:
+        return True
+    return next_attempt_at <= now
+
+
+def _retry_queue_item(settings: Settings, item) -> None:
+    queue_store = get_queue_store(settings)
+    current = queue_store.get(item.id)
+    if current is None:
+        return
+
+    current.status = "processing"
+    current.updated_at = _utc_now_iso()
+    queue_store.upsert(current)
+
+    sms = IncomingSMS(
+        body=current.body,
+        destination=current.phone_number,
+        provider=current.provider,
+        smpp_username=current.smpp_username or "",
+    )
+    result = SMSGateway(settings).process(sms)
+
+    latest = queue_store.get(item.id)
+    if latest is None:
+        latest = current
+
+    latest.updated_at = _utc_now_iso()
+    latest.ami_action_id = result.ami_action_id or latest.ami_action_id
+    latest.sip_call_id = result.sip_call_id or latest.sip_call_id
+    latest.sip_account_id = result.sip_account_id or latest.sip_account_id
+    latest.audio_path = result.audio_path or latest.audio_path
+
+    if result.success:
+        latest.status = "read" if result.read else "delivered" if (result.delivered or result.answered or result.success) else "processed"
+        latest.last_error = ""
+    else:
+        latest.status = "failed"
+        latest.last_error = (result.details or {}).get("pending_reason") or result.error or latest.last_error
+    queue_store.upsert(latest)
+
+    _record_gateway_result(
+        current.provider or "retry-worker",
+        result,
+        phone_number=current.phone_number,
+        message=current.body[:120],
+    )
+    _emit_smpp_receipt(
+        smpp_username=current.smpp_username or "",
+        queue_item_id=current.id,
+        phone_number=current.phone_number,
+        message=current.body,
+        result=result,
+    )
+
+
 def _retry_worker_loop() -> None:
     while not _retry_worker_stop.is_set():
         try:
             settings = load_settings_from_store()
-            collector = get_delivery_report_collector(settings)
-            if hasattr(collector, "list_reports"):
-                pass
+            queue_store = get_queue_store(settings)
+            now = datetime.now(timezone.utc)
+            due_items = [
+                item
+                for item in queue_store.list_items(limit=getattr(settings, "delivery_report_max_items", 1000))
+                if _queue_item_ready_for_retry(item, now=now)
+            ]
+            for item in due_items:
+                if _retry_worker_stop.is_set():
+                    break
+                _retry_queue_item(settings, item)
         except Exception as exc:
             log.debug("Retry worker loop issue: %s", exc)
         _retry_worker_stop.wait(5)
@@ -758,6 +836,7 @@ def _simulate_smpp_test_send(
         provider=provider,
         body=body,
         status="queued",
+        smpp_username=smpp_username,
     )
     current_queue_item = queue_store.get(queue_item.id)
     if current_queue_item is not None:
