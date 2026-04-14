@@ -2925,9 +2925,49 @@
     <div>
       <p class="eyebrow">Audit</p>
       <h3 class="settings-group-title">Administrative activity</h3>
-      <p class="muted">All configuration changes, report operations, and runtime actions should be tracked through the audit trail.</p>
+      <p class="muted">Recent configuration changes, tools actions, and admin operations recorded by the gateway.</p>
     </div>
-    <span class="pill">Audit enabled</span>
+    <span class="pill">{{ audit_entries|length }} recent</span>
   </div>
+
+  {% if audit_entries %}
+  <div class="table-wrap">
+    <table class="data-table report-table">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Action</th>
+          <th>Section</th>
+          <th>Status</th>
+          <th>Actor</th>
+          <th>Target</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in audit_entries %}
+        <tr>
+          <td class="mono">{{ entry.timestamp }}</td>
+          <td class="mono">{{ entry.action or '—' }}</td>
+          <td>{{ entry.section or '—' }}</td>
+          <td>
+            <span class="status-badge status-{% if entry.status == 'error' %}danger{% elif entry.status in ['warning', 'pending'] %}pending{% else %}success{% endif %}">
+              {{ entry.status or 'unknown' }}
+            </span>
+          </td>
+          <td class="mono">{{ entry.actor or 'admin' }}</td>
+          <td class="mono">{{ entry.target or '—' }}</td>
+          <td>{{ entry.detail or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h3>No audit entries yet</h3>
+    <p>Administrative actions will appear here after configuration saves and tool operations.</p>
+  </div>
+  {% endif %}
 </footer>
 {% endblock %}

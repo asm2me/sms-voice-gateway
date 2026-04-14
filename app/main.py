@@ -38,6 +38,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import ClientDisconnect
 from pydantic import BaseModel
 
+from .admin_audit import list_audit_entries, record_audit_event
 from .admin_reports import (
     batch_delete_inbox_messages,
     batch_delete_queue_items,
@@ -309,23 +310,27 @@ def _build_live_call_context(settings: Settings) -> dict:
     active_calls: list[dict] = []
     current_account_id = status.get("current_account_id", "")
     active_call_count = int(status.get("active_calls", 0) or 0)
+    total_active_calls = int(status.get("total_active_calls", active_call_count) or 0)
+    all_active_calls = status.get("all_active_calls", {}) or {}
 
-    if active_call_count > 0:
-        for index in range(active_call_count):
-            active_calls.append(
-                {
-                    "channel": f"sip:{current_account_id or 'unknown'}#{index + 1}",
-                    "caller_id_num": "",
-                    "caller_id_name": current_account_id or "active-call",
-                    "connected_line_num": "",
-                    "connected_line_name": "",
-                    "state": "active",
-                    "context": "pjsua2",
-                    "extension": "",
-                    "application": "direct-sip-ua",
-                    "duration": "",
-                }
-            )
+    if total_active_calls > 0:
+        for account_id, count in all_active_calls.items():
+            normalized_count = max(0, int(count or 0))
+            for index in range(normalized_count):
+                active_calls.append(
+                    {
+                        "channel": f"sip:{account_id or 'unknown'}#{index + 1}",
+                        "caller_id_num": "",
+                        "caller_id_name": account_id or "active-call",
+                        "connected_line_num": "",
+                        "connected_line_name": "",
+                        "state": "active",
+                        "context": "pjsua2",
+                        "extension": "",
+                        "application": "direct-sip-ua",
+                        "duration": "",
+                    }
+                )
     elif current_account_id and status.get("registered"):
         active_calls.append(
             {
@@ -362,7 +367,7 @@ def _build_live_call_context(settings: Settings) -> dict:
             )
 
     return {
-        "active_count": active_call_count,
+        "active_count": total_active_calls,
         "items": active_calls,
         "smpp_active_calls_by_user": smpp_active_calls_by_user,
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
@@ -370,12 +375,24 @@ def _build_live_call_context(settings: Settings) -> dict:
         "available": status.get("available", False),
         "registered": status.get("registered", False),
         "import_error": status.get("import_error", ""),
+        "current_account_id": current_account_id,
+        "all_active_calls": all_active_calls,
     }
 
 
 def _record_gateway_result(provider: str, result, *, phone_number: str = "", message: str = "") -> None:
     try:
-        status_value = "read" if getattr(result, "read", False) else "delivered" if getattr(result, "delivered", False) else "error"
+        status_value = (
+            "read"
+            if getattr(result, "read", False)
+            else "delivered"
+            if (
+                getattr(result, "delivered", False)
+                or getattr(result, "answered", False)
+                or getattr(result, "success", False)
+            )
+            else "error"
+        )
         record_delivery_report(
             dep_settings(),
             status=status_value,
@@ -690,8 +707,8 @@ def _simulate_smpp_test_send(
     current_queue_item = queue_store.get(queue_item.id)
     if current_queue_item is not None:
         current_queue_item.updated_at = _utc_now_iso()
-        current_queue_item.status = "read" if result.read else "delivered" if result.delivered else "queued"
-        current_queue_item.last_error = "" if result.success else result.error or "Test send failed"
+        current_queue_item.status = "read" if result.read else "delivered" if result.delivered or result.answered or result.success else "queued"
+        current_queue_item.last_error = ""
         current_queue_item.ami_action_id = result.ami_action_id or getattr(current_queue_item, "ami_action_id", "")
         current_queue_item.sip_call_id = result.sip_call_id or getattr(current_queue_item, "sip_call_id", "")
         current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
@@ -856,6 +873,33 @@ def _build_sip_trunk_health_context(settings: Settings) -> dict:
         "registered": len(registered) > 0,
         "import_error": "",
     }
+
+
+def _record_admin_audit(
+    *,
+    action: str,
+    section: str,
+    detail: str,
+    status: str = "success",
+    request: Request | None = None,
+    target: str = "",
+    metadata: dict | None = None,
+) -> None:
+    try:
+        actor = "admin"
+        if request is not None:
+            actor = request.headers.get("x-forwarded-user") or request.client.host or "admin"
+        record_audit_event(
+            action=action,
+            section=section,
+            detail=detail,
+            status=status,
+            actor=actor,
+            target=target,
+            metadata=metadata or {},
+        )
+    except Exception as exc:
+        log.debug("Unable to record admin audit event: %s", exc)
 
 
 def _normalize_message_level(message_level: str | None) -> str:
@@ -1040,6 +1084,7 @@ def _admin_context(
             "body": str((tools_form_values or {}).get("body", "")),
             "provider": str((tools_form_values or {}).get("provider", "admin-test")).strip() or "admin-test",
         },
+        "audit_entries": list_audit_entries(limit=20),
     }
     if success_message:
         context["success_message"] = success_message
@@ -1503,6 +1548,13 @@ async def admin_update_basic_config(
             "playback_pause_ms",
         ],
     )
+    _record_admin_audit(
+        request=request,
+        action="config.basic.save",
+        section="config",
+        detail="Saved core voice routing settings from the admin portal.",
+        target="basic-settings",
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -1591,6 +1643,14 @@ async def admin_update_advanced_config(
             app.state.smpp_service = failed_service
             smpp_message = f" SMPP listener could not start: {exc}."
 
+    _record_admin_audit(
+        request=request,
+        action="config.advanced.save",
+        section="config",
+        detail=f"Saved advanced configuration from the admin portal.{smpp_message}".strip(),
+        target="advanced-settings",
+        metadata={"smpp_enabled": settings.smpp_enabled, "smpp_host": settings.smpp_host, "smpp_port": settings.smpp_port},
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",
@@ -2411,6 +2471,15 @@ async def admin_tools_test_send(
         else "success"
     )
 
+    _record_admin_audit(
+        request=request,
+        action="tools.test_send",
+        section="tools",
+        detail=final_message,
+        status="error" if final_status == "failed" else "success",
+        target=phone_number,
+        metadata={"smpp_username": smpp_username, "provider": provider, "job_id": job_id, "job_status": final_status},
+    )
     return templates.TemplateResponse(
         request,
         "admin.html",

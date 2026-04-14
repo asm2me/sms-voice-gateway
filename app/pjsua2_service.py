@@ -634,7 +634,7 @@ class PJSipUASession:
                     disconnect_reason = str(call_outcome.get("disconnect_reason") or "")
                     last_status_code = int(call_outcome.get("last_status_code") or 0)
                     remote_hangup_after_answer = answered and last_status_code == 200 and disconnect_reason.upper() == "DISCONNECTED"
-                    delivered = answered and not remote_hangup_after_answer
+                    delivered = answered
                     read = delivered and audio_duration_seconds > 0 and playback_seconds >= (audio_duration_seconds * 0.5)
 
                     return PJSUA2Result(
@@ -668,6 +668,7 @@ class PJSipUASession:
                             "caller_id": request.caller_id or self._current_profile.caller_id,
                             "extra_vars": request.extra_vars,
                             "active_calls": _TRUNK_ACTIVE_CALLS.get(account_id, 0),
+                            "all_active_calls": dict(_TRUNK_ACTIVE_CALLS),
                             "concurrency_limit": concurrency_limit,
                             "answered": answered,
                             "delivered": delivered,
@@ -765,6 +766,8 @@ class PJSipUASession:
         current_account_id = self._current_profile.id if self._current_profile else ""
         with _TRUNK_CONCURRENCY_LOCK:
             active_calls = _TRUNK_ACTIVE_CALLS.get(current_account_id, 0) if current_account_id else 0
+            all_active_calls = dict(_TRUNK_ACTIVE_CALLS)
+            total_active_calls = sum(int(value or 0) for value in all_active_calls.values())
         return {
             "available": self.available,
             "registered": self._registered,
@@ -773,6 +776,8 @@ class PJSipUASession:
             "has_endpoint": self._endpoint is not None,
             "has_call": self._last_call is not None,
             "active_calls": active_calls,
+            "total_active_calls": total_active_calls,
+            "all_active_calls": all_active_calls,
         }
 
     def _wait_for_registration(self, account: "_GatewayAccount", *, timeout_seconds: float = 10.0) -> dict[str, Any]:
