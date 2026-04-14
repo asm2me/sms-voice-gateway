@@ -534,8 +534,8 @@
           <td class="mono">{{ call.channel or '—' }}</td>
           <td class="mono">{{ call.caller_id_num or call.caller_id_name or '—' }}</td>
           <td class="mono">{{ call.connected_line_num or call.connected_line_name or '—' }}</td>
-          <td><span class="status-badge status-pending">{{ call.state or 'unknown' }}</span></td>
-          <td class="mono">{{ call.extension or '—' }}</td>
+          <td><span class="status-badge status-{{ call.state_class or 'unknown' }}">{{ call.state_label or call.state or 'unknown' }}</span></td>
+          <td class="mono">{{ call.extension or call.connected_line_num or call.connected_line_name or '—' }}</td>
           <td>{{ call.application or '—' }}</td>
           <td class="mono">{{ call.duration or '—' }}</td>
         </tr>
@@ -2442,8 +2442,12 @@
   window.__adminRenderQueueRows =
     window.__adminRenderQueueRows ||
     function (payload) {
-      const queueData = payload && payload.recent_queue_items ? payload.recent_queue_items : {};
-      const items = Array.isArray(queueData.items) ? queueData.items : [];
+      const queueData = payload && payload.recent_queue_items ? payload.recent_queue_items : [];
+      const items = Array.isArray(queueData)
+        ? queueData
+        : Array.isArray(queueData.items)
+        ? queueData.items
+        : [];
       const body = document.getElementById("live-queue-body");
       const emptyState = document.getElementById("live-queue-empty");
       const form = document.getElementById("live-queue-form");
@@ -2557,8 +2561,15 @@
           const connectedLine = escapeHtml(
             (call && (call.connected_line_num || call.connected_line_name)) || "—"
           );
-          const state = escapeHtml(call && call.state ? call.state : "unknown");
-          const extension = escapeHtml(call && call.extension ? call.extension : "—");
+          const state = escapeHtml(
+            (call && (call.state_label || call.state)) ? (call.state_label || call.state) : "unknown"
+          );
+          const stateClass = escapeHtml(
+            (call && call.state_class) ? call.state_class : "unknown"
+          );
+          const extension = escapeHtml(
+            (call && (call.extension || call.connected_line_num || call.connected_line_name)) || "—"
+          );
           const application = escapeHtml(call && call.application ? call.application : "—");
           const duration = escapeHtml(call && call.duration ? call.duration : "—");
 
@@ -2567,7 +2578,7 @@
             '<td class="mono">' + channel + "</td>" +
             '<td class="mono">' + callerId + "</td>" +
             '<td class="mono">' + connectedLine + "</td>" +
-            '<td><span class="status-badge status-pending">' + state + "</span></td>" +
+            '<td><span class="status-badge status-' + stateClass + '">' + state + "</span></td>" +
             '<td class="mono">' + extension + "</td>" +
             "<td>" + application + "</td>" +
             '<td class="mono">' + duration + "</td>" +
