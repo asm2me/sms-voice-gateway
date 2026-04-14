@@ -1472,11 +1472,7 @@ class _CallCallbackHolder:
             self._player_media = player_media
             self._playback_started = True
             self._playback_started_at = time.time()
-            self._playback_finished_at = (
-                self._playback_started_at + self._playback_audio_duration_seconds
-                if self._playback_audio_duration_seconds > 0
-                else None
-            )
+            self._playback_finished_at = None
 
             log.info(
                 "Outbound SIP playback started account=%s call_id=%s path=%s duration=%.3f repeats=%s pause_ms=%s",
@@ -1638,6 +1634,7 @@ class _CallCallbackHolder:
                     self._playback_finished_at is not None
                     and not self._playback_hangup_requested
                     and not self._done.is_set()
+                    and time.time() >= (self._playback_finished_at + 0.25)
                 ):
                     self._playback_hangup_requested = True
                     call_obj = getattr(self._session, "_last_call", None)
