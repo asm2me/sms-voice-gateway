@@ -317,8 +317,12 @@ class PJSipUASession:
 
                 with suppress(Exception):
                     aud_mgr = ep.audDevManager()
-                    if hasattr(aud_mgr, "setNullDev"):
+                    use_null_sound_device = bool(getattr(self.settings, "use_null_sound_device", True))
+                    if use_null_sound_device and hasattr(aud_mgr, "setNullDev"):
                         aud_mgr.setNullDev()
+                    elif hasattr(aud_mgr, "setNullDev"):
+                        with suppress(Exception):
+                            aud_mgr.setNullDev()
 
                 _PJSUA_GLOBAL_ENDPOINT = ep
                 _PJSUA_GLOBAL_TRANSPORT = transport

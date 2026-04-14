@@ -217,6 +217,9 @@ class Settings(BaseSettings):
     playback_repeats: int = 3     # how many times to repeat the OTP audio
     playback_pause_ms: int = 1500  # silence between repeats (ms)
 
+    # Call audio / media device
+    use_null_sound_device: bool = True
+
     # Call recording
     enable_call_recording: bool = False
 
