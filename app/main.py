@@ -1547,6 +1547,13 @@ async def admin_portal(
     elif request.url.path.endswith("/tools"):
         section = "tools"
 
+    _record_admin_audit(
+        request=request,
+        action="admin.view",
+        section=section,
+        detail=f"Viewed the '{section}' admin section.",
+        target=request.url.path,
+    )
     context = _admin_context(request, settings, active_section=section)
     return templates.TemplateResponse(request, "admin.html", context)
 
@@ -1798,6 +1805,14 @@ async def admin_test_provider_config(
             key_ok, key_detail = _validate_elevenlabs_api_key(test_settings.elevenlabs_api_key or "")
             if not key_ok:
                 _append_admin_log(f"Provider test failed provider={provider_name} error={key_detail}")
+                _record_admin_audit(
+                    request=request,
+                    action="tools.provider_test",
+                    section="tools",
+                    detail=f"Provider test failed for '{provider_name}': {key_detail}",
+                    status="error",
+                    target=provider_name,
+                )
                 return JSONResponse(
                     _provider_test_payload(
                         provider_name,
@@ -1813,6 +1828,15 @@ async def admin_test_provider_config(
         _append_admin_log(
             f"Provider test finished ok provider={provider_name} cached={was_cached} audio_path={audio_path}"
         )
+        _record_admin_audit(
+            request=request,
+            action="tools.provider_test",
+            section="tools",
+            detail=f"Provider test succeeded for '{provider_name}' (cached={'yes' if was_cached else 'no'}).",
+            status="success",
+            target=provider_name,
+            metadata={"cached": bool(was_cached), "audio_path": str(audio_path)},
+        )
         return JSONResponse(
             _provider_test_payload(
                 provider_name,
@@ -1823,6 +1847,14 @@ async def admin_test_provider_config(
         )
     except Exception as exc:
         _append_admin_log(f"Provider test failed provider={provider_name} error={exc}")
+        _record_admin_audit(
+            request=request,
+            action="tools.provider_test",
+            section="tools",
+            detail=f"Provider test failed for '{provider_name}': {exc}",
+            status="error",
+            target=provider_name,
+        )
         return JSONResponse(
             _provider_test_payload(
                 provider_name,
@@ -2404,6 +2436,15 @@ async def admin_tools_tts_preview(
         _append_admin_log(
             f"Tools tts-preview finished ok provider={settings.tts_provider} cached={was_cached} audio_path={audio_path}"
         )
+        _record_admin_audit(
+            request=request,
+            action="tools.tts_preview",
+            section="tools",
+            detail=f"TTS preview generated using provider '{settings.tts_provider}' (cached={'yes' if was_cached else 'no'}).",
+            status="success",
+            target=settings.tts_provider,
+            metadata={"cached": bool(was_cached), "audio_path": str(audio_path)},
+        )
         return JSONResponse(
             {
                 "success": True,
@@ -2416,6 +2457,14 @@ async def admin_tools_tts_preview(
     except Exception as exc:
         _append_admin_log(
             f"Tools tts-preview failed provider={settings.tts_provider} error={exc}"
+        )
+        _record_admin_audit(
+            request=request,
+            action="tools.tts_preview",
+            section="tools",
+            detail=f"TTS preview failed using provider '{settings.tts_provider}': {exc}",
+            status="error",
+            target=settings.tts_provider,
         )
         return JSONResponse(
             {
@@ -2533,6 +2582,15 @@ async def admin_tools_test_send(
     is_async_request = requested_with == "xmlhttprequest" or accepts_json
 
     if is_async_request:
+        _record_admin_audit(
+            request=request,
+            action="tools.test_send",
+            section="tools",
+            detail=response_payload["message"],
+            status="success",
+            target=phone_number,
+            metadata={"smpp_username": smpp_username, "provider": provider, "job_id": job_id, "job_status": "queued"},
+        )
         return JSONResponse(response_payload, status_code=status.HTTP_202_ACCEPTED)
 
     final_job = _wait_for_admin_test_send_job(job_id, timeout_seconds=6.0) or response_payload
