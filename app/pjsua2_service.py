@@ -251,7 +251,7 @@ class PJSipUASession:
             )
 
     def _register_current_thread(self) -> None:
-        if self._pj is None or self._endpoint is None:
+        if self._pj is None:
             return
         thread_id = threading.get_ident()
         if thread_id in _PJSUA_REGISTERED_THREADS:
@@ -263,17 +263,22 @@ class PJSipUASession:
         except Exception:
             desc = [0] * 64
         name = f"py-{thread_id}"[:31]
-        with suppress(Exception):
-            self._endpoint.libRegisterThread(name)
-            _PJSUA_REGISTERED_THREADS.add(thread_id)
-            return
+
+        if self._endpoint is not None:
+            with suppress(Exception):
+                self._endpoint.libRegisterThread(name)
+                _PJSUA_REGISTERED_THREADS.add(thread_id)
+                return
+
         with suppress(Exception):
             self._pj.threadRegister(name, desc)
             _PJSUA_REGISTERED_THREADS.add(thread_id)
+            return
 
     def initialize(self) -> PJSUA2RegistrationResult:
         global _PJSUA_GLOBAL_ENDPOINT, _PJSUA_GLOBAL_TRANSPORT
 
+        self._register_current_thread()
         with self._lock:
             if not self.available:
                 return PJSUA2RegistrationResult(
@@ -411,6 +416,7 @@ class PJSipUASession:
         )
 
     def register_account(self, profile: SipAccountProfile | dict[str, Any]) -> PJSUA2RegistrationResult:
+        self._register_current_thread()
         with self._lock:
             try:
                 pj = self._pj
@@ -560,6 +566,7 @@ class PJSipUASession:
         *,
         profile: SipAccountProfile | dict[str, Any] | None = None,
     ) -> PJSUA2Result:
+        self._register_current_thread()
         with self._lock:
             if isinstance(request, dict):
                 request = SipCallRequest(
