@@ -622,7 +622,7 @@ def _build_sip_account_from_form(form) -> SIPAccount:
         from_domain=str(form.get("from_domain", "")).strip(),
         enabled=_form_bool(form, "enabled"),
         default_for_outbound=_form_bool(form, "default_for_outbound"),
-        register=_form_bool(form, "register"),
+        register_enabled=_form_bool(form, "register"),
         outbound_proxy=str(form.get("outbound_proxy", "")).strip(),
         concurrency_limit=max(1, int(concurrency_limit_raw or "1")),
         preferred_codecs=_parse_codec_list(str(form.get("preferred_codecs", "")).strip()),
@@ -806,7 +806,7 @@ def _build_sip_trunk_health_context(settings: Settings) -> dict:
     accounts = list(settings.sip_accounts or [])
     total = len(accounts)
     enabled = [account for account in accounts if account.enabled]
-    registered = [account for account in enabled if account.register]
+    registered = [account for account in enabled if account.register_enabled]
     default_account = next((account for account in accounts if account.default_for_outbound), None)
     active_account = default_account or next((account for account in enabled), None)
 
@@ -814,7 +814,7 @@ def _build_sip_trunk_health_context(settings: Settings) -> dict:
     dependencies: list[dict] = []
 
     for account in accounts:
-        status_ok = bool(account.enabled) and (not account.register or bool(account.host or account.domain))
+        status_ok = bool(account.enabled) and (not account.register_enabled or bool(account.host or account.domain))
         status_class = "success" if status_ok else "warning" if account.enabled else "danger"
         status_label = "Healthy" if status_ok else "Degraded" if account.enabled else "Disabled"
         summary_bits = []
@@ -824,7 +824,7 @@ def _build_sip_trunk_health_context(settings: Settings) -> dict:
             summary_bits.append(account.domain)
         else:
             summary_bits.append("No host configured")
-        if account.register:
+        if account.register_enabled:
             summary_bits.append("registration on")
         else:
             summary_bits.append("registration off")
@@ -838,7 +838,7 @@ def _build_sip_trunk_health_context(settings: Settings) -> dict:
                 "details": [
                     f"Account ID: {account.id}",
                     f"Enabled: {'yes' if account.enabled else 'no'}",
-                    f"Register: {'yes' if account.register else 'no'}",
+                    f"Register: {'yes' if account.register_enabled else 'no'}",
                     f"Host: {account.host or '—'}",
                     f"Domain: {account.domain or '—'}",
                     f"Username: {account.username or '—'}",
@@ -2018,7 +2018,7 @@ def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
             "host": (account.host or "").strip(),
             "port": account.port,
             "from_domain": (account.from_domain or "").strip(),
-            "register": bool(account.register),
+            "register": bool(account.register_enabled),
             "preferred_codecs": list(account.preferred_codecs or []),
         },
     )
@@ -2059,7 +2059,7 @@ def _build_sip_test_payload(account: SIPAccount, result) -> dict:
     tooltip_parts = [
         f"account={account.id}",
         f"host={account.host or account.domain or '—'}",
-        f"mode={probe_mode or ('register' if account.register else 'prepare')}",
+        f"mode={probe_mode or ('register' if account.register_enabled else 'prepare')}",
     ]
     if status_code:
         tooltip_parts.append(f"status={status_code}")
@@ -2080,8 +2080,8 @@ def _build_sip_test_payload(account: SIPAccount, result) -> dict:
             "error": error,
             "status_code": status_code,
             "status_text": status_text,
-            "probe_mode": probe_mode or ("register" if account.register else "prepare"),
-            "register_enabled": bool(account.register),
+            "probe_mode": probe_mode or ("register" if account.register_enabled else "prepare"),
+            "register_enabled": bool(account.register_enabled),
             "host": account.host or "",
             "domain": account.domain or "",
             "transport": account.transport,
@@ -2112,7 +2112,7 @@ async def admin_test_sip_account_connection(
         from_domain=str(payload.get("from_domain", "")).strip(),
         enabled=str(payload.get("enabled", "true")).strip().lower() in {"1", "true", "yes", "on"},
         default_for_outbound=str(payload.get("default_for_outbound", "false")).strip().lower() in {"1", "true", "yes", "on"},
-        register=str(payload.get("register", "true")).strip().lower() in {"1", "true", "yes", "on"},
+        register_enabled=str(payload.get("register", "true")).strip().lower() in {"1", "true", "yes", "on"},
         outbound_proxy=str(payload.get("outbound_proxy", "")).strip(),
         concurrency_limit=max(
             1,

@@ -21,7 +21,7 @@ class SIPAccount(BaseModel):
     from_domain: str = ""
     enabled: bool = True
     default_for_outbound: bool = False
-    register: bool = True
+    register_enabled: bool = Field(default=True, alias="register", validation_alias="register", serialization_alias="register")
     outbound_proxy: str = ""
     concurrency_limit: int = 1
     preferred_codecs: list[str] = Field(default_factory=list)

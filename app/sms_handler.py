@@ -304,7 +304,7 @@ class SMSGateway:
                         "host": sip_account.host,
                         "port": sip_account.port,
                         "from_domain": sip_account.from_domain,
-                        "register": sip_account.register,
+                        "register": sip_account.register_enabled,
                     },
                 },
             )
