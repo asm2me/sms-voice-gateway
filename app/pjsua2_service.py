@@ -1299,6 +1299,7 @@ class _CallCallbackHolder:
         self._playback_repeat_count = 1
         self._playback_pause_ms = 0
         self._playback_started = False
+        self._playback_pending = False
         self._playback_error = ""
         self._player = None
         self._player_media = None
@@ -1591,8 +1592,8 @@ class _CallCallbackHolder:
                 state_text or state_name,
                 last_status_code,
             )
-            if call_obj is not None:
-                self._try_start_playback(call_obj)
+            if call_obj is not None and not self._playback_started:
+                self._playback_pending = True
 
         if (
             state_name in self._TERMINAL_STATES
@@ -1610,6 +1611,11 @@ class _CallCallbackHolder:
                 endpoint = self._session._endpoint
                 if endpoint is not None:
                     endpoint.libHandleEvents(50)
+            if self._playback_pending and not self._playback_started:
+                self._playback_pending = False
+                call_obj = getattr(self._session, "_last_call", None)
+                if call_obj is not None:
+                    self._try_start_playback(call_obj)
             if self._done.wait(0.1):
                 break
 
@@ -1645,6 +1651,7 @@ class _CallCallbackHolder:
             "answered_at": self._answered_at,
             "disconnected_at": self._disconnected_at,
             "playback_started": self._playback_started,
+            "playback_pending": self._playback_pending,
             "playback_error": self._playback_error,
             "playback_started_at": self._playback_started_at,
             "playback_finished_at": self._playback_finished_at,
