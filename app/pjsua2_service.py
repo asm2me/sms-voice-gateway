@@ -1206,6 +1206,15 @@ class _CallCallbackHolder:
         "disconnected",
         "CALL_DISCONNECTED",
     }
+    _ACTIVE_STATES = {
+        "ACTIVE",
+        "ANSWERED",
+        "CONFIRMED",
+        "CONNECTED",
+        "CALLING",
+        "EARLY",
+        "RINGING",
+    }
 
     def __init__(self, session: PJSipUASession, account_id: str, call_id: str):
         self._session = session
@@ -1231,14 +1240,17 @@ class _CallCallbackHolder:
             current = _TRUNK_CALL_STATES.get(self._call_id, {})
             now = time.time()
             normalized_state = str(state or "").strip()
+            destination_value = destination_number or str(current.get("destination_number", "") or "")
             _TRUNK_CALL_STATES[self._call_id] = {
                 **current,
                 "call_id": self._call_id,
                 "account_id": self._account_id,
                 "state": normalized_state,
+                "state_label": normalized_state or str(current.get("state_label", "") or ""),
                 "last_status_code": int(last_status_code or 0),
-                "destination_number": destination_number or str(current.get("destination_number", "") or ""),
-                "answered": self._answered_at is not None or normalized_state.upper() in {"ACTIVE", "ANSWERED", "CONFIRMED"},
+                "destination_number": destination_value,
+                "extension": str(current.get("extension") or destination_value or ""),
+                "answered": self._answered_at is not None or normalized_state.upper() in self._ACTIVE_STATES,
                 "updated_at": now,
                 "connected_at": self._answered_at,
                 "hangup_at": current.get("hangup_at"),
@@ -1331,10 +1343,13 @@ class _CallCallbackHolder:
             normalized_state = "ACTIVE"
         elif normalized_state.upper() == "EARLY":
             normalized_state = "RINGING"
+        if self._answered_at is not None and normalized_state.upper() in {"DIALING", "CALLING"}:
+            normalized_state = "ACTIVE"
+        extension_value = _normalise_number(remote_uri) if remote_uri else ""
         self._set_runtime_state(
             state=normalized_state or self._state_text,
             last_status_code=last_status_code,
-            destination_number=_normalise_number(remote_uri) if remote_uri else "",
+            destination_number=extension_value,
         )
         log.info(
             "Outbound SIP call state account=%s call_id=%s state=%s status=%s",
