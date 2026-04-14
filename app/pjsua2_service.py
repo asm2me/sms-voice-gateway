@@ -668,9 +668,10 @@ class PJSipUASession:
                     audio_duration_seconds = float(playback_result.audio_duration_seconds or 0.0)
                     disconnect_reason = str(call_outcome.get("disconnect_reason") or "")
                     last_status_code = int(call_outcome.get("last_status_code") or 0)
-                    remote_hangup_after_answer = answered and last_status_code == 200 and disconnect_reason.upper() == "DISCONNECTED"
-                    delivered = answered
+
+                    delivered = answered and bool(playback_result.success)
                     read = delivered and audio_duration_seconds > 0 and playback_seconds >= (audio_duration_seconds * 0.5)
+                    remote_hangup_after_answer = answered and last_status_code == 200 and disconnect_reason.upper() == "DISCONNECTED"
 
                     return PJSUA2Result(
                         success=delivered,
@@ -683,7 +684,7 @@ class PJSipUASession:
                             "Outbound SIP call answered and playback completed"
                             if read
                             else "Outbound SIP call answered"
-                            if delivered
+                            if answered
                             else "Outbound SIP call was not answered"
                         ),
                         answered=answered,
@@ -697,6 +698,7 @@ class PJSipUASession:
                                 "playback_seconds": playback_seconds,
                                 "read_threshold_seconds": audio_duration_seconds * 0.5 if audio_duration_seconds > 0 else 0.0,
                             },
+                            "playback_prepared": bool(playback_result.success),
                             "call_state": str(call_outcome.get("state_text") or "completed"),
                             "remote_hangup_after_answer": remote_hangup_after_answer,
                             "display_name": request.display_name,
