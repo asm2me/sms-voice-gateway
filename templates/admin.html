@@ -500,8 +500,7 @@
     </div>
   </div>
 
-  {% if live_calls["items"] %}
-  <div class="table-wrap">
+  <div class="table-wrap" id="live-calls-table-wrap" {% if not live_calls["items"] %}style="display: none;"{% endif %}>
     <table class="data-table live-calls-table">
       <thead>
         <tr>
@@ -531,12 +530,10 @@
       </tbody>
     </table>
   </div>
-  {% else %}
-  <div class="empty-state" id="live-calls-empty">
+  <div class="empty-state" id="live-calls-empty" {% if live_calls["items"] %}style="display: none;"{% endif %}>
     <h3>No active calls right now</h3>
     <p>Active outbound SIP sessions will appear here automatically while calls are in progress.</p>
   </div>
-  {% endif %}
 </section>
 
 <section class="card inbox-queue-panel">
@@ -2506,6 +2503,67 @@
       });
     };
 
+  window.__adminRenderLiveCalls =
+    window.__adminRenderLiveCalls ||
+    function (payload) {
+      const liveCalls = payload && payload.live_calls ? payload.live_calls : {};
+      const items = Array.isArray(liveCalls.items) ? liveCalls.items : [];
+      const countBadge = document.getElementById("live-calls-count");
+      const updatedAtBadge = document.getElementById("live-updated-at");
+      const body = document.getElementById("live-calls-body");
+      const emptyState = document.getElementById("live-calls-empty");
+      const tableWrap = document.getElementById("live-calls-table-wrap");
+
+      if (countBadge) {
+        countBadge.textContent = String(liveCalls.active_count != null ? liveCalls.active_count : items.length) + " active";
+      }
+      if (updatedAtBadge && liveCalls.updated_at) {
+        updatedAtBadge.textContent = String(liveCalls.updated_at);
+      }
+      if (!body) return;
+
+      if (!items.length) {
+        body.innerHTML = "";
+        if (tableWrap) tableWrap.style.display = "none";
+        if (emptyState) emptyState.style.display = "";
+        return;
+      }
+
+      const rows = items
+        .map(function (call) {
+          const channel = escapeHtml(call && call.channel ? call.channel : "—");
+          const callerId = escapeHtml(
+            (call && (call.caller_id_num || call.caller_id_name)) || "—"
+          );
+          const connectedLine = escapeHtml(
+            (call && (call.connected_line_num || call.connected_line_name)) || "—"
+          );
+          const state = escapeHtml(call && call.state ? call.state : "unknown");
+          const context = escapeHtml(call && call.context ? call.context : "—");
+          const extension = escapeHtml(call && call.extension ? call.extension : "—");
+          const application = escapeHtml(call && call.application ? call.application : "—");
+          const duration = escapeHtml(call && call.duration ? call.duration : "—");
+
+          return (
+            "<tr>" +
+            '<td class="mono">' + channel + "</td>" +
+            '<td class="mono">' + callerId + "</td>" +
+            '<td class="mono">' + connectedLine + "</td>" +
+            '<td><span class="status-badge status-pending">' + state + "</span></td>" +
+            '<td class="mono">' + context + "</td>" +
+            '<td class="mono">' + extension + "</td>" +
+            "<td>" + application + "</td>" +
+            '<td class="mono">' + duration + "</td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+
+      body.innerHTML = rows;
+      if (tableWrap) tableWrap.style.display = "";
+      if (emptyState) emptyState.style.display = "none";
+    };
+
   window.__adminPollReportsLive =
     window.__adminPollReportsLive ||
     async function () {
@@ -2530,6 +2588,7 @@
 
         window.__adminRenderQueueSummary(payload);
         window.__adminRenderQueueRows(payload);
+        window.__adminRenderLiveCalls(payload);
 
         const updatedAt = payload && payload.updated_at ? payload.updated_at : "";
         if (updatedAt) {
