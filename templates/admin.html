@@ -523,7 +523,7 @@
           <th>Caller ID</th>
           <th>Connected Line</th>
           <th>State</th>
-          <th>Extension</th>
+          <th>Destination</th>
           <th>Application</th>
           <th>Duration</th>
         </tr>
@@ -535,7 +535,7 @@
           <td class="mono">{{ call.caller_id_num or call.caller_id_name or '—' }}</td>
           <td class="mono">{{ call.connected_line_num or call.connected_line_name or '—' }}</td>
           <td><span class="status-badge status-{{ call.state_class or 'unknown' }}">{{ call.state_label or call.state or 'unknown' }}</span></td>
-          <td class="mono">{{ call.extension or call.connected_line_num or call.connected_line_name or '—' }}</td>
+          <td class="mono">{{ call.destination_number or call.connected_line_num or call.connected_line_name or '—' }}</td>
           <td>{{ call.application or '—' }}</td>
           <td class="mono">{{ call.duration or '—' }}</td>
         </tr>
@@ -2567,8 +2567,8 @@
           const stateClass = escapeHtml(
             (call && call.state_class) ? call.state_class : "unknown"
           );
-          const extension = escapeHtml(
-            (call && (call.extension || call.connected_line_num || call.connected_line_name)) || "—"
+          const destination = escapeHtml(
+            (call && (call.destination_number || call.connected_line_num || call.connected_line_name)) || "—"
           );
           const application = escapeHtml(call && call.application ? call.application : "—");
           const duration = escapeHtml(call && call.duration ? call.duration : "—");
@@ -2579,7 +2579,7 @@
             '<td class="mono">' + callerId + "</td>" +
             '<td class="mono">' + connectedLine + "</td>" +
             '<td><span class="status-badge status-' + stateClass + '">' + state + "</span></td>" +
-            '<td class="mono">' + extension + "</td>" +
+            '<td class="mono">' + destination + "</td>" +
             "<td>" + application + "</td>" +
             '<td class="mono">' + duration + "</td>" +
             "</tr>"

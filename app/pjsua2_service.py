@@ -50,6 +50,36 @@ def _normalise_number(raw: str) -> str:
     return cleaned
 
 
+def _extract_sip_user(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"^[a-zA-Z]+:", "", text)
+    text = text.strip("<>\"' ")
+    if ";" in text:
+        text = text.split(";", 1)[0]
+    if "?" in text:
+        text = text.split("?", 1)[0]
+    if "@" in text:
+        text = text.split("@", 1)[0]
+    text = text.strip()
+    if ":" in text and not text.startswith("+"):
+        text = text.rsplit(":", 1)[-1]
+    return text.strip()
+
+
+def _extract_display_destination(raw: str) -> str:
+    candidate = _extract_sip_user(raw)
+    if not candidate:
+        return ""
+    try:
+        return _normalise_number(candidate)
+    except Exception:
+        return candidate[:64]
+
+
+
+
 def _host_with_port(host: str, port: int | str | None) -> str:
     host = (host or "").strip()
     if not host:
@@ -1249,7 +1279,6 @@ class _CallCallbackHolder:
                 "state_label": normalized_state or str(current.get("state_label", "") or ""),
                 "last_status_code": int(last_status_code or 0),
                 "destination_number": destination_value,
-                "extension": str(current.get("extension") or destination_value or ""),
                 "answered": self._answered_at is not None or normalized_state.upper() in self._ACTIVE_STATES,
                 "updated_at": now,
                 "connected_at": self._answered_at,
@@ -1345,11 +1374,11 @@ class _CallCallbackHolder:
             normalized_state = "RINGING"
         if self._answered_at is not None and normalized_state.upper() in {"DIALING", "CALLING"}:
             normalized_state = "ACTIVE"
-        extension_value = _normalise_number(remote_uri) if remote_uri else ""
+        destination_value = _extract_display_destination(remote_uri) if remote_uri else ""
         self._set_runtime_state(
             state=normalized_state or self._state_text,
             last_status_code=last_status_code,
-            destination_number=extension_value,
+            destination_number=destination_value,
         )
         log.info(
             "Outbound SIP call state account=%s call_id=%s state=%s status=%s",
@@ -1364,7 +1393,7 @@ class _CallCallbackHolder:
             self._set_runtime_state(
                 state="ANSWERED",
                 last_status_code=last_status_code,
-                destination_number=_normalise_number(remote_uri) if remote_uri else "",
+                destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
             )
             log.info(
                 "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s",
@@ -1382,7 +1411,7 @@ class _CallCallbackHolder:
             self._set_runtime_state(
                 state="ACTIVE",
                 last_status_code=last_status_code,
-                destination_number=_normalise_number(remote_uri) if remote_uri else "",
+                destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
             )
             log.info(
                 "Outbound SIP call confirmed account=%s call_id=%s state=%s status=%s",
