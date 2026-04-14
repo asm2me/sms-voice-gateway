@@ -252,7 +252,6 @@ class SMSGateway:
         sip_call_id = ""
         sip_account = self._resolve_sip_account(sms)
         sip_account_id = sip_account.id if sip_account else ""
-        attempt = 1
 
         if sip_account is None:
             return GatewayResult(
@@ -271,104 +270,126 @@ class SMSGateway:
                 },
             )
 
-        sip_result = self.sip_ua.place_outbound_call(
-            SipCallRequest(
-                destination_number=phone,
-                audio_path=audio_path,
-                account_id=sip_account.id,
-                display_name=sip_account.display_name or sip_account.label,
-                caller_id=sip_account.from_user or self.settings.outbound_caller_id,
-                timeout_seconds=self.settings.call_answer_timeout,
-                playback_repeats=self.settings.playback_repeats,
-                playback_pause_ms=self.settings.playback_pause_ms,
-                extra_vars={
-                    "OTP_TEXT": spoken_text[:80],
-                    "SIP_ACCOUNT_ID": sip_account.id,
-                    "SMPP_USERNAME": sms.smpp_username or "",
-                },
-            ),
-            profile={
-                "id": sip_account.id,
-                "display_name": sip_account.display_name or sip_account.label,
-                "domain": sip_account.domain or sip_account.host,
-                "host": sip_account.host,
-                "port": sip_account.port,
-                "username": sip_account.username,
-                "password": sip_account.password,
-                "transport": (sip_account.transport or "udp").upper(),
-                "caller_id": sip_account.from_user or self.settings.outbound_caller_id,
-                "enabled": sip_account.enabled,
-                "proxy_uri": sip_account.outbound_proxy,
-                "concurrency_limit": sip_account.concurrency_limit,
-                "extra": {
+        for attempt in range(1, max_attempts + 1):
+            sip_result = self.sip_ua.place_outbound_call(
+                SipCallRequest(
+                    destination_number=phone,
+                    audio_path=audio_path,
+                    account_id=sip_account.id,
+                    display_name=sip_account.display_name or sip_account.label,
+                    caller_id=sip_account.from_user or self.settings.outbound_caller_id,
+                    timeout_seconds=self.settings.call_answer_timeout,
+                    playback_repeats=self.settings.playback_repeats,
+                    playback_pause_ms=self.settings.playback_pause_ms,
+                    extra_vars={
+                        "OTP_TEXT": spoken_text[:80],
+                        "SIP_ACCOUNT_ID": sip_account.id,
+                        "SMPP_USERNAME": sms.smpp_username or "",
+                    },
+                ),
+                profile={
+                    "id": sip_account.id,
+                    "display_name": sip_account.display_name or sip_account.label,
+                    "domain": sip_account.domain or sip_account.host,
                     "host": sip_account.host,
                     "port": sip_account.port,
-                    "from_domain": sip_account.from_domain,
-                    "register": sip_account.register,
-                },
-            },
-        )
-        sip_call_id = sip_result.call_id or sip_call_id
-
-        if sip_result.success:
-            return GatewayResult(
-                success=True,
-                phone_number=phone,
-                text_spoken=spoken_text,
-                audio_path=audio_path,
-                was_cached=was_cached,
-                sip_call_id=sip_call_id,
-                sip_account_id=sip_account_id,
-                delivered=bool(sip_result.delivered),
-                read=bool(sip_result.read),
-                answered=bool(sip_result.answered),
-                details={
-                    "transport": "sip-ua",
-                    "sip_result": sip_result.details,
-                    "tts_cached": was_cached,
-                    "hash": hkey,
-                    "rate_counts": {} if bypass_rate_limit else self.rate_limiter.get_counts(phone),
-                    "attempts": attempt,
-                    "max_attempts": max_attempts,
-                    "retry_interval_seconds": retry_interval_seconds,
-                    "sip_account_id": sip_account_id,
-                    "smpp_username": sms.smpp_username or "",
-                    "delivery_state": "DELIVRD" if sip_result.delivered else "UNDELIV",
-                    "read_state": "READ" if sip_result.read else "UNREAD",
-                    "answered": bool(sip_result.answered),
-                    "playback_seconds": float(sip_result.playback_seconds or 0.0),
-                    "audio_duration_seconds": float(sip_result.audio_duration_seconds or 0.0),
+                    "username": sip_account.username,
+                    "password": sip_account.password,
+                    "transport": (sip_account.transport or "udp").upper(),
+                    "caller_id": sip_account.from_user or self.settings.outbound_caller_id,
+                    "enabled": sip_account.enabled,
+                    "proxy_uri": sip_account.outbound_proxy,
+                    "concurrency_limit": sip_account.concurrency_limit,
+                    "extra": {
+                        "host": sip_account.host,
+                        "port": sip_account.port,
+                        "from_domain": sip_account.from_domain,
+                        "register": sip_account.register,
+                    },
                 },
             )
+            sip_call_id = sip_result.call_id or sip_call_id
 
-        last_error = sip_result.error or sip_result.message or "Outbound voice call failed"
-        pending_reason = _derive_pending_reason(stage="sip_trunk", detail=last_error)
-        log.warning("Outbound voice attempt %d/%d failed for %s via %s: %s", attempt, max_attempts, phone, sip_account_id, last_error)
+            if sip_result.success:
+                return GatewayResult(
+                    success=True,
+                    phone_number=phone,
+                    text_spoken=spoken_text,
+                    audio_path=audio_path,
+                    was_cached=was_cached,
+                    sip_call_id=sip_call_id,
+                    sip_account_id=sip_account_id,
+                    delivered=bool(sip_result.delivered),
+                    read=bool(sip_result.read),
+                    answered=bool(sip_result.answered),
+                    details={
+                        "transport": "sip-ua",
+                        "sip_result": sip_result.details,
+                        "tts_cached": was_cached,
+                        "hash": hkey,
+                        "rate_counts": {} if bypass_rate_limit else self.rate_limiter.get_counts(phone),
+                        "attempts": attempt,
+                        "max_attempts": max_attempts,
+                        "retry_interval_seconds": retry_interval_seconds,
+                        "sip_account_id": sip_account_id,
+                        "smpp_username": sms.smpp_username or "",
+                        "delivery_state": "DELIVRD" if sip_result.delivered else "UNDELIV",
+                        "read_state": "READ" if sip_result.read else "UNREAD",
+                        "answered": bool(sip_result.answered),
+                        "playback_seconds": float(sip_result.playback_seconds or 0.0),
+                        "audio_duration_seconds": float(sip_result.audio_duration_seconds or 0.0),
+                    },
+                )
 
-        if "concurrency limit reached" in last_error.lower():
-            return GatewayResult(
-                success=False,
-                phone_number=phone,
-                text_spoken=spoken_text,
-                audio_path=audio_path,
-                was_cached=was_cached,
-                sip_call_id=sip_call_id,
-                sip_account_id=sip_account_id,
-                error=last_error,
-                details={
-                    "pending_reason": pending_reason,
-                    "sip_result": sip_result.details,
-                    "tts_cached": was_cached,
-                    "hash": hkey,
-                    "rate_counts": {} if bypass_rate_limit else self.rate_limiter.get_counts(phone),
-                    "attempts": attempt,
-                    "max_attempts": max_attempts,
-                    "retry_interval_seconds": retry_interval_seconds,
-                    "sip_account_id": sip_account_id,
-                    "smpp_username": sms.smpp_username or "",
-                    "smpp_retry_count": retry_count,
-                },
-            )
+            last_error = sip_result.error or sip_result.message or "Outbound voice call failed"
+            pending_reason = _derive_pending_reason(stage="sip_trunk", detail=last_error)
+            log.warning("Outbound voice attempt %d/%d failed for %s via %s: %s", attempt, max_attempts, phone, sip_account_id, last_error)
+
+            if "concurrency limit reached" in last_error.lower():
+                return GatewayResult(
+                    success=False,
+                    phone_number=phone,
+                    text_spoken=spoken_text,
+                    audio_path=audio_path,
+                    was_cached=was_cached,
+                    sip_call_id=sip_call_id,
+                    sip_account_id=sip_account_id,
+                    error=last_error,
+                    details={
+                        "pending_reason": pending_reason,
+                        "sip_result": sip_result.details,
+                        "tts_cached": was_cached,
+                        "hash": hkey,
+                        "rate_counts": {} if bypass_rate_limit else self.rate_limiter.get_counts(phone),
+                        "attempts": attempt,
+                        "max_attempts": max_attempts,
+                        "retry_interval_seconds": retry_interval_seconds,
+                        "sip_account_id": sip_account_id,
+                        "smpp_username": sms.smpp_username or "",
+                        "smpp_retry_count": retry_count,
+                    },
+                )
+
+            if attempt < max_attempts:
+                retry_snapshot = _queue_retry(
+                    self.settings,
+                    phone_number=phone,
+                    provider=sms.provider,
+                    body=sms.body,
+                    body_preview=spoken_text,
+                    attempts=attempt,
+                    last_error=pending_reason,
+                    sip_account_id=sip_account_id,
+                    audio_path=audio_path,
+                )
+                log.info(
+                    "Retry scheduled for %s in %ss (attempt=%d/%d, queue_id=%s)",
+                    phone,
+                    retry_interval_seconds,
+                    attempt,
+                    max_attempts,
+                    retry_snapshot.get("id", ""),
+                )
 
         return GatewayResult(
             success=False,
