@@ -459,6 +459,7 @@ class PJSipUASession:
                     self._account = None
                     self._registered = False
                     self._last_call = None
+                    self._current_profile = None
 
                 if self._endpoint is None:
                     init_result = self.initialize()
@@ -528,24 +529,22 @@ class PJSipUASession:
                         },
                     )
 
-                options_result = self._send_options_probe(selected)
-                self._registered = False
+                self._registered = True
                 return PJSUA2RegistrationResult(
-                    success=bool(options_result.get("success")),
+                    success=True,
                     account_id=selected.id,
-                    message=str(options_result.get("message") or ""),
-                    error=str(options_result.get("error") or ""),
-                    status_code=int(options_result.get("status_code") or 0),
-                    status_text=str(options_result.get("status_text") or ""),
-                    probe_mode="options",
-                    options_sent=bool(options_result.get("options_sent")),
+                    message="SIP account prepared for direct outbound use without trunk registration",
+                    status_code=200,
+                    status_text="OK",
+                    probe_mode="prepare",
                     details={
                         "id_uri": account_cfg.idUri,
                         "registrar_uri": registrar_uri,
                         "username": selected.username,
                         "transport": selected.transport,
                         "register_on_add": False,
-                        "options_target": options_result.get("target", ""),
+                        "options_target": registrar_uri,
+                        "prepared_for_direct_outbound": True,
                     },
                 )
             except Exception as exc:
