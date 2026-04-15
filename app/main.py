@@ -3212,7 +3212,11 @@ async def health(settings: Settings = Depends(dep_settings)):
         log.debug("Redis health check failed: %s", e)
 
     sip_status = build_pjsua2_service(settings).status_detail()
-    sip_ok = bool(sip_status.get("registered"))
+    sip_ok = bool(sip_status.get("registered")) or (
+        bool(sip_status.get("available"))
+        and bool(getattr(settings, "sip_accounts", []))
+        and any(not bool(account.register_enabled) for account in getattr(settings, "sip_accounts", []))
+    )
     sip_trunks = _build_sip_trunk_health_context(settings)
     healthy = sip_ok and redis_ok
     return JSONResponse(
