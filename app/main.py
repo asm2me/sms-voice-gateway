@@ -67,7 +67,7 @@ from .config_store import (
     save_settings_to_store,
 )
 from .pjsua2_service import SipAccountProfile, build_pjsua2_service
-from .sms_handler import IncomingSMS, SMSGateway, _utc_now_iso
+from .sms_handler import IncomingSMS, SMSGateway, _schedule_next_attempt, _utc_now_iso
 from .smpp_service import SMPPService
 from .tts_service import TTSService
 
@@ -124,7 +124,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
         provider=current.provider,
         smpp_username=current.smpp_username or "",
     )
-    result = SMSGateway(settings).process(sms)
+    result = SMSGateway(settings).process(sms, queue_retries=False)
 
     latest = queue_store.get(item.id)
     if latest is None:
@@ -141,8 +141,14 @@ def _retry_queue_item(settings: Settings, item) -> None:
         latest.status = "read" if result.read else "delivered" if (result.delivered or result.answered or result.success) else "processed"
         latest.last_error = ""
     else:
-        latest.status = "failed"
         latest.last_error = (result.details or {}).get("pending_reason") or result.error or latest.last_error
+        next_attempt = (latest.attempts or 0) + 1
+        if latest.max_attempts > 0 and next_attempt < latest.max_attempts:
+            latest.status = "retry_scheduled"
+            latest.attempts = next_attempt
+            latest.next_attempt_at = _schedule_next_attempt(latest.retry_interval_seconds or 0)
+        else:
+            latest.status = "failed"
     queue_store.upsert(latest)
 
     _record_gateway_result(

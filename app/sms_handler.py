@@ -187,7 +187,7 @@ class SMSGateway:
             None,
         )
 
-    def process(self, sms: IncomingSMS) -> GatewayResult:
+    def process(self, sms: IncomingSMS, *, queue_retries: bool = True) -> GatewayResult:
         try:
             phone, spoken_text = extract_destination(sms)
         except ValueError as exc:
@@ -381,7 +381,7 @@ class SMSGateway:
                     },
                 )
 
-            if attempt < max_attempts:
+            if attempt < max_attempts and queue_retries:
                 retry_snapshot = _queue_retry(
                     self.settings,
                     phone_number=phone,
