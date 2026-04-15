@@ -271,7 +271,10 @@ class PJSipUASession:
                 return
 
         with suppress(Exception):
-            self._pj.threadRegister(name, desc)
+            if hasattr(self._pj, "threadRegister"):
+                self._pj.threadRegister(name, desc)
+            elif hasattr(self._pj, "libRegisterThread"):
+                self._pj.libRegisterThread(name)
             _PJSUA_REGISTERED_THREADS.add(thread_id)
             return
 
@@ -325,6 +328,15 @@ class PJSipUASession:
                     ep.libInit(ep_cfg)
 
                 transport_cfg = pj.TransportConfig()
+                with suppress(Exception):
+                    transport_cfg.port = int(getattr(self.settings, "sip_port", 0) or 0)
+                with suppress(Exception):
+                    transport_cfg.port = int(getattr(self.settings, "sip_listen_port", transport_cfg.port) or transport_cfg.port)
+                if not getattr(transport_cfg, "port", 0):
+                    with suppress(Exception):
+                        transport_cfg.port = int(getattr(self._current_profile, "port", 0) or 0)
+                if not getattr(transport_cfg, "port", 0):
+                    transport_cfg.port = 5060
                 local_transport_port = 0
                 with suppress(Exception):
                     transport_cfg.port = local_transport_port
@@ -1578,6 +1590,10 @@ class _CallCallbackHolder:
                 last_status_code=last_status_code,
                 destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
             )
+            with suppress(Exception):
+                call_media = call_obj.getAudioMedia(-1) if call_obj is not None else None
+                if call_media is not None:
+                    self._try_start_playback(call_obj)
             log.info(
                 "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s scheduled_hangup_at=%s playback_duration=%.3f",
                 self._account_id,
@@ -1588,26 +1604,27 @@ class _CallCallbackHolder:
                 self._playback_audio_duration_seconds,
             )
 
-        if (
-            state_text.upper() == "CONFIRMED"
-            or state_name.upper() == "CONFIRMED"
-        ):
-            if self._answered_at is None:
-                self._answered_at = time.time()
-                self._set_runtime_state(
-                    state="ACTIVE",
-                    last_status_code=last_status_code,
-                    destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
+            if (
+                state_text.upper() == "CONFIRMED"
+                or state_name.upper() == "CONFIRMED"
+            ):
+                if self._answered_at is None:
+                    self._answered_at = time.time()
+                    self._set_runtime_state(
+                        state="ACTIVE",
+                        last_status_code=last_status_code,
+                        destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
+                    )
+                log.info(
+                    "Outbound SIP call confirmed account=%s call_id=%s state=%s status=%s",
+                    self._account_id,
+                    self._call_id,
+                    state_text or state_name,
+                    last_status_code,
                 )
-            log.info(
-                "Outbound SIP call confirmed account=%s call_id=%s state=%s status=%s",
-                self._account_id,
-                self._call_id,
-                state_text or state_name,
-                last_status_code,
-            )
-            if call_obj is not None and not self._playback_started:
-                self._playback_pending = True
+                if call_obj is not None and not self._playback_started:
+                    self._playback_pending = True
+                    self._try_start_playback(call_obj)
 
         if (
             state_name in self._TERMINAL_STATES

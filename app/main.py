@@ -140,6 +140,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
     if result.success:
         latest.status = "read" if result.read else "delivered" if (result.delivered or result.answered or result.success) else "processed"
         latest.last_error = ""
+        latest.next_attempt_at = ""
     else:
         latest.last_error = (result.details or {}).get("pending_reason") or result.error or latest.last_error
         next_attempt = (latest.attempts or 0) + 1
@@ -149,6 +150,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
             latest.next_attempt_at = _schedule_next_attempt(latest.retry_interval_seconds or 0)
         else:
             latest.status = "failed"
+            latest.next_attempt_at = ""
     queue_store.upsert(latest)
 
     _record_gateway_result(
