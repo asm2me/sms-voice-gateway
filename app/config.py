@@ -3,11 +3,13 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class SIPAccount(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     id: str
     label: str = ""
     host: str = ""

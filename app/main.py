@@ -1200,7 +1200,7 @@ def _admin_context(
         ],
         "report_clear_supported": hasattr(get_delivery_report_collector(settings), "clear_old_reports"),
         "health": health_payload,
-        "sip_accounts": [account.model_dump() for account in settings.sip_accounts],
+        "sip_accounts": [account.model_dump(by_alias=True) for account in settings.sip_accounts],
         "smpp_accounts": [
             {
                 **account.model_dump(),

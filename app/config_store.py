@@ -235,7 +235,7 @@ def build_settings_data(settings: Settings) -> dict[str, Any]:
     smpp_sip_assignments = data.pop("smpp_sip_assignments", {})
     system_users = data.pop("system_users", [])
 
-    data["sip_accounts"] = [account.model_dump() if isinstance(account, SIPAccount) else account for account in sip_accounts]
+    data["sip_accounts"] = [account.model_dump(by_alias=True) if isinstance(account, SIPAccount) else account for account in sip_accounts]
     data["smpp_accounts"] = [account.model_dump() if isinstance(account, SMPPAccount) else account for account in smpp_accounts]
     data["smpp_sip_assignments"] = dict(smpp_sip_assignments)
     data["system_users"] = [user.model_dump() if isinstance(user, SystemUser) else user for user in system_users]
