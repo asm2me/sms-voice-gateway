@@ -146,7 +146,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
         next_attempt = (latest.attempts or 0) + 1
         should_retry = latest.max_attempts <= 0 or next_attempt < latest.max_attempts
         missed_state = str(getattr(result, "details", {}) or {}).get("state", "").strip().lower() == "missed" or "missed" in (result.error or "").lower()
-        if should_retry and not missed_state:
+        if should_retry:
             latest.status = "retry_scheduled"
             latest.attempts = next_attempt
             latest.next_attempt_at = _schedule_next_attempt(latest.retry_interval_seconds or 0)
