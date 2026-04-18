@@ -1334,7 +1334,7 @@
           <form method="post" action="/admin/config/advanced" class="admin-form">
             <div class="form-grid">
               {% for field in telephony_settings %}
-              {% if field.name not in ['smpp_host', 'smpp_port', 'smpp_system_id', 'smpp_password', 'smpp_system_type', 'smpp_bind_ton', 'smpp_bind_npi', 'smpp_address_range', 'smpp_username'] %}
+              {% if field.name not in ['smpp_enabled', 'smpp_host', 'smpp_port', 'smpp_system_id', 'smpp_password', 'smpp_system_type', 'smpp_bind_ton', 'smpp_bind_npi', 'smpp_address_range', 'smpp_username'] %}
               <label class="field-group {% if field.name in ['ami_host', 'ami_username', 'sip_channel_prefix', 'outbound_caller_id', 'asterisk_context'] %}field-span-2{% endif %}">
                 <span class="field-label">{{ field.label }}</span>
                 {{ render_input(field) }}
@@ -1889,8 +1889,8 @@
           <form method="post" action="/admin/config/advanced" class="admin-form">
             <div class="form-grid">
               {% for field in telephony_settings %}
-              {% if field.name in ['smpp_host', 'smpp_port', 'smpp_system_id', 'smpp_password', 'smpp_system_type', 'smpp_bind_ton', 'smpp_bind_npi', 'smpp_address_range', 'smpp_username'] %}
-              <label class="field-group {% if field.name in ['smpp_host', 'smpp_system_id', 'smpp_username'] %}field-span-2{% endif %}">
+              {% if field.name in ['smpp_enabled', 'smpp_host', 'smpp_port', 'smpp_system_id', 'smpp_password', 'smpp_system_type', 'smpp_bind_ton', 'smpp_bind_npi', 'smpp_address_range', 'smpp_username'] %}
+              <label class="field-group {% if field.name in ['smpp_enabled', 'smpp_host', 'smpp_system_id', 'smpp_username'] %}field-span-2{% endif %}">
                 <span class="field-label">{{ field.label }}</span>
                 {{ render_input(field) }}
                 <small class="muted">{{ field.name }}</small>
