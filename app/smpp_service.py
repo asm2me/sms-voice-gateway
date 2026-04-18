@@ -227,6 +227,20 @@ class SMPPService:
                         source=f"smpp:{addr[0]}:{addr[1]}",
                         status="received",
                     )
+                    smpp_account = next(
+                        (a for a in self.settings.smpp_accounts if a.username == smpp_username),
+                        None,
+                    )
+                    retry_count = (
+                        smpp_account.delivery_retry_count
+                        if smpp_account and smpp_account.delivery_retry_count is not None
+                        else getattr(self.settings, "delivery_retry_count", 3)
+                    )
+                    retry_interval = (
+                        smpp_account.delivery_retry_interval_seconds
+                        if smpp_account and smpp_account.delivery_retry_interval_seconds is not None
+                        else getattr(self.settings, "delivery_retry_interval_seconds", 60)
+                    )
                     queue_store = get_queue_store(self.settings)
                     now = time.time()
                     queue_item = QueueItem(
@@ -239,11 +253,12 @@ class SMPPService:
                         body_preview=submit_fields["short_message"][:160],
                         status="queued",
                         attempts=0,
-                        max_attempts=1,
-                        retry_interval_seconds=0,
+                        max_attempts=max(1, int(retry_count) + 1),
+                        retry_interval_seconds=max(0, int(retry_interval)),
                         next_attempt_at="",
                         last_error="",
                         sip_account_id=sip_account.id if sip_account else "",
+                        smpp_username=smpp_username or "",
                         audio_path="",
                     )
                     queue_store.upsert(queue_item)

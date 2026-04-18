@@ -100,7 +100,10 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
 
 
 def _queue_item_ready_for_retry(item, *, now: datetime) -> bool:
-    if str(getattr(item, "status", "")).strip().lower() != "retry_scheduled":
+    item_status = str(getattr(item, "status", "")).strip().lower()
+    if item_status == "queued":
+        return True
+    if item_status != "retry_scheduled":
         return False
     next_attempt_at = _parse_iso_datetime(getattr(item, "next_attempt_at", None))
     if next_attempt_at is None:
@@ -620,6 +623,45 @@ def _emit_smpp_receipt(
         log.debug("Unable to emit SMPP receipt for %s: %s", smpp_username, exc)
 
 
+def _update_queue_item_from_result(settings: Settings, queue_item_id: str, result) -> None:
+    try:
+        queue_store = get_queue_store(settings)
+        current_queue_item = queue_store.get(queue_item_id)
+        if current_queue_item is None:
+            return
+        current_queue_item.updated_at = _utc_now_iso()
+        current_queue_item.ami_action_id = result.ami_action_id or getattr(current_queue_item, "ami_action_id", "")
+        current_queue_item.sip_call_id = result.sip_call_id or getattr(current_queue_item, "sip_call_id", "")
+        current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
+        current_queue_item.audio_path = result.audio_path or getattr(current_queue_item, "audio_path", "")
+        current_queue_item.recording_path = result.recording_path or getattr(current_queue_item, "recording_path", "")
+
+        if result.success or result.read or result.delivered or result.answered:
+            current_queue_item.status = "read" if result.read else "delivered"
+            current_queue_item.last_error = ""
+            current_queue_item.next_attempt_at = ""
+        else:
+            details = result.details or {}
+            current_queue_item.last_error = details.get("pending_reason") or result.error or ""
+            attempts = int(details.get("attempts", 1) or 1)
+            max_attempts_val = current_queue_item.max_attempts or int(details.get("max_attempts", 1) or 1)
+            retry_interval = current_queue_item.retry_interval_seconds or int(details.get("retry_interval_seconds", 0) or 0)
+            should_retry = max_attempts_val <= 0 or attempts < max_attempts_val
+            if should_retry:
+                current_queue_item.status = "retry_scheduled"
+                current_queue_item.attempts = attempts
+                current_queue_item.max_attempts = max_attempts_val
+                current_queue_item.retry_interval_seconds = retry_interval
+                current_queue_item.next_attempt_at = _schedule_next_attempt(retry_interval)
+            else:
+                is_missed = str(details.get("state", "")).strip().lower() == "missed" or "not answered" in (result.error or "").lower()
+                current_queue_item.status = "missed" if is_missed else "failed"
+                current_queue_item.next_attempt_at = ""
+        queue_store.upsert(current_queue_item)
+    except Exception as exc:
+        log.debug("Unable to update queue item %s: %s", queue_item_id, exc)
+
+
 def _save_admin_config(form, keys: list[str]) -> Settings:
     current = ensure_default_accounts(load_settings_from_store())
     data = current.model_dump()
@@ -880,37 +922,7 @@ def _simulate_smpp_test_send(
     sms = IncomingSMS(body=body, destination=phone_number, provider=provider, smpp_username=smpp_username)
     result = gateway.process(sms)
 
-    current_queue_item = queue_store.get(queue_item.id)
-    if current_queue_item is not None:
-        current_queue_item.updated_at = _utc_now_iso()
-        current_queue_item.ami_action_id = result.ami_action_id or getattr(current_queue_item, "ami_action_id", "")
-        current_queue_item.sip_call_id = result.sip_call_id or getattr(current_queue_item, "sip_call_id", "")
-        current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
-        current_queue_item.audio_path = result.audio_path or getattr(current_queue_item, "audio_path", "")
-        current_queue_item.recording_path = result.recording_path or getattr(current_queue_item, "recording_path", "")
-
-        if result.success or result.read or result.delivered or result.answered:
-            current_queue_item.status = "read" if result.read else "delivered"
-            current_queue_item.last_error = ""
-            current_queue_item.next_attempt_at = ""
-        else:
-            details = result.details or {}
-            current_queue_item.last_error = details.get("pending_reason") or result.error or ""
-            attempts = int(details.get("attempts", 1) or 1)
-            max_attempts_val = current_queue_item.max_attempts or int(details.get("max_attempts", 1) or 1)
-            retry_interval = current_queue_item.retry_interval_seconds or int(details.get("retry_interval_seconds", 0) or 0)
-            should_retry = max_attempts_val <= 0 or attempts < max_attempts_val
-            if should_retry:
-                current_queue_item.status = "retry_scheduled"
-                current_queue_item.attempts = attempts
-                current_queue_item.max_attempts = max_attempts_val
-                current_queue_item.retry_interval_seconds = retry_interval
-                current_queue_item.next_attempt_at = _schedule_next_attempt(retry_interval)
-            else:
-                is_missed = str(details.get("state", "")).strip().lower() == "missed" or "not answered" in (result.error or "").lower()
-                current_queue_item.status = "missed" if is_missed else "failed"
-                current_queue_item.next_attempt_at = ""
-        queue_store.upsert(current_queue_item)
+    _update_queue_item_from_result(settings, queue_item.id, result)
 
     _emit_smpp_receipt(
         smpp_username=smpp_username,
@@ -3153,9 +3165,12 @@ async def twilio_webhook(
     _verify_twilio_signature(request, settings)
     sms = IncomingSMS(body=Body, from_number=From, to_number=To, provider="twilio")
     log.info("Twilio SMS from=%s body=%r", From, Body[:80])
+    phone_number = From or To
+    queue_item = record_queue_item(settings, phone_number=phone_number, provider="twilio", body=Body, status="queued")
     result = gateway.process(sms)
     _log_result(result)
-    _record_gateway_result("twilio", result, phone_number=From or To, message=Body[:120])
+    _record_gateway_result("twilio", result, phone_number=phone_number, message=Body[:120])
+    _update_queue_item_from_result(settings, queue_item.id, result)
     return '<?xml version="1.0" encoding="UTF-8"?><Response/>'
 
 
@@ -3187,9 +3202,12 @@ async def vonage_webhook(
         provider="vonage",
     )
     log.info("Vonage SMS from=%s body=%r", payload.msisdn, payload.text[:80])
+    phone_number = payload.msisdn or payload.to
+    queue_item = record_queue_item(settings, phone_number=phone_number, provider="vonage", body=payload.text, status="queued")
     result = gateway.process(sms)
     _log_result(result)
-    _record_gateway_result("vonage", result, phone_number=payload.msisdn or payload.to, message=payload.text[:120])
+    _record_gateway_result("vonage", result, phone_number=phone_number, message=payload.text[:120])
+    _update_queue_item_from_result(settings, queue_item.id, result)
     return {"status": "ok" if result.success else "error", "detail": result.error or None}
 
 
@@ -3220,9 +3238,12 @@ async def generic_webhook(
         provider="generic",
     )
     log.info("Generic SMS body=%r dest=%s", payload.body[:80], payload.destination)
+    phone_number = payload.destination or payload.from_number or payload.to_number
+    queue_item = record_queue_item(settings, phone_number=phone_number, provider="generic", body=payload.body, status="queued")
     result = gateway.process(sms)
     _log_result(result)
-    _record_gateway_result("generic", result, phone_number=payload.destination or payload.from_number or payload.to_number, message=payload.body[:120])
+    _record_gateway_result("generic", result, phone_number=phone_number, message=payload.body[:120])
+    _update_queue_item_from_result(settings, queue_item.id, result)
 
     if not result.success:
         pending_reason = (result.details or {}).get("pending_reason", "")
@@ -3316,8 +3337,10 @@ async def debug_call(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid secret")
 
     sms = IncomingSMS(body=req.text, destination=req.phone, provider="debug")
+    queue_item = record_queue_item(settings, phone_number=req.phone, provider="debug", body=req.text, status="queued")
     result = gateway.process(sms)
     _record_gateway_result("debug", result, phone_number=req.phone, message=req.text[:120])
+    _update_queue_item_from_result(settings, queue_item.id, result)
     return {
         "success": result.success,
         "phone_number": result.phone_number,
