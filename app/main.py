@@ -145,7 +145,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
         latest.last_error = (result.details or {}).get("pending_reason") or result.error or latest.last_error
         next_attempt = (latest.attempts or 0) + 1
         should_retry = latest.max_attempts <= 0 or next_attempt < latest.max_attempts
-        missed_state = str(getattr(result, "details", {}) or {}).get("state", "").strip().lower() == "missed" or "missed" in (result.error or "").lower()
+        missed_state = str(getattr(result, "details", {}) or {}).get("state", "").strip().lower() == "missed" or "missed" in (result.error or "").lower() or "not answered" in (result.error or "").lower()
         if should_retry:
             latest.status = "retry_scheduled"
             latest.attempts = next_attempt
@@ -865,13 +865,33 @@ def _simulate_smpp_test_send(
     current_queue_item = queue_store.get(queue_item.id)
     if current_queue_item is not None:
         current_queue_item.updated_at = _utc_now_iso()
-        current_queue_item.status = "read" if result.read else "delivered" if result.delivered or result.answered or result.success else "queued"
-        current_queue_item.last_error = ""
         current_queue_item.ami_action_id = result.ami_action_id or getattr(current_queue_item, "ami_action_id", "")
         current_queue_item.sip_call_id = result.sip_call_id or getattr(current_queue_item, "sip_call_id", "")
         current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
         current_queue_item.audio_path = result.audio_path or getattr(current_queue_item, "audio_path", "")
         current_queue_item.recording_path = result.recording_path or getattr(current_queue_item, "recording_path", "")
+
+        if result.success or result.read or result.delivered or result.answered:
+            current_queue_item.status = "read" if result.read else "delivered"
+            current_queue_item.last_error = ""
+            current_queue_item.next_attempt_at = ""
+        else:
+            details = result.details or {}
+            current_queue_item.last_error = details.get("pending_reason") or result.error or ""
+            attempts = int(details.get("attempts", 1) or 1)
+            max_attempts_val = current_queue_item.max_attempts or int(details.get("max_attempts", 1) or 1)
+            retry_interval = current_queue_item.retry_interval_seconds or int(details.get("retry_interval_seconds", 0) or 0)
+            should_retry = max_attempts_val <= 0 or attempts < max_attempts_val
+            if should_retry:
+                current_queue_item.status = "retry_scheduled"
+                current_queue_item.attempts = attempts
+                current_queue_item.max_attempts = max_attempts_val
+                current_queue_item.retry_interval_seconds = retry_interval
+                current_queue_item.next_attempt_at = _schedule_next_attempt(retry_interval)
+            else:
+                is_missed = str(details.get("state", "")).strip().lower() == "missed" or "not answered" in (result.error or "").lower()
+                current_queue_item.status = "missed" if is_missed else "failed"
+                current_queue_item.next_attempt_at = ""
         queue_store.upsert(current_queue_item)
 
     _emit_smpp_receipt(

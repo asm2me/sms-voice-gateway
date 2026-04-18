@@ -381,6 +381,33 @@ class SMSGateway:
                     },
                 )
 
+            if "was not answered" in last_error.lower():
+                return GatewayResult(
+                    success=False,
+                    phone_number=phone,
+                    text_spoken=spoken_text,
+                    audio_path=audio_path,
+                    was_cached=was_cached,
+                    sip_call_id=sip_call_id,
+                    sip_account_id=sip_account_id,
+                    recording_path=recording_path,
+                    error=last_error,
+                    details={
+                        "pending_reason": pending_reason,
+                        "sip_result": sip_result.details,
+                        "tts_cached": was_cached,
+                        "hash": hkey,
+                        "rate_counts": {} if bypass_rate_limit else self.rate_limiter.get_counts(phone),
+                        "attempts": attempt,
+                        "max_attempts": max_attempts,
+                        "retry_interval_seconds": retry_interval_seconds,
+                        "sip_account_id": sip_account_id,
+                        "smpp_username": sms.smpp_username or "",
+                        "state": "missed",
+                        "recording_path": recording_path,
+                    },
+                )
+
             if attempt < max_attempts and queue_retries:
                 retry_snapshot = _queue_retry(
                     self.settings,
