@@ -639,14 +639,16 @@ def _update_queue_item_from_result(settings: Settings, queue_item_id: str, resul
         current_queue_item.audio_path = result.audio_path or getattr(current_queue_item, "audio_path", "")
         current_queue_item.recording_path = result.recording_path or getattr(current_queue_item, "recording_path", "")
 
+        details = result.details or {}
+        attempts = max((current_queue_item.attempts or 0) + 1, int(details.get("attempts", 1) or 1))
+
         if result.success or result.read or result.delivered or result.answered:
             current_queue_item.status = "read" if result.read else "delivered"
+            current_queue_item.attempts = attempts
             current_queue_item.last_error = ""
             current_queue_item.next_attempt_at = ""
         else:
-            details = result.details or {}
             current_queue_item.last_error = details.get("pending_reason") or result.error or ""
-            attempts = int(details.get("attempts", 1) or 1)
             max_attempts_val = current_queue_item.max_attempts or int(details.get("max_attempts", 1) or 1)
             retry_interval = current_queue_item.retry_interval_seconds or int(details.get("retry_interval_seconds", 0) or 0)
             should_retry = max_attempts_val <= 0 or attempts < max_attempts_val
@@ -659,6 +661,7 @@ def _update_queue_item_from_result(settings: Settings, queue_item_id: str, resul
             else:
                 is_missed = str(details.get("state", "")).strip().lower() == "missed" or "not answered" in (result.error or "").lower()
                 current_queue_item.status = "missed" if is_missed else "failed"
+                current_queue_item.attempts = attempts
                 current_queue_item.next_attempt_at = ""
         queue_store.upsert(current_queue_item)
     except Exception as exc:
@@ -908,13 +911,13 @@ def _simulate_smpp_test_send(
         phone_number=phone_number,
         provider=provider,
         body=body,
-        status="queued",
+        status="processing",
         smpp_username=smpp_username,
     )
     current_queue_item = queue_store.get(queue_item.id)
     if current_queue_item is not None:
         current_queue_item.updated_at = now
-        current_queue_item.status = "queued"
+        current_queue_item.status = "processing"
         current_queue_item.phone_number = phone_number
         current_queue_item.provider = provider
         current_queue_item.body = body
@@ -3169,7 +3172,7 @@ async def twilio_webhook(
     sms = IncomingSMS(body=Body, from_number=From, to_number=To, provider="twilio")
     log.info("Twilio SMS from=%s body=%r", From, Body[:80])
     phone_number = From or To
-    queue_item = record_queue_item(settings, phone_number=phone_number, provider="twilio", body=Body, status="queued")
+    queue_item = record_queue_item(settings, phone_number=phone_number, provider="twilio", body=Body, status="processing")
     result = gateway.process(sms)
     _log_result(result)
     _record_gateway_result("twilio", result, phone_number=phone_number, message=Body[:120])
@@ -3206,7 +3209,7 @@ async def vonage_webhook(
     )
     log.info("Vonage SMS from=%s body=%r", payload.msisdn, payload.text[:80])
     phone_number = payload.msisdn or payload.to
-    queue_item = record_queue_item(settings, phone_number=phone_number, provider="vonage", body=payload.text, status="queued")
+    queue_item = record_queue_item(settings, phone_number=phone_number, provider="vonage", body=payload.text, status="processing")
     result = gateway.process(sms)
     _log_result(result)
     _record_gateway_result("vonage", result, phone_number=phone_number, message=payload.text[:120])
@@ -3242,7 +3245,7 @@ async def generic_webhook(
     )
     log.info("Generic SMS body=%r dest=%s", payload.body[:80], payload.destination)
     phone_number = payload.destination or payload.from_number or payload.to_number
-    queue_item = record_queue_item(settings, phone_number=phone_number, provider="generic", body=payload.body, status="queued")
+    queue_item = record_queue_item(settings, phone_number=phone_number, provider="generic", body=payload.body, status="processing")
     result = gateway.process(sms)
     _log_result(result)
     _record_gateway_result("generic", result, phone_number=phone_number, message=payload.body[:120])
@@ -3340,7 +3343,7 @@ async def debug_call(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid secret")
 
     sms = IncomingSMS(body=req.text, destination=req.phone, provider="debug")
-    queue_item = record_queue_item(settings, phone_number=req.phone, provider="debug", body=req.text, status="queued")
+    queue_item = record_queue_item(settings, phone_number=req.phone, provider="debug", body=req.text, status="processing")
     result = gateway.process(sms)
     _record_gateway_result("debug", result, phone_number=req.phone, message=req.text[:120])
     _update_queue_item_from_result(settings, queue_item.id, result)
