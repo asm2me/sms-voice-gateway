@@ -158,6 +158,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
                 latest.next_attempt_at = _schedule_next_attempt(latest.retry_interval_seconds or 0)
             else:
                 latest.status = "missed" if missed_state else "failed"
+                latest.attempts = next_attempt
                 latest.next_attempt_at = ""
         queue_store.upsert(latest)
 
@@ -190,6 +191,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
                 latest.next_attempt_at = _schedule_next_attempt(latest.retry_interval_seconds or 0)
             else:
                 latest.status = "missed" if "not answered" in (latest.last_error or "").lower() else "failed"
+                latest.attempts = next_attempt
                 latest.next_attempt_at = ""
             queue_store.upsert(latest)
 
