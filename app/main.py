@@ -128,67 +128,70 @@ def _retry_queue_item(settings: Settings, item) -> None:
         smpp_username=current.smpp_username or "",
     )
 
+    result = None
     try:
         result = SMSGateway(settings).process(sms, queue_retries=False)
-    except Exception as exc:
-        log.exception("Retry queue item %s failed with exception", current.id)
-        latest = queue_store.get(item.id) or current
+
+        latest = queue_store.get(item.id)
+        if latest is None:
+            latest = current
+
         latest.updated_at = _utc_now_iso()
-        latest.last_error = f"{type(exc).__name__}: {exc}"
-        next_attempt = (latest.attempts or 0) + 1
-        should_retry = latest.max_attempts <= 0 or next_attempt < latest.max_attempts
-        if should_retry:
-            latest.status = "retry_scheduled"
-            latest.attempts = next_attempt
-            latest.next_attempt_at = _schedule_next_attempt(latest.retry_interval_seconds or 0)
-        else:
-            latest.status = "failed"
+        latest.ami_action_id = result.ami_action_id or latest.ami_action_id
+        latest.sip_call_id = result.sip_call_id or latest.sip_call_id
+        latest.sip_account_id = result.sip_account_id or latest.sip_account_id
+        latest.audio_path = result.audio_path or latest.audio_path
+        latest.recording_path = result.recording_path or latest.recording_path
+
+        if result.success:
+            latest.status = "read" if result.read else "delivered" if (result.delivered or result.answered or result.success) else "processed"
+            latest.last_error = ""
             latest.next_attempt_at = ""
+        else:
+            latest.last_error = (result.details or {}).get("pending_reason") or result.error or latest.last_error
+            next_attempt = (latest.attempts or 0) + 1
+            should_retry = latest.max_attempts <= 0 or next_attempt < latest.max_attempts
+            missed_state = str(getattr(result, "details", {}) or {}).get("state", "").strip().lower() == "missed" or "missed" in (result.error or "").lower() or "not answered" in (result.error or "").lower()
+            if should_retry:
+                latest.status = "retry_scheduled"
+                latest.attempts = next_attempt
+                latest.next_attempt_at = _schedule_next_attempt(latest.retry_interval_seconds or 0)
+            else:
+                latest.status = "missed" if missed_state else "failed"
+                latest.next_attempt_at = ""
         queue_store.upsert(latest)
-        return
 
-    latest = queue_store.get(item.id)
-    if latest is None:
-        latest = current
-
-    latest.updated_at = _utc_now_iso()
-    latest.ami_action_id = result.ami_action_id or latest.ami_action_id
-    latest.sip_call_id = result.sip_call_id or latest.sip_call_id
-    latest.sip_account_id = result.sip_account_id or latest.sip_account_id
-    latest.audio_path = result.audio_path or latest.audio_path
-    latest.recording_path = result.recording_path or latest.recording_path
-
-    if result.success:
-        latest.status = "read" if result.read else "delivered" if (result.delivered or result.answered or result.success) else "processed"
-        latest.last_error = ""
-        latest.next_attempt_at = ""
-    else:
-        latest.last_error = (result.details or {}).get("pending_reason") or result.error or latest.last_error
-        next_attempt = (latest.attempts or 0) + 1
-        should_retry = latest.max_attempts <= 0 or next_attempt < latest.max_attempts
-        missed_state = str(getattr(result, "details", {}) or {}).get("state", "").strip().lower() == "missed" or "missed" in (result.error or "").lower() or "not answered" in (result.error or "").lower()
-        if should_retry:
-            latest.status = "retry_scheduled"
-            latest.attempts = next_attempt
-            latest.next_attempt_at = _schedule_next_attempt(latest.retry_interval_seconds or 0)
-        else:
-            latest.status = "missed" if missed_state else "failed"
-            latest.next_attempt_at = ""
-    queue_store.upsert(latest)
-
-    _record_gateway_result(
-        current.provider or "retry-worker",
-        result,
-        phone_number=current.phone_number,
-        message=current.body[:120],
-    )
-    _emit_smpp_receipt(
-        smpp_username=current.smpp_username or "",
-        queue_item_id=current.id,
-        phone_number=current.phone_number,
-        message=current.body,
-        result=result,
-    )
+        _record_gateway_result(
+            current.provider or "retry-worker",
+            result,
+            phone_number=current.phone_number,
+            message=current.body[:120],
+        )
+        _emit_smpp_receipt(
+            smpp_username=current.smpp_username or "",
+            queue_item_id=current.id,
+            phone_number=current.phone_number,
+            message=current.body,
+            result=result,
+        )
+    except Exception as exc:
+        log.exception("Retry queue item %s failed: %s", current.id, exc)
+    finally:
+        latest = queue_store.get(item.id)
+        if latest is not None and latest.status == "processing":
+            log.warning("Queue item %s still processing after retry — recovering", item.id)
+            latest.updated_at = _utc_now_iso()
+            latest.last_error = latest.last_error or (f"{result.error}" if result and result.error else "retry processing failed unexpectedly")
+            next_attempt = (latest.attempts or 0) + 1
+            should_retry = latest.max_attempts <= 0 or next_attempt < latest.max_attempts
+            if should_retry:
+                latest.status = "retry_scheduled"
+                latest.attempts = next_attempt
+                latest.next_attempt_at = _schedule_next_attempt(latest.retry_interval_seconds or 0)
+            else:
+                latest.status = "missed" if "not answered" in (latest.last_error or "").lower() else "failed"
+                latest.next_attempt_at = ""
+            queue_store.upsert(latest)
 
 
 def _retry_worker_loop() -> None:
