@@ -193,7 +193,7 @@ _TRUNK_CALL_STATE_RETENTION_SECONDS = 30.0
 _PJSUA_GLOBAL_LOCK = threading.RLock()
 _PJSUA_GLOBAL_ENDPOINT = None
 _PJSUA_GLOBAL_TRANSPORT = None
-_PJSUA_GLOBAL_SESSION: "PJSipUASession | None" = None
+_PJSUA_GLOBAL_SESSIONS: dict[str, "PJSipUASession"] = {}
 _PJSUA_REGISTERED_THREADS: set[int] = set()
 _PJSUA_PLAYER_LOCK = threading.RLock()
 _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
@@ -206,6 +206,7 @@ def _release_player(call_id: str) -> None:
         return
 
     wav_path = player_state.get("wav_path")
+    cleanup_wav = bool(player_state.get("cleanup_wav"))
 
     # Some PJSUA2 builds assert if AudioMediaPlayer destruction happens from a
     # different callback/event thread than the one owning the underlying group
@@ -215,7 +216,7 @@ def _release_player(call_id: str) -> None:
     player_state["player"] = None
     player_state["player_media"] = None
 
-    if wav_path:
+    if cleanup_wav and wav_path:
         with suppress(Exception):
             Path(str(wav_path)).unlink(missing_ok=True)
 
@@ -661,6 +662,7 @@ class PJSipUASession:
                         invite_uri,
                         callback,
                     )
+                    callback.attach_call(call)
                     log.info(
                         "Starting outbound SIP INVITE account=%s destination=%s uri=%s transport=%s trunk_host=%s trunk_port=%s",
                         account_id,
@@ -1335,8 +1337,9 @@ class _CallCallbackHolder:
         self._playback_error = ""
         self._playback_hangup_requested = False
         self._scheduled_hangup_at: float | None = None
-        self._player = None
-        self._player_media = None
+            self._player = None
+            self._player_media = None
+            self._call_obj = None
 
     def _set_runtime_state(
         self,
@@ -1417,6 +1420,10 @@ class _CallCallbackHolder:
         self._playback_repeat_count = max(1, int(repeat_count or 1))
         self._playback_pause_ms = max(0, int(pause_ms or 0))
         self._scheduled_hangup_at = None
+
+    def attach_call(self, call_obj: Any) -> None:
+        if call_obj is not None:
+            self._call_obj = call_obj
 
     def _try_start_playback(self, call_obj: Any) -> bool:
         log.info(
@@ -1547,6 +1554,7 @@ class _CallCallbackHolder:
                     "player": player,
                     "player_media": player,
                     "wav_path": str(wav_path),
+                    "cleanup_wav": False,
                 }
 
             self._player = player
@@ -1583,6 +1591,8 @@ class _CallCallbackHolder:
     def onCallState(self, *args: Any, **kwargs: Any) -> None:
         self._session._register_current_thread()
         call_obj = args[0] if args else None
+        if call_obj is not None:
+            self._call_obj = call_obj
         info_obj = None
 
         with suppress(Exception):
@@ -1743,6 +1753,8 @@ class _CallCallbackHolder:
     def onCallMediaState(self, *args: Any, **kwargs: Any) -> None:
         self._session._register_current_thread()
         call_obj = args[0] if args else None
+        if call_obj is not None:
+            self._call_obj = call_obj
         if call_obj is None:
             return
 
@@ -1776,7 +1788,7 @@ class _CallCallbackHolder:
             media_check_counter += 1
 
             if self._playback_pending and not self._playback_started and self._answered_at is not None:
-                call_obj = getattr(self._session, "_last_call", None)
+                call_obj = self._call_obj or getattr(self._session, "_last_call", None)
                 if call_obj is not None:
                     log.info(
                         "Outbound SIP polling for media readiness (check %s) account=%s call_id=%s",
@@ -1824,7 +1836,7 @@ class _CallCallbackHolder:
                     self._playback_error or "timeout",
                 )
                 self._playback_hangup_requested = True
-                call_obj = getattr(self._session, "_last_call", None)
+                call_obj = self._call_obj or getattr(self._session, "_last_call", None)
                 if call_obj is not None:
                     try:
                         pj = self._session._pj
@@ -1849,7 +1861,7 @@ class _CallCallbackHolder:
                 and time.time() >= self._scheduled_hangup_at
             ):
                 self._playback_hangup_requested = True
-                call_obj = getattr(self._session, "_last_call", None)
+                call_obj = self._call_obj or getattr(self._session, "_last_call", None)
                 if call_obj is not None:
                     try:
                         pj = self._session._pj
@@ -1906,11 +1918,21 @@ class _CallCallbackHolder:
         return _noop
 
 
-def build_pjsua2_service(settings: Settings) -> PJSipUASession:
-    global _PJSUA_GLOBAL_SESSION
+def build_pjsua2_service(
+    settings: Settings,
+    *,
+    scope: str = "default",
+    isolated: bool = False,
+) -> PJSipUASession:
+    if isolated:
+        return PJSipUASession(settings)
+
+    scope_key = str(scope or "default").strip() or "default"
     with _PJSUA_GLOBAL_LOCK:
-        if _PJSUA_GLOBAL_SESSION is None:
-            _PJSUA_GLOBAL_SESSION = PJSipUASession(settings)
+        session = _PJSUA_GLOBAL_SESSIONS.get(scope_key)
+        if session is None:
+            session = PJSipUASession(settings)
+            _PJSUA_GLOBAL_SESSIONS[scope_key] = session
         else:
-            _PJSUA_GLOBAL_SESSION.settings = settings
-        return _PJSUA_GLOBAL_SESSION
+            session.settings = settings
+        return session
