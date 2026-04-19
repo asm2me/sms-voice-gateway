@@ -1713,7 +1713,7 @@ class _CallCallbackHolder:
             self._playback_audio_path[:80] if self._playback_audio_path else "",
         )
 
-        if self._playback_audio_path and not self._playback_started and self._answered_at is not None:
+        if self._playback_audio_path and not self._playback_started:
             log.info(
                 "Outbound SIP onCallMediaState attempting playback (will retry up to 5 times) account=%s call_id=%s answered_at=%s",
                 self._account_id,
@@ -1757,11 +1757,12 @@ class _CallCallbackHolder:
     def _delayed_media_state_trigger(self, call_obj: Any) -> None:
         """Trigger media state processing after a delay to work around PJSIP callback issues."""
         time.sleep(0.5)  # Wait 500ms for media to become ready
-        if self._playback_audio_path and not self._playback_started and self._answered_at is not None:
+        if self._playback_audio_path and not self._playback_started:
             log.info(
-                "Outbound SIP delayed media state trigger account=%s call_id=%s",
+                "Outbound SIP delayed media state trigger account=%s call_id=%s answered_at=%s",
                 self._account_id,
                 self._call_id,
+                self._answered_at,
             )
             # Try multiple times with delays
             for attempt in range(1, 10):
