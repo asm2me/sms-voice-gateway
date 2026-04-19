@@ -325,7 +325,11 @@ class PJSipUASession:
                 with suppress(Exception):
                     ep_cfg.medConfig.noVad = True
                 with suppress(Exception):
-                    ep_cfg.medConfig.hasIoqueue = True
+                    ep_cfg.uaConfig.threadCnt = 0
+                with suppress(Exception):
+                    ep_cfg.uaConfig.mainThreadOnly = True
+                with suppress(Exception):
+                    ep_cfg.medConfig.hasIoqueue = False
                 with suppress(Exception):
                     ep_cfg.medConfig.clockRate = 16000
                 with suppress(Exception):
@@ -1409,6 +1413,7 @@ class _CallCallbackHolder:
         self._playback_pause_ms = 0
         self._playback_started = False
         self._playback_pending = False
+        self._playback_ready = False
         self._playback_error = ""
         self._playback_hangup_requested = False
         self._playback_cleanup_wav = False
@@ -1666,7 +1671,6 @@ class _CallCallbackHolder:
             return False
 
     def onCallState(self, *args: Any, **kwargs: Any) -> None:
-        self._session._register_current_thread()
         call_obj = args[0] if args else None
         if call_obj is not None:
             self._call_obj = call_obj
@@ -1765,6 +1769,7 @@ class _CallCallbackHolder:
             )
             if self._playback_audio_path and not self._playback_started:
                 self._playback_pending = True
+                self._playback_ready = True
                 log.info(
                     "Outbound SIP set playback_pending=True account=%s call_id=%s",
                     self._account_id,
@@ -1798,6 +1803,7 @@ class _CallCallbackHolder:
             )
             if call_obj is not None and not self._playback_started:
                 self._playback_pending = True
+                self._playback_ready = True
 
         log.info(
             "Outbound SIP checking terminal state account=%s call_id=%s state_name=%s state_text=%s last_status_code=%s answered_at=%s",
@@ -1828,29 +1834,33 @@ class _CallCallbackHolder:
             self._release_slot()
 
     def onCallMediaState(self, *args: Any, **kwargs: Any) -> None:
-        self._session._register_current_thread()
         call_obj = args[0] if args else None
         if call_obj is not None:
             self._call_obj = call_obj
         if call_obj is None:
             return
 
+        answered = self._answered_at is not None
         log.info(
             "Outbound SIP media state changed account=%s call_id=%s answered=%s playback_started=%s audio_path=%s",
             self._account_id,
             self._call_id,
-            self._answered_at is not None,
+            answered,
             self._playback_started,
             self._playback_audio_path[:80] if self._playback_audio_path else "",
         )
 
+        if not answered:
+            return
+
         if self._playback_audio_path and not self._playback_started:
+            self._playback_ready = True
             self._playback_pending = True
             log.info(
                 "Outbound SIP onCallMediaState marked playback pending account=%s call_id=%s answered=%s",
                 self._account_id,
                 self._call_id,
-                self._answered_at is not None,
+                answered,
             )
 
     def wait_for_completion(self, timeout_seconds: float) -> dict[str, Any]:
@@ -1864,7 +1874,7 @@ class _CallCallbackHolder:
 
             media_check_counter += 1
 
-            if self._playback_pending and not self._playback_started and self._answered_at is not None:
+            if self._playback_ready and self._playback_pending and not self._playback_started and self._answered_at is not None:
                 call_obj = self._call_obj or getattr(self._session, "_last_call", None)
                 if call_obj is not None:
                     log.info(
