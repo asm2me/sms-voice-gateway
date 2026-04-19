@@ -2707,6 +2707,7 @@ async def admin_tools_tts_preview_audio(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "path is required")
 
     audio_path = Path(raw_audio_path)
+    if not audio_path.is_absolute():
         audio_path = (BASE_DIR / audio_path).resolve()
     else:
         audio_path = audio_path.resolve()
@@ -2806,25 +2807,6 @@ async def admin_tools_test_send(
         metadata={"smpp_username": smpp_username, "provider": provider, "job_id": job_id, "job_status": "queued"},
     )
     return JSONResponse(response_payload, status_code=status.HTTP_202_ACCEPTED)
-        action="tools.test_send",
-        section="tools",
-        detail=final_message,
-        status="error" if final_status == "failed" else "success",
-        target=phone_number,
-        metadata={"smpp_username": smpp_username, "provider": provider, "job_id": job_id, "job_status": final_status},
-    )
-    return templates.TemplateResponse(
-        request,
-        "admin.html",
-        _admin_context(
-            request,
-            settings,
-            active_section="tools",
-            success_message=final_message,
-            message_level=final_message_level,
-            tools_form_values=tools_form_values,
-        ),
-    )
 
 
 @app.post("/admin/queue/delete")
@@ -3244,14 +3226,6 @@ async def generic_webhook(
         "success": True,
         "detail": "SMS processing in background",
         "queue_item_id": queue_item.id,
-    }
-        "text_spoken": result.text_spoken,
-        "audio_cached": result.was_cached,
-        "ami_action_id": result.ami_action_id,
-        "delivered": result.delivered,
-        "read": result.read,
-        "answered": result.answered,
-        "details": result.details,
     }
 
 
