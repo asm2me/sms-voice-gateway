@@ -58,7 +58,7 @@ from .admin_reports import (
     record_delivery_report,
     record_queue_item,
 )
-from .cache import AudioCache, RateLimiter, get_redis
+from .cache import AudioCache, get_redis
 from .config import SIPAccount, SMPPAccount, Settings, SystemUser, get_system_user_permissions
 from .config_store import (
     ADMIN_MANAGED_FIELDS,
@@ -844,8 +844,6 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
 
     delivery_retry_count_raw = str(form.get("delivery_retry_count", "")).strip()
     delivery_retry_interval_raw = str(form.get("delivery_retry_interval_seconds", "")).strip()
-    rate_limit_hourly_raw = str(form.get("rate_limit_hourly", "")).strip()
-    rate_limit_daily_raw = str(form.get("rate_limit_daily", "")).strip()
 
     return SMPPAccount(
         id=account_id,
@@ -857,8 +855,6 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
         default_sip_account_id=str(form.get("default_sip_account_id", "")).strip(),
         delivery_retry_count=int(delivery_retry_count_raw) if delivery_retry_count_raw != "" else None,
         delivery_retry_interval_seconds=int(delivery_retry_interval_raw) if delivery_retry_interval_raw != "" else None,
-        rate_limit_hourly=int(rate_limit_hourly_raw) if rate_limit_hourly_raw != "" else None,
-        rate_limit_daily=int(rate_limit_daily_raw) if rate_limit_daily_raw != "" else None,
     )
 
 
@@ -912,12 +908,14 @@ def _simulate_smpp_test_send(
     if not smpp_account.enabled:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Selected SMPP user is disabled")
 
+    provider_label = str(provider or "").strip() or "admin-test"
+
     queue_store = get_queue_store(settings)
     now = _utc_now_iso()
     queue_item = record_queue_item(
         settings,
         phone_number=phone_number,
-        provider=provider,
+        provider=provider_label,
         body=body,
         status="processing",
         smpp_username=smpp_username,
@@ -927,14 +925,18 @@ def _simulate_smpp_test_send(
         current_queue_item.updated_at = now
         current_queue_item.status = "processing"
         current_queue_item.phone_number = phone_number
-        current_queue_item.provider = provider
+        current_queue_item.provider = provider_label
         current_queue_item.body = body
         current_queue_item.body_preview = body[:160]
         queue_store.upsert(current_queue_item)
 
-    use_isolated_sip = provider == "admin-test"
-    gateway = SMSGateway(settings, isolated_sip=use_isolated_sip)
-    sms = IncomingSMS(body=body, destination=phone_number, provider=provider, smpp_username=smpp_username)
+    # The optional provider field in the admin Tools form is only a reporting label.
+    # Admin test-send should always execute with admin-test semantics so it keeps:
+    # - isolated SIP runtime
+    # - no queued retries
+    # - silence fallback when the configured TTS provider is rate-limited/unavailable
+    gateway = SMSGateway(settings, isolated_sip=True)
+    sms = IncomingSMS(body=body, destination=phone_number, provider="admin-test", smpp_username=smpp_username)
     try:
         result = gateway.process(sms)
 
@@ -948,11 +950,10 @@ def _simulate_smpp_test_send(
             result=result,
         )
     finally:
-        if use_isolated_sip:
-            try:
-                gateway.sip_ua.close()
-            except Exception:
-                pass
+        try:
+            gateway.sip_ua.close()
+        except Exception:
+            pass
 
     return {
         "queue_item": (get_queue_item(settings, queue_item.id) or queue_item.to_dict()),
@@ -1212,8 +1213,6 @@ def _admin_context(
             settings,
             [
                 ("webhook_secret", "Webhook Secret"),
-                ("rate_limit_hourly", "Rate Limit Hourly"),
-                ("rate_limit_daily", "Rate Limit Daily"),
             ],
         ),
         "provider_settings": _build_setting_items(
@@ -1268,7 +1267,7 @@ def _admin_context(
         ),
         "config_groups": [
             {"key": "basic", "label": "Core Voice Routing", "description": "TTS, parsing, and playback behavior"},
-            {"key": "security", "label": "Security and Access", "description": "Webhook verification and rate limiting"},
+            {"key": "security", "label": "Security and Access", "description": "Webhook verification and access control"},
             {"key": "providers", "label": "Speech Provider Credentials", "description": "Cloud/provider credentials and engine options"},
             {"key": "telephony", "label": "Telephony and Gateway Routing", "description": "Outbound SIP, SMPP listener, and dialing behavior"},
             {"key": "storage", "label": "Storage and Persistence", "description": "Cache, Redis, reports, and retry persistence"},
@@ -1278,15 +1277,7 @@ def _admin_context(
         "health": health_payload,
         "sip_accounts": [account.model_dump(by_alias=True) for account in settings.sip_accounts],
         "smpp_accounts": [
-            {
-                **account.model_dump(),
-                "effective_rate_limit_hourly": account.rate_limit_hourly if account.rate_limit_hourly not in (None, 0) else settings.smpp_default_rate_limit_hourly,
-                "effective_rate_limit_daily": account.rate_limit_daily if account.rate_limit_daily not in (None, 0) else settings.smpp_default_rate_limit_daily,
-                "rate_limit_hourly_is_unlimited": account.rate_limit_hourly == 0,
-                "rate_limit_daily_is_unlimited": account.rate_limit_daily == 0,
-                "effective_rate_limit_hourly_is_unlimited": (account.rate_limit_hourly if account.rate_limit_hourly is not None else settings.smpp_default_rate_limit_hourly) == 0,
-                "effective_rate_limit_daily_is_unlimited": (account.rate_limit_daily if account.rate_limit_daily is not None else settings.smpp_default_rate_limit_daily) == 0,
-            }
+            account.model_dump()
             for account in settings.smpp_accounts
         ],
         "system_users": [user.model_dump() for user in settings.system_users],
@@ -1845,8 +1836,6 @@ async def admin_update_advanced_config(
             "smpp_enabled",
             "smpp_host",
             "smpp_port",
-            "rate_limit_hourly",
-            "rate_limit_daily",
             "delivery_report_store_path",
             "delivery_report_max_items",
         ],
@@ -2983,7 +2972,17 @@ async def admin_tools_test_send_status(
 ):
     job = _get_admin_test_send_job(job_id)
     if not job:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Test-send job not found")
+        return JSONResponse(
+            {
+                "success": False,
+                "job_id": job_id,
+                "status": "expired",
+                "error": "job_state_unavailable",
+                "message": "Live test-send status is no longer available in memory. Check Delivery Reports or the queue below for the persisted result.",
+                "result": None,
+                "queue_item": None,
+            }
+        )
     return JSONResponse(job)
 
 

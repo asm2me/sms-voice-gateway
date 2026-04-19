@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from .admin_reports import QueueItem, get_queue_store
-from .cache import AudioCache, RateLimiter
+from .cache import AudioCache
 from .config import SIPAccount, Settings
 from .config_store import get_sip_account_for_smpp_username
 from .pjsua2_service import SipCallRequest, build_pjsua2_service
@@ -115,8 +115,6 @@ def _derive_pending_reason(*, stage: str, detail: str = "") -> str:
         base = "Pending SIP trunk"
     elif normalized_stage == "voice_tts":
         base = "Pending VOICE TTS"
-    elif normalized_stage == "rate_limit":
-        base = "Pending rate limit window"
     elif normalized_stage == "destination":
         base = "Pending valid destination"
     else:
@@ -186,8 +184,6 @@ class SMSGateway:
             scope=sip_scope,
             isolated=isolated_sip,
         )
-        self.rate_limiter = RateLimiter(settings)
-
     def _resolve_sip_account(self, sms: IncomingSMS) -> Optional[SIPAccount]:
         return get_sip_account_for_smpp_username(self.settings, sms.smpp_username)
 
@@ -218,17 +214,6 @@ class SMSGateway:
                 details={"pending_reason": _derive_pending_reason(stage="voice_tts", detail="message body is empty after number parsing")},
             )
 
-        bypass_rate_limit = sms.provider == "admin-test"
-        if not bypass_rate_limit:
-            allowed, reason = self.rate_limiter.is_allowed(phone)
-            if not allowed:
-                log.warning("Rate limit for %s: %s", phone, reason)
-                return GatewayResult(
-                    success=False,
-                    phone_number=phone,
-                    error=f"Rate limited: {reason}",
-                    details={"pending_reason": _derive_pending_reason(stage="rate_limit", detail=reason)},
-                )
         try:
             audio_path, was_cached = self.tts.get_or_create_audio(spoken_text)
         except Exception as exc:
@@ -282,7 +267,6 @@ class SMSGateway:
                     "pending_reason": _derive_pending_reason(stage="sip_trunk", detail="no enabled SIP account is assigned for this SMPP user"),
                     "tts_cached": was_cached,
                     "hash": hkey,
-                    "rate_counts": self.rate_limiter.get_counts(phone),
                     "smpp_username": sms.smpp_username or "",
                 },
             )
@@ -347,7 +331,6 @@ class SMSGateway:
                         "sip_result": sip_result.details,
                         "tts_cached": was_cached,
                         "hash": hkey,
-                        "rate_counts": {} if bypass_rate_limit else self.rate_limiter.get_counts(phone),
                         "attempts": attempt,
                         "max_attempts": max_attempts,
                         "retry_interval_seconds": retry_interval_seconds,
@@ -382,7 +365,6 @@ class SMSGateway:
                         "sip_result": sip_result.details,
                         "tts_cached": was_cached,
                         "hash": hkey,
-                        "rate_counts": {} if bypass_rate_limit else self.rate_limiter.get_counts(phone),
                         "attempts": attempt,
                         "max_attempts": max_attempts,
                         "retry_interval_seconds": retry_interval_seconds,
@@ -409,7 +391,6 @@ class SMSGateway:
                         "sip_result": sip_result.details,
                         "tts_cached": was_cached,
                         "hash": hkey,
-                        "rate_counts": {} if bypass_rate_limit else self.rate_limiter.get_counts(phone),
                         "attempts": attempt,
                         "max_attempts": max_attempts,
                         "retry_interval_seconds": retry_interval_seconds,
@@ -459,7 +440,6 @@ class SMSGateway:
                 "sip_result": None,
                 "tts_cached": was_cached,
                 "hash": hkey,
-                "rate_counts": {} if bypass_rate_limit else self.rate_limiter.get_counts(phone),
                 "attempts": max_attempts,
                 "max_attempts": max_attempts,
                 "retry_interval_seconds": retry_interval_seconds,

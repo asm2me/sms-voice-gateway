@@ -171,35 +171,13 @@ class RateLimiter:
         self.settings = settings
 
     def _check_and_increment(self, phone: str, window: str, limit: int, ttl: int) -> bool:
-        """Returns True if the call is allowed, False if rate-limited."""
-        if limit <= 0:
-            return True
-        r = get_redis(self.settings)
-        k = _key("rate", self.settings, phone, window)
-        try:
-            count = r.incr(k)
-            if count == 1:
-                r.expire(k, ttl)
-            return count <= limit
-        except Exception as exc:
-            log.warning("Rate limiter error (%s): %s – allowing call", phone, exc)
-            return True
+        """Rate limiting has been removed; always allow."""
+        return True
 
     def is_allowed(self, phone: str) -> tuple[bool, str]:
-        """Check hourly and daily limits.  Returns (allowed, reason)."""
-        if self.settings.rate_limit_hourly > 0 and not self._check_and_increment(phone, "hourly", self.settings.rate_limit_hourly, 3600):
-            return False, f"hourly limit ({self.settings.rate_limit_hourly}) exceeded"
-        if self.settings.rate_limit_daily > 0 and not self._check_and_increment(phone, "daily", self.settings.rate_limit_daily, 86400):
-            return False, f"daily limit ({self.settings.rate_limit_daily}) exceeded"
+        """Rate limiting has been removed; always allow."""
         return True, "ok"
 
     def get_counts(self, phone: str) -> dict:
-        r = get_redis(self.settings)
-        def _get(window: str) -> int:
-            k = _key("rate", self.settings, phone, window)
-            try:
-                v = r.get(k)
-                return int(v) if v else 0
-            except Exception:
-                return 0
-        return {"hourly": _get("hourly"), "daily": _get("daily")}
+        """Rate limiting has been removed; return empty counters."""
+        return {}

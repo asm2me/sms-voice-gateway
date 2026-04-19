@@ -1926,8 +1926,6 @@
                   <th>Enabled</th>
                   <th>Default</th>
                   <th>Default SIP</th>
-                  <th>Hourly Limit</th>
-                  <th>Daily Limit</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -1950,8 +1948,6 @@
                     </span>
                   </td>
                   <td class="mono">{{ account.default_sip_account_id or '—' }}</td>
-                  <td class="mono">{{ account.effective_rate_limit_hourly or '—' }}</td>
-                  <td class="mono">{{ account.effective_rate_limit_daily or '—' }}</td>
                   <td>
                     <div class="table-actions">
                       <a class="button button-secondary button-small" href="#smpp-user-edit-{{ account.id }}">Edit</a>
@@ -2035,16 +2031,6 @@
                     <input type="number" step="1" min="0" name="delivery_retry_interval_seconds" placeholder="Use global default" />
                     <small class="muted">Optional per-user retry interval override.</small>
                   </label>
-                  <label class="field-group">
-                    <span class="field-label">Hourly Limit</span>
-                    <input type="number" step="1" min="0" name="rate_limit_hourly" placeholder="0 = unlimited; blank uses global default" />
-                    <small class="muted">Optional per-user hourly message limit. Set 0 to disable the limit for this user.</small>
-                  </label>
-                  <label class="field-group">
-                    <span class="field-label">Daily Limit</span>
-                    <input type="number" step="1" min="0" name="rate_limit_daily" placeholder="0 = unlimited; blank uses global default" />
-                    <small class="muted">Optional per-user daily message limit. Set 0 to disable the limit for this user.</small>
-                  </label>
                 </div>
                 <div class="form-actions">
                   <a href="#" class="button button-secondary">Cancel</a>
@@ -2113,16 +2099,6 @@
                     <span class="field-label">Retry Interval Seconds</span>
                     <input type="number" step="1" min="0" name="delivery_retry_interval_seconds" value="{{ account.delivery_retry_interval_seconds if account.delivery_retry_interval_seconds is not none else '' }}" placeholder="Use global default" />
                     <small class="muted">Optional per-user retry interval override.</small>
-                  </label>
-                  <label class="field-group">
-                    <span class="field-label">Hourly Limit</span>
-                    <input type="number" step="1" min="0" name="rate_limit_hourly" value="{{ account.rate_limit_hourly if account.rate_limit_hourly is not none else '' }}" placeholder="0 = unlimited; blank uses global default" />
-                    <small class="muted">Optional per-user hourly message limit. Set 0 to disable the limit for this user.</small>
-                  </label>
-                  <label class="field-group">
-                    <span class="field-label">Daily Limit</span>
-                    <input type="number" step="1" min="0" name="rate_limit_daily" value="{{ account.rate_limit_daily if account.rate_limit_daily is not none else '' }}" placeholder="0 = unlimited; blank uses global default" />
-                    <small class="muted">Optional per-user daily message limit. Set 0 to disable the limit for this user.</small>
                   </label>
                 </div>
                 <div class="form-actions">
@@ -2359,11 +2335,14 @@
     window.__adminRenderToolsTestSendStatus ||
     function (payload) {
       const normalizedStatus = String((payload && payload.status) || "queued").toLowerCase();
+      const isExpiredStatus =
+        normalizedStatus === "expired" ||
+        String((payload && payload.error) || "").toLowerCase() === "job_state_unavailable";
       const isActiveStatus = normalizedStatus === "queued" || normalizedStatus === "processing";
       const noticeLevel =
         normalizedStatus === "failed" || normalizedStatus === "error"
           ? "danger"
-          : normalizedStatus === "processing"
+          : normalizedStatus === "processing" || isExpiredStatus
           ? "warning"
           : "success";
       const message =
@@ -2400,7 +2379,9 @@
         (references.length
           ? '<div class="inline-test-status__summary muted">' + references.join(" • ") + "</div>"
           : "") +
-        (!isActiveStatus
+        (!isActiveStatus && isExpiredStatus
+          ? '<div class="inline-test-status__summary muted">Live in-memory polling data expired normally. Check Delivery Reports or the queue below for the persisted result.</div>'
+          : !isActiveStatus
           ? '<div class="inline-test-status__summary muted">Polling stopped. You can submit another test call from this page.</div>'
           : "") +
         (audioUrl
@@ -2441,15 +2422,24 @@
         window.__adminClearToolsTestSendPoll();
       } catch (error) {
         window.__adminClearToolsTestSendPoll();
-        ensureTopNotice((error && error.message) || "Unable to read test-send status", "danger");
+        const errorMessage = (error && error.message) || "Unable to read test-send status";
+        const looksExpired =
+          /job[_ ]state[_ ]unavailable/i.test(errorMessage) ||
+          /no longer available in memory/i.test(errorMessage) ||
+          /persisted result/i.test(errorMessage);
+        ensureTopNotice(errorMessage, looksExpired ? "warning" : "danger");
         const statusHost = document.getElementById("tts-preview-status");
         if (statusHost) {
           statusHost.innerHTML =
-            '<span class="status-badge status-danger">failed</span>' +
+            '<span class="status-badge status-' + (looksExpired ? "pending" : "danger") + '">' + (looksExpired ? "expired" : "failed") + "</span>" +
             '<div class="inline-test-status__summary">' +
-            escapeHtml((error && error.message) || "Unable to read test-send status") +
+            escapeHtml(errorMessage) +
             "</div>" +
-            '<div class="inline-test-status__summary muted">Polling stopped. The backend may have crashed or the request state became unavailable.</div>';
+            '<div class="inline-test-status__summary muted">' +
+            (looksExpired
+              ? "Live in-memory polling data expired normally. Check Delivery Reports or the queue below for the persisted result."
+              : "Polling stopped because the live test-send status could not be read.") +
+            "</div>";
         }
       }
     };
