@@ -1640,6 +1640,13 @@ class _CallCallbackHolder:
             )
             if self._playback_audio_path:
                 self._playback_pending = True
+                # Since onCallMediaState might not be called, trigger it manually after a delay
+                import threading
+                threading.Thread(
+                    target=lambda: self._delayed_media_state_trigger(call_obj),
+                    name=f"media-state-{self._call_id}",
+                    daemon=True,
+                ).start()
 
         if (
             state_text.upper() == "CONFIRMED"
@@ -1742,6 +1749,50 @@ class _CallCallbackHolder:
             else:
                 log.warning(
                     "Outbound SIP onCallMediaState playback failed after 5 attempts account=%s call_id=%s error=%s",
+                    self._account_id,
+                    self._call_id,
+                    self._playback_error,
+                )
+
+    def _delayed_media_state_trigger(self, call_obj: Any) -> None:
+        """Trigger media state processing after a delay to work around PJSIP callback issues."""
+        time.sleep(0.5)  # Wait 500ms for media to become ready
+        if self._playback_audio_path and not self._playback_started and self._answered_at is not None:
+            log.info(
+                "Outbound SIP delayed media state trigger account=%s call_id=%s",
+                self._account_id,
+                self._call_id,
+            )
+            # Try multiple times with delays
+            for attempt in range(1, 10):
+                if self._playback_started:
+                    log.info(
+                        "Outbound SIP delayed trigger: playback already started, exiting account=%s call_id=%s",
+                        self._account_id,
+                        self._call_id,
+                    )
+                    break
+                started = self._try_start_playback(call_obj)
+                if started:
+                    log.info(
+                        "Outbound SIP delayed trigger: playback started on attempt %s account=%s call_id=%s",
+                        attempt,
+                        self._account_id,
+                        self._call_id,
+                    )
+                    break
+                if attempt < 10:
+                    log.info(
+                        "Outbound SIP delayed trigger: attempt %s failed, retrying after 300ms account=%s call_id=%s error=%s",
+                        attempt,
+                        self._account_id,
+                        self._call_id,
+                        self._playback_error,
+                    )
+                    time.sleep(0.3)
+            else:
+                log.warning(
+                    "Outbound SIP delayed trigger: playback failed after 10 attempts account=%s call_id=%s error=%s",
                     self._account_id,
                     self._call_id,
                     self._playback_error,
