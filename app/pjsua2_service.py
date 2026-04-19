@@ -1405,9 +1405,9 @@ class _CallCallbackHolder:
         self._playback_pause_ms = max(0, int(pause_ms or 0))
         self._scheduled_hangup_at = None
 
-    def _try_start_playback(self, call_obj: Any) -> None:
+    def _try_start_playback(self, call_obj: Any) -> bool:
         if self._playback_started:
-            return
+            return True
         if not self._playback_audio_path:
             self._playback_error = "Playback audio path is empty"
             log.warning(
@@ -1416,7 +1416,7 @@ class _CallCallbackHolder:
                 self._call_id,
                 self._playback_error,
             )
-            return
+            return False
 
         wav_path = Path(self._playback_audio_path)
         if not wav_path.exists():
@@ -1428,14 +1428,14 @@ class _CallCallbackHolder:
                 self._playback_audio_path,
                 self._playback_error,
             )
-            return
+            return False
 
         try:
             self._session._register_current_thread()
             pj = self._session._pj
             if pj is None:
                 self._playback_error = "PJSUA2 bindings are unavailable during playback"
-                return
+                return False
 
             call_audio_media = None
             with suppress(Exception):
@@ -1470,7 +1470,7 @@ class _CallCallbackHolder:
                     self._call_id,
                     self._playback_error,
                 )
-                return
+                return False
 
             player = pj.AudioMediaPlayer()
             player.createPlayer(str(wav_path))
@@ -1485,7 +1485,7 @@ class _CallCallbackHolder:
                 _PJSUA_ACTIVE_PLAYERS[self._call_id] = {
                     "player": player,
                     "player_media": player_media,
-                    "wav_path": "",
+                    "wav_path": str(wav_path),
                 }
 
             self._player = player
@@ -1493,6 +1493,7 @@ class _CallCallbackHolder:
             self._playback_started = True
             self._playback_started_at = time.time()
             self._playback_finished_at = None
+            self._playback_pending = False
             if self._playback_audio_duration_seconds > 0:
                 scheduled_from_playback_start = self._playback_started_at + self._playback_audio_duration_seconds + 1.5
                 if self._scheduled_hangup_at is None or scheduled_from_playback_start > self._scheduled_hangup_at:
@@ -1507,6 +1508,7 @@ class _CallCallbackHolder:
                 self._playback_repeat_count,
                 self._playback_pause_ms,
             )
+            return True
         except Exception as exc:
             self._playback_error = f"{type(exc).__name__}: {exc}"
             log.exception(
@@ -1515,6 +1517,7 @@ class _CallCallbackHolder:
                 self._call_id,
                 self._playback_audio_path,
             )
+            return False
 
     def onCallState(self, *args: Any, **kwargs: Any) -> None:
         call_obj = args[0] if args else None
@@ -1581,7 +1584,13 @@ class _CallCallbackHolder:
             last_status_code,
         )
 
-        if last_status_code == 200 and self._answered_at is None:
+        answered_state = (
+            last_status_code == 200
+            or normalized_state.upper() in {"CONFIRMED", "ACTIVE", "CONNECTED"}
+            or state_text.upper() == "CONFIRMED"
+            or state_name.upper() == "CONFIRMED"
+        )
+        if answered_state and self._answered_at is None:
             self._answered_at = time.time()
             if self._playback_audio_duration_seconds > 0:
                 self._scheduled_hangup_at = self._answered_at + self._playback_audio_duration_seconds + 3.0
@@ -1590,10 +1599,12 @@ class _CallCallbackHolder:
                 last_status_code=last_status_code,
                 destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
             )
+            playback_started = False
             with suppress(Exception):
-                call_media = call_obj.getAudioMedia(-1) if call_obj is not None else None
-                if call_media is not None:
-                    self._try_start_playback(call_obj)
+                if call_obj is not None:
+                    playback_started = self._try_start_playback(call_obj)
+            if not playback_started:
+                self._playback_pending = True
             log.info(
                 "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s scheduled_hangup_at=%s playback_duration=%.3f",
                 self._account_id,
@@ -1604,27 +1615,27 @@ class _CallCallbackHolder:
                 self._playback_audio_duration_seconds,
             )
 
-            if (
-                state_text.upper() == "CONFIRMED"
-                or state_name.upper() == "CONFIRMED"
-            ):
-                if self._answered_at is None:
-                    self._answered_at = time.time()
-                    self._set_runtime_state(
-                        state="ACTIVE",
-                        last_status_code=last_status_code,
-                        destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
-                    )
-                log.info(
-                    "Outbound SIP call confirmed account=%s call_id=%s state=%s status=%s",
-                    self._account_id,
-                    self._call_id,
-                    state_text or state_name,
-                    last_status_code,
+        if (
+            state_text.upper() == "CONFIRMED"
+            or state_name.upper() == "CONFIRMED"
+        ):
+            if self._answered_at is None:
+                self._answered_at = time.time()
+                self._set_runtime_state(
+                    state="ACTIVE",
+                    last_status_code=last_status_code,
+                    destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
                 )
-                if call_obj is not None and not self._playback_started:
-                    self._playback_pending = True
-                    self._try_start_playback(call_obj)
+            log.info(
+                "Outbound SIP call confirmed account=%s call_id=%s state=%s status=%s",
+                self._account_id,
+                self._call_id,
+                state_text or state_name,
+                last_status_code,
+            )
+            if call_obj is not None and not self._playback_started:
+                self._playback_pending = True
+                self._try_start_playback(call_obj)
 
         if (
             state_name in self._TERMINAL_STATES
@@ -1649,8 +1660,12 @@ class _CallCallbackHolder:
             self._playback_audio_path[:80] if self._playback_audio_path else "",
         )
 
-        if self._answered_at is not None and not self._playback_started and self._playback_audio_path:
-            self._try_start_playback(call_obj)
+        if self._playback_audio_path and not self._playback_started:
+            if self._answered_at is not None:
+                self._playback_pending = True
+                self._try_start_playback(call_obj)
+            elif self._playback_pending:
+                self._try_start_playback(call_obj)
 
     def wait_for_completion(self, timeout_seconds: float) -> dict[str, Any]:
         deadline = time.time() + max(1.0, timeout_seconds)
@@ -1660,10 +1675,11 @@ class _CallCallbackHolder:
                 if endpoint is not None:
                     endpoint.libHandleEvents(50)
             if self._playback_pending and not self._playback_started:
-                self._playback_pending = False
                 call_obj = getattr(self._session, "_last_call", None)
+                started = False
                 if call_obj is not None:
-                    self._try_start_playback(call_obj)
+                    started = self._try_start_playback(call_obj)
+                self._playback_pending = bool(not started and self._playback_audio_path)
 
             if self._playback_started and self._playback_started_at is not None:
                 expected_end = self._playback_started_at + self._playback_audio_duration_seconds
