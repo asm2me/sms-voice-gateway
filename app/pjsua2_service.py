@@ -1406,7 +1406,16 @@ class _CallCallbackHolder:
         self._scheduled_hangup_at = None
 
     def _try_start_playback(self, call_obj: Any) -> bool:
+        log.info(
+            "Outbound SIP _try_start_playback called account=%s call_id=%s playback_started=%s audio_path=%s audio_duration=%.3f",
+            self._account_id,
+            self._call_id,
+            self._playback_started,
+            self._playback_audio_path[:100] if self._playback_audio_path else "",
+            self._playback_audio_duration_seconds,
+        )
         if self._playback_started:
+            log.info("Outbound SIP playback already started, skipping account=%s call_id=%s", self._account_id, self._call_id)
             return True
         if not self._playback_audio_path:
             self._playback_error = "Playback audio path is empty"
@@ -1472,6 +1481,12 @@ class _CallCallbackHolder:
                 )
                 return False
 
+            log.info(
+                "Outbound SIP creating audio player account=%s call_id=%s wav_path=%s",
+                self._account_id,
+                self._call_id,
+                str(wav_path),
+            )
             player = pj.AudioMediaPlayer()
             player.createPlayer(str(wav_path))
             player_media = player
@@ -1479,6 +1494,13 @@ class _CallCallbackHolder:
             with suppress(Exception):
                 player_media = player.getAudioMedia()
 
+            log.info(
+                "Outbound SIP starting audio transmission account=%s call_id=%s wav_path=%s audio_duration=%.3f",
+                self._account_id,
+                self._call_id,
+                str(wav_path),
+                self._playback_audio_duration_seconds,
+            )
             player_media.startTransmit(call_audio_media)
 
             with _PJSUA_PLAYER_LOCK:
@@ -1592,8 +1614,6 @@ class _CallCallbackHolder:
         )
         if answered_state and self._answered_at is None:
             self._answered_at = time.time()
-            if self._playback_audio_duration_seconds > 0:
-                self._scheduled_hangup_at = self._answered_at + self._playback_audio_duration_seconds + 3.0
             self._set_runtime_state(
                 state="ANSWERED",
                 last_status_code=last_status_code,
@@ -1606,12 +1626,13 @@ class _CallCallbackHolder:
             if not playback_started:
                 self._playback_pending = True
             log.info(
-                "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s scheduled_hangup_at=%s playback_duration=%.3f",
+                "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s playback_started=%s playback_pending=%s playback_duration=%.3f",
                 self._account_id,
                 self._call_id,
                 state_text or state_name,
                 last_status_code,
-                self._scheduled_hangup_at,
+                playback_started,
+                self._playback_pending,
                 self._playback_audio_duration_seconds,
             )
 
@@ -1660,12 +1681,22 @@ class _CallCallbackHolder:
             self._playback_audio_path[:80] if self._playback_audio_path else "",
         )
 
-        if self._playback_audio_path and not self._playback_started:
-            if self._answered_at is not None:
-                self._playback_pending = True
-                self._try_start_playback(call_obj)
-            elif self._playback_pending:
-                self._try_start_playback(call_obj)
+        if self._playback_audio_path and not self._playback_started and self._answered_at is not None:
+            log.info(
+                "Outbound SIP onCallMediaState attempting playback account=%s call_id=%s answered_at=%s playback_pending=%s",
+                self._account_id,
+                self._call_id,
+                self._answered_at,
+                self._playback_pending,
+            )
+            playback_started = self._try_start_playback(call_obj)
+            log.info(
+                "Outbound SIP onCallMediaState playback result account=%s call_id=%s started=%s error=%s",
+                self._account_id,
+                self._call_id,
+                playback_started,
+                self._playback_error,
+            )
 
     def wait_for_completion(self, timeout_seconds: float) -> dict[str, Any]:
         deadline = time.time() + max(1.0, timeout_seconds)
@@ -1698,6 +1729,37 @@ class _CallCallbackHolder:
 
                 if self._playback_finished_at is None and self._scheduled_hangup_at is not None:
                     self._playback_finished_at = self._scheduled_hangup_at
+
+            if (
+                self._answered_at is not None
+                and not self._playback_started
+                and not self._done.is_set()
+                and time.time() >= (self._answered_at + 10.0)
+            ):
+                log.warning(
+                    "Outbound SIP playback never started after 10s, hanging up account=%s call_id=%s error=%s",
+                    self._account_id,
+                    self._call_id,
+                    self._playback_error or "timeout",
+                )
+                self._playback_hangup_requested = True
+                call_obj = getattr(self._session, "_last_call", None)
+                if call_obj is not None:
+                    try:
+                        pj = self._session._pj
+                        self._session._register_current_thread()
+                        if pj is not None:
+                            hangup_param = pj.CallOpParam()
+                            with suppress(Exception):
+                                hangup_param.statusCode = 200
+                            call_obj.hangup(hangup_param)
+                    except Exception as exc:
+                        log.warning(
+                            "Outbound SIP fallback hangup failed account=%s call_id=%s error=%s",
+                            self._account_id,
+                            self._call_id,
+                            exc,
+                        )
 
             if (
                 self._scheduled_hangup_at is not None
