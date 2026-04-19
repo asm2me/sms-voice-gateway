@@ -1545,6 +1545,7 @@ class _CallCallbackHolder:
             return False
 
     def onCallState(self, *args: Any, **kwargs: Any) -> None:
+        self._session._register_current_thread()
         call_obj = args[0] if args else None
         info_obj = None
 
@@ -1630,22 +1631,15 @@ class _CallCallbackHolder:
                 last_status_code=last_status_code,
                 destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
             )
-            playback_started = False
-            with suppress(Exception):
-                if call_obj is not None:
-                    playback_started = self._try_start_playback(call_obj)
-            if not playback_started:
-                self._playback_pending = True
             log.info(
-                "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s playback_started=%s playback_pending=%s playback_duration=%.3f",
+                "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s playback_pending=True",
                 self._account_id,
                 self._call_id,
                 state_text or state_name,
                 last_status_code,
-                playback_started,
-                self._playback_pending,
-                self._playback_audio_duration_seconds,
             )
+            if self._playback_audio_path:
+                self._playback_pending = True
 
         if (
             state_text.upper() == "CONFIRMED"
@@ -1698,6 +1692,7 @@ class _CallCallbackHolder:
             self._release_slot()
 
     def onCallMediaState(self, *args: Any, **kwargs: Any) -> None:
+        self._session._register_current_thread()
         call_obj = args[0] if args else None
         if call_obj is None:
             return
@@ -1713,34 +1708,73 @@ class _CallCallbackHolder:
 
         if self._playback_audio_path and not self._playback_started and self._answered_at is not None:
             log.info(
-                "Outbound SIP onCallMediaState attempting playback account=%s call_id=%s answered_at=%s playback_pending=%s",
+                "Outbound SIP onCallMediaState attempting playback (will retry up to 5 times) account=%s call_id=%s answered_at=%s",
                 self._account_id,
                 self._call_id,
                 self._answered_at,
-                self._playback_pending,
             )
-            playback_started = self._try_start_playback(call_obj)
-            log.info(
-                "Outbound SIP onCallMediaState playback result account=%s call_id=%s started=%s error=%s",
-                self._account_id,
-                self._call_id,
-                playback_started,
-                self._playback_error,
-            )
+            for attempt in range(1, 6):
+                if self._playback_started:
+                    log.info(
+                        "Outbound SIP onCallMediaState playback already started, skipping retries account=%s call_id=%s",
+                        self._account_id,
+                        self._call_id,
+                    )
+                    break
+                playback_started = self._try_start_playback(call_obj)
+                if playback_started:
+                    log.info(
+                        "Outbound SIP onCallMediaState playback started on attempt %s account=%s call_id=%s",
+                        attempt,
+                        self._account_id,
+                        self._call_id,
+                    )
+                    break
+                if attempt < 5:
+                    log.info(
+                        "Outbound SIP onCallMediaState attempt %s failed, retrying after 200ms account=%s call_id=%s error=%s",
+                        attempt,
+                        self._account_id,
+                        self._call_id,
+                        self._playback_error,
+                    )
+                    time.sleep(0.2)
+            else:
+                log.warning(
+                    "Outbound SIP onCallMediaState playback failed after 5 attempts account=%s call_id=%s error=%s",
+                    self._account_id,
+                    self._call_id,
+                    self._playback_error,
+                )
 
     def wait_for_completion(self, timeout_seconds: float) -> dict[str, Any]:
         deadline = time.time() + max(1.0, timeout_seconds)
+        media_check_counter = 0
         while time.time() < deadline:
             with suppress(Exception):
                 endpoint = self._session._endpoint
                 if endpoint is not None:
                     endpoint.libHandleEvents(50)
+
+            media_check_counter += 1
+
             if self._playback_pending and not self._playback_started:
                 call_obj = getattr(self._session, "_last_call", None)
-                started = False
                 if call_obj is not None:
+                    log.info(
+                        "Outbound SIP polling for media readiness (check %s) account=%s call_id=%s",
+                        media_check_counter,
+                        self._account_id,
+                        self._call_id,
+                    )
                     started = self._try_start_playback(call_obj)
-                self._playback_pending = bool(not started and self._playback_audio_path)
+                    self._playback_pending = bool(not started and self._playback_audio_path)
+                    if started:
+                        log.info(
+                            "Outbound SIP playback started via polling account=%s call_id=%s",
+                            self._account_id,
+                            self._call_id,
+                        )
 
             if self._playback_started and self._playback_started_at is not None:
                 expected_end = self._playback_started_at + self._playback_audio_duration_seconds
