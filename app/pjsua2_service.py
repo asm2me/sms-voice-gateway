@@ -358,9 +358,15 @@ class PJSipUASession:
 
                 with suppress(Exception):
                     aud_mgr = ep.audDevManager()
-                    use_null_sound_device = bool(getattr(self.settings, "use_null_sound_device", True))
+                    use_null_sound_device = bool(getattr(self.settings, "use_null_sound_device", False))
+                    log.info(
+                        "PJSIP audio device manager account=%s use_null_sound_device=%s",
+                        self._account_id if hasattr(self, "_account_id") else "init",
+                        use_null_sound_device,
+                    )
                     if use_null_sound_device and hasattr(aud_mgr, "setNullDev"):
                         aud_mgr.setNullDev()
+                        log.info("PJSIP null sound device enabled")
                     elif hasattr(aud_mgr, "setNullDev"):
                         with suppress(Exception):
                             aud_mgr.setNullDev()
@@ -1482,13 +1488,23 @@ class _CallCallbackHolder:
                 return False
 
             log.info(
-                "Outbound SIP creating audio player account=%s call_id=%s wav_path=%s",
+                "Outbound SIP creating audio player account=%s call_id=%s wav_path=%s wav_exists=%s wav_size=%s",
                 self._account_id,
                 self._call_id,
                 str(wav_path),
+                wav_path.exists(),
+                wav_path.stat().st_size if wav_path.exists() else 0,
             )
             player = pj.AudioMediaPlayer()
             player.createPlayer(str(wav_path))
+
+            log.info(
+                "Outbound SIP player created account=%s call_id=%s player=%s call_audio_media=%s",
+                self._account_id,
+                self._call_id,
+                str(player),
+                str(call_audio_media),
+            )
 
             log.info(
                 "Outbound SIP starting audio transmission account=%s call_id=%s wav_path=%s audio_duration=%.3f",
@@ -1498,12 +1514,21 @@ class _CallCallbackHolder:
                 self._playback_audio_duration_seconds,
             )
 
-            with suppress(Exception):
+            try:
                 player.startTransmit(call_audio_media)
                 log.info(
-                    "Outbound SIP startTransmit called successfully account=%s call_id=%s",
+                    "Outbound SIP startTransmit called successfully account=%s call_id=%s player=%s call_audio_media=%s",
                     self._account_id,
                     self._call_id,
+                    str(player),
+                    str(call_audio_media),
+                )
+            except Exception as exc:
+                log.error(
+                    "Outbound SIP startTransmit failed account=%s call_id=%s error=%s",
+                    self._account_id,
+                    self._call_id,
+                    exc,
                 )
 
             with _PJSUA_PLAYER_LOCK:
