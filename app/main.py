@@ -1744,7 +1744,6 @@ async def admin_portal(
         section = "tools"
 
     _record_admin_audit(
-        request=request,
         action="admin.view",
         section=section,
         detail=f"Viewed the '{section}' admin section.",
@@ -1776,7 +1775,6 @@ async def admin_update_basic_config(
         ],
     )
     _record_admin_audit(
-        request=request,
         action="config.basic.save",
         section="config",
         detail="Saved core voice routing settings from the admin portal.",
@@ -1871,7 +1869,6 @@ async def admin_update_advanced_config(
             smpp_message = f" SMPP listener could not start: {exc}."
 
     _record_admin_audit(
-        request=request,
         action="config.advanced.save",
         section="config",
         detail=f"Saved advanced configuration from the admin portal.{smpp_message}".strip(),
@@ -2458,7 +2455,6 @@ async def admin_add_sip_account(
         system_users=list(current.system_users),
     )
     _record_admin_audit(
-        request=request,
         action="config.sip_account.save",
         section="config",
         detail=f"Saved SIP trunk '{new_account.label}' ({new_account.id}).",
@@ -2492,7 +2488,6 @@ async def admin_add_smpp_account(
         smpp_sip_assignments=assignments,
     )
     _record_admin_audit(
-        request=request,
         action="config.smpp_account.save",
         section="config",
         detail=f"Saved SMPP user '{new_account.label}' ({new_account.username or new_account.id}).",
@@ -2520,7 +2515,6 @@ async def admin_assign_smpp_to_sip(
         assignments[smpp_username] = sip_account_id
     settings = _save_account_collections(smpp_sip_assignments=assignments)
     _record_admin_audit(
-        request=request,
         action="config.assignment.save",
         section="config",
         detail=f"Assigned SMPP user '{smpp_username}' to SIP account '{sip_account_id}'.",
@@ -2544,7 +2538,6 @@ async def admin_delete_sip_account(
     account_id = str(form.get("account_id", "")).strip()
     settings = _delete_sip_account(current, account_id)
     _record_admin_audit(
-        request=request,
         action="config.sip_account.delete",
         section="config",
         detail=f"Deleted SIP trunk '{account_id}'.",
@@ -2567,7 +2560,6 @@ async def admin_delete_smpp_account(
     account_id = str(form.get("account_id", "")).strip()
     settings = _delete_smpp_account(current, account_id)
     _record_admin_audit(
-        request=request,
         action="config.smpp_account.delete",
         section="config",
         detail=f"Deleted SMPP user '{account_id}'.",
@@ -2597,7 +2589,6 @@ async def admin_save_system_user(
         smpp_sip_assignments=dict(current.smpp_sip_assignments),
     )
     _record_admin_audit(
-        request=request,
         action="config.system_user.save",
         section="config",
         detail=f"Saved system user '{new_user.username}' ({new_user.id}).",
@@ -2627,7 +2618,6 @@ async def admin_delete_system_user(
         smpp_sip_assignments=dict(current.smpp_sip_assignments),
     )
     _record_admin_audit(
-        request=request,
         action="config.system_user.delete",
         section="config",
         detail=f"Deleted system user '{user_id}'.",
@@ -2690,7 +2680,6 @@ async def admin_tools_tts_preview(
             f"Tools tts-preview failed provider={settings.tts_provider} error={exc}"
         )
         _record_admin_audit(
-            request=request,
             action="tools.tts_preview",
             section="tools",
             detail=f"TTS preview failed using provider '{settings.tts_provider}': {exc}",
@@ -2718,7 +2707,6 @@ async def admin_tools_tts_preview_audio(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "path is required")
 
     audio_path = Path(raw_audio_path)
-    if not audio_path.is_absolute():
         audio_path = (BASE_DIR / audio_path).resolve()
     else:
         audio_path = audio_path.resolve()
@@ -2810,7 +2798,6 @@ async def admin_tools_test_send(
 
     # Always return immediately - don't wait for job completion to avoid UI freeze
     _record_admin_audit(
-        request=request,
         action="tools.test_send",
         section="tools",
         detail=response_payload["message"],
@@ -2819,7 +2806,6 @@ async def admin_tools_test_send(
         metadata={"smpp_username": smpp_username, "provider": provider, "job_id": job_id, "job_status": "queued"},
     )
     return JSONResponse(response_payload, status_code=status.HTTP_202_ACCEPTED)
-        request=request,
         action="tools.test_send",
         section="tools",
         detail=final_message,
@@ -2854,7 +2840,6 @@ async def admin_delete_queue_item_route(
     removed = delete_queue_item(settings, item_id)
     message = f"Queue item '{item_id}' deleted." if removed else f"Queue item '{item_id}' was not found."
     _record_admin_audit(
-        request=request,
         action="queue.item.delete",
         section="reports",
         detail=message,
@@ -2879,7 +2864,6 @@ async def admin_batch_delete_queue_items_route(
     removed = batch_delete_queue_items(settings, item_ids)
     message = f"Deleted {removed} queue item{'s' if removed != 1 else ''}."
     _record_admin_audit(
-        request=request,
         action="queue.batch_delete",
         section="reports",
         detail=message,
@@ -2911,7 +2895,6 @@ async def admin_batch_update_queue_status_route(
     updated = batch_update_queue_item_status(settings, item_ids, status_value)
     message = f"Updated {updated} queue item{'s' if updated != 1 else ''} to '{status_value}'."
     _record_admin_audit(
-        request=request,
         action="queue.batch_status",
         section="reports",
         detail=message,
@@ -2942,7 +2925,6 @@ async def admin_batch_delete_inbox_messages_route(
     removed = batch_delete_inbox_messages(settings, item_ids)
     message = f"Deleted {removed} inbox message{'s' if removed != 1 else ''}."
     _record_admin_audit(
-        request=request,
         action="inbox.batch_delete",
         section="reports",
         detail=message,
@@ -3098,7 +3080,6 @@ async def admin_clear_old_reports(
     if hasattr(collector, "clear_old_reports"):
         collector.clear_old_reports()
     _record_admin_audit(
-        request=request,
         action="reports.clear",
         section="reports",
         detail="Cleared old delivery reports from the admin portal.",
@@ -3122,7 +3103,6 @@ async def admin_restart_service(
     health_context = _build_health_context(settings)
     health_context["restart_result"] = result
     _record_admin_audit(
-        request=request,
         action="health.restart",
         section="health",
         detail=result["message"],
