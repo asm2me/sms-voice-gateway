@@ -215,6 +215,7 @@ def _release_player(call_id: str) -> None:
     # destroyPlayer() during disconnect callbacks.
     player_state["player"] = None
     player_state["player_media"] = None
+    player_state["call_audio_media"] = None
 
     if cleanup_wav and wav_path:
         with suppress(Exception):
@@ -229,7 +230,7 @@ class PJSipUASession:
     call operations are guarded by a lock because PJSUA2 call/account object
     state is not designed for uncontrolled concurrent mutation.
     """
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, isolated: bool = False):
         self.settings = settings
         self._pj, self.import_error = _safe_import_pjsua2()
         self._lock = threading.RLock()
@@ -239,6 +240,7 @@ class PJSipUASession:
         self._current_profile: SipAccountProfile | None = None
         self._registered = False
         self._last_call = None
+        self._isolated = bool(isolated)
 
     @property
     def available(self) -> bool:
@@ -295,38 +297,41 @@ class PJSipUASession:
                     return PJSUA2RegistrationResult(
                         success=True,
                         message="PJSUA2 endpoint already initialised",
-                        details={"already_initialised": True},
+                        details={"already_initialised": True, "isolated": self._isolated},
                     )
 
-                with _PJSUA_GLOBAL_LOCK:
-                    if _PJSUA_GLOBAL_ENDPOINT is not None:
-                        self._endpoint = _PJSUA_GLOBAL_ENDPOINT
-                        self._transport = _PJSUA_GLOBAL_TRANSPORT
-                        self._register_current_thread()
-                        return PJSUA2RegistrationResult(
-                            success=True,
-                            message="PJSUA2 endpoint already initialised",
-                            details={"already_initialised": True, "shared_global_endpoint": True},
-                        )
+                pj = self._pj
+                assert pj is not None
 
-                    pj = self._pj
-                    ep = pj.Endpoint()
-                    ep.libCreate()
+                if not self._isolated:
+                    with _PJSUA_GLOBAL_LOCK:
+                        if _PJSUA_GLOBAL_ENDPOINT is not None:
+                            self._endpoint = _PJSUA_GLOBAL_ENDPOINT
+                            self._transport = _PJSUA_GLOBAL_TRANSPORT
+                            self._register_current_thread()
+                            return PJSUA2RegistrationResult(
+                                success=True,
+                                message="PJSUA2 endpoint already initialised",
+                                details={"already_initialised": True, "shared_global_endpoint": True, "isolated": False},
+                            )
 
-                    ep_cfg = pj.EpConfig()
-                    with suppress(Exception):
-                        ep_cfg.logConfig.level = 3
-                        ep_cfg.logConfig.consoleLevel = 3
-                    with suppress(Exception):
-                        ep_cfg.medConfig.noVad = True
-                    with suppress(Exception):
-                        ep_cfg.medConfig.hasIoqueue = True
-                    with suppress(Exception):
-                        ep_cfg.medConfig.clockRate = 16000
-                    with suppress(Exception):
-                        ep_cfg.medConfig.sndClockRate = 16000
+                ep = pj.Endpoint()
+                ep.libCreate()
 
-                    ep.libInit(ep_cfg)
+                ep_cfg = pj.EpConfig()
+                with suppress(Exception):
+                    ep_cfg.logConfig.level = 3
+                    ep_cfg.logConfig.consoleLevel = 3
+                with suppress(Exception):
+                    ep_cfg.medConfig.noVad = True
+                with suppress(Exception):
+                    ep_cfg.medConfig.hasIoqueue = True
+                with suppress(Exception):
+                    ep_cfg.medConfig.clockRate = 16000
+                with suppress(Exception):
+                    ep_cfg.medConfig.sndClockRate = 16000
+
+                ep.libInit(ep_cfg)
 
                 transport_cfg = pj.TransportConfig()
                 with suppress(Exception):
@@ -361,9 +366,10 @@ class PJSipUASession:
                     aud_mgr = ep.audDevManager()
                     use_null_sound_device = bool(getattr(self.settings, "use_null_sound_device", False))
                     log.info(
-                        "PJSIP audio device manager account=%s use_null_sound_device=%s",
+                        "PJSIP audio device manager account=%s use_null_sound_device=%s isolated=%s",
                         self._account_id if hasattr(self, "_account_id") else "init",
                         use_null_sound_device,
+                        self._isolated,
                     )
                     if use_null_sound_device and hasattr(aud_mgr, "setNullDev"):
                         aud_mgr.setNullDev()
@@ -372,16 +378,19 @@ class PJSipUASession:
                         with suppress(Exception):
                             aud_mgr.setNullDev()
 
-                _PJSUA_GLOBAL_ENDPOINT = ep
-                _PJSUA_GLOBAL_TRANSPORT = transport
                 self._endpoint = ep
                 self._transport = transport
+
+                if not self._isolated:
+                    with _PJSUA_GLOBAL_LOCK:
+                        _PJSUA_GLOBAL_ENDPOINT = ep
+                        _PJSUA_GLOBAL_TRANSPORT = transport
 
                 self._register_current_thread()
                 return PJSUA2RegistrationResult(
                     success=True,
                     message="PJSUA2 endpoint initialised",
-                    details={"transport": "created"},
+                    details={"transport": "created", "isolated": self._isolated},
                 )
             except Exception as exc:
                 log.exception("PJSUA2 endpoint initialisation failed")
@@ -389,7 +398,7 @@ class PJSipUASession:
                 return PJSUA2RegistrationResult(
                     success=False,
                     error=str(exc),
-                    details={"exception": f"{type(exc).__name__}: {exc}"},
+                    details={"exception": f"{type(exc).__name__}: {exc}", "isolated": self._isolated},
                 )
 
     def shutdown(self) -> None:
@@ -402,8 +411,13 @@ class PJSipUASession:
             self._registered = False
             self._last_call = None
 
+            endpoint = self._endpoint
             self._endpoint = None
             self._transport = None
+
+            if self._isolated and endpoint is not None:
+                with suppress(Exception):
+                    endpoint.libDestroy()
 
     def select_profile(self, profile: SipAccountProfile | dict[str, Any]) -> SipAccountProfile:
         if isinstance(profile, SipAccountProfile):
@@ -713,6 +727,7 @@ class PJSipUASession:
                         audio_duration_seconds=float(playback_result.audio_duration_seconds or 0.0),
                         repeat_count=request.playback_repeats,
                         pause_ms=request.playback_pause_ms,
+                        cleanup_wav=bool(playback_result.details.get("cleanup_wav")) if playback_result.details else False,
                     )
                     call_outcome = callback.wait_for_completion(
                         max(
@@ -828,32 +843,27 @@ class PJSipUASession:
             pause_ms = 0
 
         try:
-            audio_duration_seconds = _probe_audio_duration_seconds(audio_file)
-            tmp_manifest = tempfile.NamedTemporaryFile("w", delete=False, prefix="pjsua2_playback_", suffix=".txt", encoding="utf-8")
-            manifest_path = Path(tmp_manifest.name)
-            with tmp_manifest:
-                for idx in range(repeat_count):
-                    tmp_manifest.write(str(audio_file.resolve()))
-                    tmp_manifest.write("\n")
-                    if pause_ms and idx < repeat_count - 1:
-                        tmp_manifest.write(f"PAUSE_MS={pause_ms}\n")
-
-            total_duration_seconds = max(0.0, audio_duration_seconds * repeat_count) + max(0.0, (pause_ms / 1000.0) * max(0, repeat_count - 1))
+            prepared_audio_path, cleanup_wav, single_audio_duration_seconds, total_duration_seconds = _prepare_playback_wav(
+                audio_file,
+                repeat_count=repeat_count,
+                pause_ms=pause_ms,
+            )
 
             return PJSUA2Result(
                 success=True,
                 account_id=account_id,
                 destination_number=destination_number,
-                audio_path=str(audio_file),
-                message="Playback manifest prepared",
+                audio_path=str(prepared_audio_path),
+                message="Playback audio prepared",
                 audio_duration_seconds=total_duration_seconds,
                 details={
-                    "manifest_path": str(manifest_path),
+                    "prepared_audio_path": str(prepared_audio_path),
+                    "cleanup_wav": cleanup_wav,
                     "repeat_count": repeat_count,
                     "pause_ms": pause_ms,
-                    "playback_mode": "manifest",
+                    "playback_mode": "wav",
                     "audio_duration_seconds": total_duration_seconds,
-                    "single_audio_duration_seconds": audio_duration_seconds,
+                    "single_audio_duration_seconds": single_audio_duration_seconds,
                 },
             )
         except Exception as exc:
@@ -1208,6 +1218,71 @@ def _probe_audio_duration_seconds(audio_path: Path) -> float:
         return 0.0
 
 
+def _prepare_playback_wav(
+    audio_path: Path,
+    *,
+    repeat_count: int,
+    pause_ms: int,
+) -> tuple[Path, bool, float, float]:
+    single_audio_duration_seconds = _probe_audio_duration_seconds(audio_path)
+    normalized_repeat_count = max(1, int(repeat_count or 1))
+    normalized_pause_ms = max(0, int(pause_ms or 0))
+
+    if normalized_repeat_count == 1 and normalized_pause_ms == 0:
+        return (
+            audio_path.resolve(),
+            False,
+            single_audio_duration_seconds,
+            single_audio_duration_seconds,
+        )
+
+    with wave.open(str(audio_path), "rb") as source_wav:
+        frame_count = int(source_wav.getnframes() or 0)
+        audio_frames = source_wav.readframes(frame_count)
+        params = source_wav.getparams()
+        frame_rate = int(source_wav.getframerate() or 0)
+        sample_width = int(source_wav.getsampwidth() or 0)
+        channels = int(source_wav.getnchannels() or 0)
+
+    if frame_rate <= 0 or sample_width <= 0 or channels <= 0:
+        raise ValueError("Audio file has invalid WAV parameters")
+
+    pause_frame_count = int(round(frame_rate * (normalized_pause_ms / 1000.0)))
+    silence_frames = b"\x00" * pause_frame_count * sample_width * channels
+
+    tmp_wav = tempfile.NamedTemporaryFile(
+        "wb",
+        delete=False,
+        prefix="pjsua2_playback_",
+        suffix=".wav",
+    )
+    generated_audio_path = Path(tmp_wav.name)
+    tmp_wav.close()
+
+    try:
+        with wave.open(str(generated_audio_path), "wb") as output_wav:
+            output_wav.setparams(params)
+            for idx in range(normalized_repeat_count):
+                output_wav.writeframes(audio_frames)
+                if silence_frames and idx < normalized_repeat_count - 1:
+                    output_wav.writeframes(silence_frames)
+    except Exception:
+        with suppress(Exception):
+            generated_audio_path.unlink(missing_ok=True)
+        raise
+
+    total_duration_seconds = max(0.0, single_audio_duration_seconds * normalized_repeat_count) + max(
+        0.0,
+        (normalized_pause_ms / 1000.0) * max(0, normalized_repeat_count - 1),
+    )
+    return (
+        generated_audio_path,
+        True,
+        single_audio_duration_seconds,
+        total_duration_seconds,
+    )
+
+
 class _GatewayCall:
     """
     Best-effort PJSUA2 call object that keeps Python-side callbacks reachable.
@@ -1336,10 +1411,11 @@ class _CallCallbackHolder:
         self._playback_pending = False
         self._playback_error = ""
         self._playback_hangup_requested = False
+        self._playback_cleanup_wav = False
         self._scheduled_hangup_at: float | None = None
-            self._player = None
-            self._player_media = None
-            self._call_obj = None
+        self._player = None
+        self._player_media = None
+        self._call_obj = None
 
     def _set_runtime_state(
         self,
@@ -1414,11 +1490,13 @@ class _CallCallbackHolder:
         audio_duration_seconds: float,
         repeat_count: int,
         pause_ms: int,
+        cleanup_wav: bool = False,
     ) -> None:
         self._playback_audio_path = str(audio_path or "")
         self._playback_audio_duration_seconds = max(0.0, float(audio_duration_seconds or 0.0))
         self._playback_repeat_count = max(1, int(repeat_count or 1))
         self._playback_pause_ms = max(0, int(pause_ms or 0))
+        self._playback_cleanup_wav = bool(cleanup_wav)
         self._scheduled_hangup_at = None
 
     def attach_call(self, call_obj: Any) -> None:
@@ -1553,20 +1631,19 @@ class _CallCallbackHolder:
                 _PJSUA_ACTIVE_PLAYERS[self._call_id] = {
                     "player": player,
                     "player_media": player,
+                    "call_audio_media": call_audio_media,
                     "wav_path": str(wav_path),
-                    "cleanup_wav": False,
+                    "cleanup_wav": self._playback_cleanup_wav,
                 }
 
             self._player = player
             self._player_media = player
+            self._call_obj = call_obj
             self._playback_started = True
             self._playback_started_at = time.time()
             self._playback_finished_at = None
             self._playback_pending = False
-            if self._playback_audio_duration_seconds > 0:
-                scheduled_from_playback_start = self._playback_started_at + self._playback_audio_duration_seconds + 1.5
-                if self._scheduled_hangup_at is None or scheduled_from_playback_start > self._scheduled_hangup_at:
-                    self._scheduled_hangup_at = scheduled_from_playback_start
+            self._scheduled_hangup_at = None
 
             log.info(
                 "Outbound SIP playback started account=%s call_id=%s path=%s duration=%.3f repeats=%s pause_ms=%s",
@@ -1820,17 +1897,19 @@ class _CallCallbackHolder:
                         self._playback_audio_duration_seconds,
                     )
 
-                if self._playback_finished_at is None and self._scheduled_hangup_at is not None:
-                    self._playback_finished_at = self._scheduled_hangup_at
-
+            playback_start_grace_seconds = max(
+                15.0,
+                min(30.0, self._playback_audio_duration_seconds + 8.0),
+            )
             if (
                 self._answered_at is not None
                 and not self._playback_started
                 and not self._done.is_set()
-                and time.time() >= (self._answered_at + 10.0)
+                and time.time() >= (self._answered_at + playback_start_grace_seconds)
             ):
                 log.warning(
-                    "Outbound SIP playback never started after 10s, hanging up account=%s call_id=%s error=%s",
+                    "Outbound SIP playback never started after %.1fs, hanging up account=%s call_id=%s error=%s",
+                    playback_start_grace_seconds,
                     self._account_id,
                     self._call_id,
                     self._playback_error or "timeout",
@@ -1855,10 +1934,10 @@ class _CallCallbackHolder:
                         )
 
             if (
-                self._scheduled_hangup_at is not None
+                self._answered_at is not None
                 and not self._playback_hangup_requested
                 and not self._done.is_set()
-                and time.time() >= self._scheduled_hangup_at
+                and time.time() >= max(self._answered_at, deadline - 1.0)
             ):
                 self._playback_hangup_requested = True
                 call_obj = self._call_obj or getattr(self._session, "_last_call", None)
@@ -1872,15 +1951,15 @@ class _CallCallbackHolder:
                                 hangup_param.statusCode = 200
                             call_obj.hangup(hangup_param)
                             log.info(
-                                "Outbound SIP scheduled hangup fired account=%s call_id=%s scheduled_hangup_at=%s",
+                                "Outbound SIP final cleanup hangup fired account=%s call_id=%s deadline=%s",
                                 self._account_id,
                                 self._call_id,
-                                self._scheduled_hangup_at,
+                                deadline,
                             )
                     except Exception as exc:
                         self._playback_error = f"hangup failed: {type(exc).__name__}: {exc}"
                         log.warning(
-                            "Outbound SIP scheduled hangup failed account=%s call_id=%s error=%s",
+                            "Outbound SIP final cleanup hangup failed account=%s call_id=%s error=%s",
                             self._account_id,
                             self._call_id,
                             self._playback_error,
@@ -1925,7 +2004,7 @@ def build_pjsua2_service(
     isolated: bool = False,
 ) -> PJSipUASession:
     if isolated:
-        return PJSipUASession(settings)
+        return PJSipUASession(settings, isolated=True)
 
     scope_key = str(scope or "default").strip() or "default"
     with _PJSUA_GLOBAL_LOCK:

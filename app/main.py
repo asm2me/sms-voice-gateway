@@ -67,7 +67,13 @@ from .config_store import (
     save_settings_to_store,
 )
 from .pjsua2_service import SipAccountProfile, build_pjsua2_service
-from .sms_handler import IncomingSMS, SMSGateway, _schedule_next_attempt, _utc_now_iso
+from .sms_handler import (
+    IncomingSMS,
+    SMSGateway,
+    _SMS_GATEWAY_PJSUA_SCOPE,
+    _schedule_next_attempt,
+    _utc_now_iso,
+)
 from .smpp_service import SMPPService
 from .tts_service import TTSService
 
@@ -441,7 +447,7 @@ def _live_call_status_meta(state: str) -> dict[str, str]:
 
 
 def _build_live_call_context(settings: Settings) -> dict:
-    service = build_pjsua2_service(settings)
+    service = build_pjsua2_service(settings, scope=_SMS_GATEWAY_PJSUA_SCOPE)
     status = service.status_detail()
     active_calls: list[dict] = []
     current_account_id = status.get("current_account_id", "")
@@ -926,19 +932,27 @@ def _simulate_smpp_test_send(
         current_queue_item.body_preview = body[:160]
         queue_store.upsert(current_queue_item)
 
-    gateway = SMSGateway(settings)
+    use_isolated_sip = provider == "admin-test"
+    gateway = SMSGateway(settings, isolated_sip=use_isolated_sip)
     sms = IncomingSMS(body=body, destination=phone_number, provider=provider, smpp_username=smpp_username)
-    result = gateway.process(sms)
+    try:
+        result = gateway.process(sms)
 
-    _update_queue_item_from_result(settings, queue_item.id, result)
+        _update_queue_item_from_result(settings, queue_item.id, result)
 
-    _emit_smpp_receipt(
-        smpp_username=smpp_username,
-        queue_item_id=queue_item.id,
-        phone_number=phone_number,
-        message=body,
-        result=result,
-    )
+        _emit_smpp_receipt(
+            smpp_username=smpp_username,
+            queue_item_id=queue_item.id,
+            phone_number=phone_number,
+            message=body,
+            result=result,
+        )
+    finally:
+        if use_isolated_sip:
+            try:
+                gateway.sip_ua.close()
+            except Exception:
+                pass
 
     return {
         "queue_item": (get_queue_item(settings, queue_item.id) or queue_item.to_dict()),
@@ -1375,7 +1389,7 @@ def _build_health_context(settings: Settings) -> dict:
             details=[f"URL: {settings.redis_url}"],
         )
 
-    sip_status = build_pjsua2_service(settings).status_detail()
+    sip_status = build_pjsua2_service(settings, scope=_SMS_GATEWAY_PJSUA_SCOPE).status_detail()
     sip_ok = bool(sip_status.get("available")) and bool(sip_status.get("registered"))
     sip_summary = (
         f"Direct SIP UA is registered with account {sip_status.get('current_account_id', 'unknown')}."
@@ -2389,7 +2403,7 @@ async def admin_test_sip_account_connection(
         preferred_codecs=_parse_codec_list(str(payload.get("preferred_codecs", "")).strip()),
     )
     settings = dep_settings()
-    service = build_pjsua2_service(settings)
+    service = build_pjsua2_service(settings, isolated=True)
     _append_admin_log(f"SIP trunk test started for account={account.id} host={account.host or account.domain or '—'}")
     try:
         result = service.register_account(_build_sip_profile_from_account(account))
@@ -3240,7 +3254,7 @@ async def health(settings: Settings = Depends(dep_settings)):
     except Exception as e:
         log.debug("Redis health check failed: %s", e)
 
-    sip_status = build_pjsua2_service(settings).status_detail()
+    sip_status = build_pjsua2_service(settings, scope=_SMS_GATEWAY_PJSUA_SCOPE).status_detail()
     sip_ok = bool(sip_status.get("registered")) or (
         bool(sip_status.get("available"))
         and bool(getattr(settings, "sip_accounts", []))

@@ -31,6 +31,8 @@ from .tts_service import TTSService, _generate_silence
 
 log = logging.getLogger(__name__)
 
+_SMS_GATEWAY_PJSUA_SCOPE = "sms-gateway"
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -169,11 +171,21 @@ def _schedule_next_attempt(interval_seconds: int) -> str:
 
 
 class SMSGateway:
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        sip_scope: str = _SMS_GATEWAY_PJSUA_SCOPE,
+        isolated_sip: bool = False,
+    ):
         self.settings = settings
         self.audio_cache = AudioCache(settings)
         self.tts = TTSService(settings, self.audio_cache)
-        self.sip_ua = build_pjsua2_service(settings)
+        self.sip_ua = build_pjsua2_service(
+            settings,
+            scope=sip_scope,
+            isolated=isolated_sip,
+        )
         self.rate_limiter = RateLimiter(settings)
 
     def _resolve_sip_account(self, sms: IncomingSMS) -> Optional[SIPAccount]:
