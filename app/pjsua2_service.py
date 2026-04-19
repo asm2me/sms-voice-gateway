@@ -1489,10 +1489,6 @@ class _CallCallbackHolder:
             )
             player = pj.AudioMediaPlayer()
             player.createPlayer(str(wav_path))
-            player_media = player
-
-            with suppress(Exception):
-                player_media = player.getAudioMedia()
 
             log.info(
                 "Outbound SIP starting audio transmission account=%s call_id=%s wav_path=%s audio_duration=%.3f",
@@ -1501,17 +1497,24 @@ class _CallCallbackHolder:
                 str(wav_path),
                 self._playback_audio_duration_seconds,
             )
-            player_media.startTransmit(call_audio_media)
+
+            with suppress(Exception):
+                player.startTransmit(call_audio_media)
+                log.info(
+                    "Outbound SIP startTransmit called successfully account=%s call_id=%s",
+                    self._account_id,
+                    self._call_id,
+                )
 
             with _PJSUA_PLAYER_LOCK:
                 _PJSUA_ACTIVE_PLAYERS[self._call_id] = {
                     "player": player,
-                    "player_media": player_media,
+                    "player_media": player,
                     "wav_path": str(wav_path),
                 }
 
             self._player = player
-            self._player_media = player_media
+            self._player_media = player
             self._playback_started = True
             self._playback_started_at = time.time()
             self._playback_finished_at = None
@@ -1553,6 +1556,14 @@ class _CallCallbackHolder:
         state_text = ""
         last_status_code = 0
         remote_uri = ""
+
+        log.info(
+            "Outbound SIP onCallState called account=%s call_id=%s info_obj=%s call_obj=%s",
+            self._account_id,
+            self._call_id,
+            info_obj is not None,
+            call_obj is not None,
+        )
 
         if info_obj is not None:
             for attr in ("stateText", "state_text"):
@@ -1658,11 +1669,30 @@ class _CallCallbackHolder:
                 self._playback_pending = True
                 self._try_start_playback(call_obj)
 
+        log.info(
+            "Outbound SIP checking terminal state account=%s call_id=%s state_name=%s state_text=%s last_status_code=%s answered_at=%s",
+            self._account_id,
+            self._call_id,
+            state_name,
+            state_text,
+            last_status_code,
+            self._answered_at,
+        )
         if (
             state_name in self._TERMINAL_STATES
             or state_text.upper() == "DISCONNECTED"
             or (last_status_code >= 300 and self._answered_at is None)
         ):
+            log.warning(
+                "Outbound SIP call disconnecting account=%s call_id=%s state_name=%s state_text=%s last_status_code=%s answered_at=%s reason=%s",
+                self._account_id,
+                self._call_id,
+                state_name,
+                state_text,
+                last_status_code,
+                self._answered_at,
+                state_text or state_name or self._disconnect_reason,
+            )
             self._disconnected_at = time.time()
             self._disconnect_reason = state_text or state_name or self._disconnect_reason
             self._release_slot()
