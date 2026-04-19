@@ -197,9 +197,10 @@ _PJSUA_GLOBAL_SESSIONS: dict[str, "PJSipUASession"] = {}
 _PJSUA_REGISTERED_THREADS: set[int] = set()
 _PJSUA_PLAYER_LOCK = threading.RLock()
 _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
+_PJSUA_RETIRED_PLAYERS: list[dict[str, Any]] = []
 
 
-def _release_player(call_id: str) -> None:
+def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
     with _PJSUA_PLAYER_LOCK:
         player_state = _PJSUA_ACTIVE_PLAYERS.pop(call_id, None)
     if not player_state:
@@ -207,15 +208,36 @@ def _release_player(call_id: str) -> None:
 
     wav_path = player_state.get("wav_path")
     cleanup_wav = bool(player_state.get("cleanup_wav"))
+    player = player_state.get("player")
+    call_audio_media = player_state.get("call_audio_media")
+    stop_transmit_error = ""
 
     # Some PJSUA2 builds assert if AudioMediaPlayer destruction happens from a
-    # different callback/event thread than the one owning the underlying group
-    # lock. Keep teardown Python-side only here and let process/session cleanup
-    # release the native player object naturally instead of forcing
-    # destroyPlayer() during disconnect callbacks.
-    player_state["player"] = None
-    player_state["player_media"] = None
-    player_state["call_audio_media"] = None
+    # callback/event thread. Keep released player objects strongly referenced
+    # after detaching them so Python GC does not immediately run native cleanup on
+    # an unsafe thread.
+    if stop_transmit:
+        try:
+            if player is not None and call_audio_media is not None and hasattr(player, "stopTransmit"):
+                player.stopTransmit(call_audio_media)
+        except Exception as exc:
+            stop_transmit_error = f"{type(exc).__name__}: {exc}"
+            log.warning(
+                "Outbound SIP player stopTransmit failed call_id=%s error=%s",
+                call_id,
+                stop_transmit_error,
+            )
+
+    retired_state = dict(player_state)
+    retired_state["released_at"] = time.time()
+    retired_state["stop_transmit"] = stop_transmit
+    retired_state["stop_transmit_error"] = stop_transmit_error
+    retired_state["call_audio_media"] = None
+
+    with _PJSUA_PLAYER_LOCK:
+        _PJSUA_RETIRED_PLAYERS.append(retired_state)
+        if len(_PJSUA_RETIRED_PLAYERS) > 32:
+            del _PJSUA_RETIRED_PLAYERS[:-32]
 
     if cleanup_wav and wav_path:
         with suppress(Exception):
@@ -1416,8 +1438,10 @@ class _CallCallbackHolder:
         self._playback_ready = False
         self._playback_error = ""
         self._playback_hangup_requested = False
+        self._hangup_requested_at: float | None = None
         self._playback_cleanup_wav = False
         self._scheduled_hangup_at: float | None = None
+        self._playback_bridge_released = False
         self._player = None
         self._player_media = None
         self._call_obj = None
@@ -1449,13 +1473,38 @@ class _CallCallbackHolder:
                 "expires_at": current.get("expires_at", now + _TRUNK_CALL_STATE_RETENTION_SECONDS),
             }
 
+    def _release_playback_bridge(self, *, stop_transmit: bool, reason: str) -> None:
+        if self._playback_bridge_released:
+            return
+
+        self._playback_bridge_released = True
+        _release_player(self._call_id, stop_transmit=stop_transmit)
+        self._player = None
+        self._player_media = None
+        self._playback_pending = False
+        self._playback_ready = False
+
+        log.info(
+            "Outbound SIP playback bridge released account=%s call_id=%s stop_transmit=%s reason=%s",
+            self._account_id,
+            self._call_id,
+            stop_transmit,
+            reason,
+        )
+
     def _release_slot(self) -> None:
         with self._lock:
             if self._released:
                 return
             self._released = True
 
-        _release_player(self._call_id)
+        self._release_playback_bridge(stop_transmit=False, reason="call_disconnected")
+        self._player = None
+        self._player_media = None
+        self._call_obj = None
+        self._playback_pending = False
+        self._playback_ready = False
+        self._hangup_requested_at = None
 
         with _TRUNK_CONCURRENCY_LOCK:
             current = _TRUNK_ACTIVE_CALLS.get(self._account_id, 0)
@@ -1502,7 +1551,10 @@ class _CallCallbackHolder:
         self._playback_repeat_count = max(1, int(repeat_count or 1))
         self._playback_pause_ms = max(0, int(pause_ms or 0))
         self._playback_cleanup_wav = bool(cleanup_wav)
+        self._playback_hangup_requested = False
+        self._hangup_requested_at = None
         self._scheduled_hangup_at = None
+        self._playback_bridge_released = False
 
     def attach_call(self, call_obj: Any) -> None:
         if call_obj is not None:
@@ -1593,7 +1645,20 @@ class _CallCallbackHolder:
                 wav_path.stat().st_size if wav_path.exists() else 0,
             )
             player = pj.AudioMediaPlayer()
-            player.createPlayer(str(wav_path))
+            player_create_options = int(getattr(pj, "PJMEDIA_FILE_NO_LOOP", 1) or 1)
+            try:
+                player.createPlayer(str(wav_path), player_create_options)
+            except TypeError:
+                self._playback_error = "createPlayer() rejected PJMEDIA_FILE_NO_LOOP; refusing unsafe looping fallback"
+                log.error(
+                    "Outbound SIP player.createPlayer() rejected no-loop option account=%s call_id=%s error=%s",
+                    self._account_id,
+                    self._call_id,
+                    self._playback_error,
+                )
+                with suppress(Exception):
+                    player = None
+                return False
 
             log.info(
                 "Outbound SIP player created account=%s call_id=%s player=%s call_audio_media=%s",
@@ -1649,6 +1714,7 @@ class _CallCallbackHolder:
             self._playback_finished_at = None
             self._playback_pending = False
             self._scheduled_hangup_at = None
+            self._playback_bridge_released = False
 
             log.info(
                 "Outbound SIP playback started account=%s call_id=%s path=%s duration=%.3f repeats=%s pause_ms=%s",
@@ -1863,6 +1929,52 @@ class _CallCallbackHolder:
                 answered,
             )
 
+    def _hangup_call(self, *, reason: str, force: bool = False) -> None:
+        if self._done.is_set():
+            return
+        if self._playback_hangup_requested and not force:
+            return
+
+        call_obj = self._call_obj or getattr(self._session, "_last_call", None)
+        if call_obj is None:
+            self._playback_error = "hangup failed: call object is unavailable"
+            log.warning(
+                "Outbound SIP hangup request skipped account=%s call_id=%s reason=%s error=%s",
+                self._account_id,
+                self._call_id,
+                reason,
+                self._playback_error,
+            )
+            return
+
+        try:
+            pj = self._session._pj
+            self._session._register_current_thread()
+            if pj is not None:
+                self._playback_hangup_requested = True
+                self._hangup_requested_at = time.time()
+                hangup_param = pj.CallOpParam()
+                with suppress(Exception):
+                    hangup_param.statusCode = 200
+                call_obj.hangup(hangup_param)
+                log.info(
+                    "Outbound SIP hangup requested account=%s call_id=%s reason=%s force=%s",
+                    self._account_id,
+                    self._call_id,
+                    reason,
+                    force,
+                )
+        except Exception as exc:
+            self._playback_error = f"hangup failed: {type(exc).__name__}: {exc}"
+            log.warning(
+                "Outbound SIP hangup request failed account=%s call_id=%s reason=%s force=%s error=%s",
+                self._account_id,
+                self._call_id,
+                reason,
+                force,
+                self._playback_error,
+            )
+
     def wait_for_completion(self, timeout_seconds: float) -> dict[str, Any]:
         deadline = time.time() + max(1.0, timeout_seconds)
         media_check_counter = 0
@@ -1900,12 +2012,30 @@ class _CallCallbackHolder:
                     and time.time() >= expected_end
                 ):
                     self._playback_finished_at = expected_end
+                    self._scheduled_hangup_at = expected_end
+                    self._release_playback_bridge(stop_transmit=True, reason="playback_complete")
                     log.info(
                         "Outbound SIP playback finished account=%s call_id=%s duration=%.3f",
                         self._account_id,
                         self._call_id,
                         self._playback_audio_duration_seconds,
                     )
+                    self._hangup_call(reason="playback_complete")
+
+            if (
+                self._playback_hangup_requested
+                and not self._done.is_set()
+                and self._hangup_requested_at is not None
+                and time.time() >= (self._hangup_requested_at + 0.75)
+            ):
+                log.warning(
+                    "Outbound SIP hangup still pending, retrying account=%s call_id=%s state=%s last_status=%s",
+                    self._account_id,
+                    self._call_id,
+                    self._state_text,
+                    self._last_status_code,
+                )
+                self._hangup_call(reason="playback_complete_retry", force=True)
 
             playback_start_grace_seconds = max(
                 15.0,
@@ -1924,24 +2054,7 @@ class _CallCallbackHolder:
                     self._call_id,
                     self._playback_error or "timeout",
                 )
-                self._playback_hangup_requested = True
-                call_obj = self._call_obj or getattr(self._session, "_last_call", None)
-                if call_obj is not None:
-                    try:
-                        pj = self._session._pj
-                        self._session._register_current_thread()
-                        if pj is not None:
-                            hangup_param = pj.CallOpParam()
-                            with suppress(Exception):
-                                hangup_param.statusCode = 200
-                            call_obj.hangup(hangup_param)
-                    except Exception as exc:
-                        log.warning(
-                            "Outbound SIP fallback hangup failed account=%s call_id=%s error=%s",
-                            self._account_id,
-                            self._call_id,
-                            exc,
-                        )
+                self._hangup_call(reason="playback_start_timeout")
 
             if (
                 self._answered_at is not None
@@ -1949,31 +2062,7 @@ class _CallCallbackHolder:
                 and not self._done.is_set()
                 and time.time() >= max(self._answered_at, deadline - 1.0)
             ):
-                self._playback_hangup_requested = True
-                call_obj = self._call_obj or getattr(self._session, "_last_call", None)
-                if call_obj is not None:
-                    try:
-                        pj = self._session._pj
-                        self._session._register_current_thread()
-                        if pj is not None:
-                            hangup_param = pj.CallOpParam()
-                            with suppress(Exception):
-                                hangup_param.statusCode = 200
-                            call_obj.hangup(hangup_param)
-                            log.info(
-                                "Outbound SIP final cleanup hangup fired account=%s call_id=%s deadline=%s",
-                                self._account_id,
-                                self._call_id,
-                                deadline,
-                            )
-                    except Exception as exc:
-                        self._playback_error = f"hangup failed: {type(exc).__name__}: {exc}"
-                        log.warning(
-                            "Outbound SIP final cleanup hangup failed account=%s call_id=%s error=%s",
-                            self._account_id,
-                            self._call_id,
-                            self._playback_error,
-                        )
+                self._hangup_call(reason=f"deadline_reached:{deadline}")
 
             if self._done.wait(0.1):
                 break

@@ -2358,10 +2358,12 @@
   window.__adminRenderToolsTestSendStatus =
     window.__adminRenderToolsTestSendStatus ||
     function (payload) {
+      const normalizedStatus = String((payload && payload.status) || "queued").toLowerCase();
+      const isActiveStatus = normalizedStatus === "queued" || normalizedStatus === "processing";
       const noticeLevel =
-        payload && payload.status === "failed"
+        normalizedStatus === "failed" || normalizedStatus === "error"
           ? "danger"
-          : payload && payload.status === "processing"
+          : normalizedStatus === "processing"
           ? "warning"
           : "success";
       const message =
@@ -2369,6 +2371,10 @@
         "Tools test-send status updated.";
 
       ensureTopNotice(message, noticeLevel);
+
+      if (!isActiveStatus) {
+        window.__adminClearToolsTestSendPoll();
+      }
 
       const statusHost = document.getElementById("tts-preview-status");
       if (!statusHost) return;
@@ -2393,6 +2399,9 @@
         "</div>" +
         (references.length
           ? '<div class="inline-test-status__summary muted">' + references.join(" • ") + "</div>"
+          : "") +
+        (!isActiveStatus
+          ? '<div class="inline-test-status__summary muted">Polling stopped. You can submit another test call from this page.</div>'
           : "") +
         (audioUrl
           ? '<div class="inline-test-status__summary"><button type="button" class="button button-secondary button-small" onclick="window.__adminPlayQueueAudio(\'' +
@@ -2421,18 +2430,27 @@
 
         window.__adminRenderToolsTestSendStatus(payload);
 
-        if (payload.status === "queued" || payload.status === "processing") {
+        const normalizedStatus = String((payload && payload.status) || "").toLowerCase();
+        if (normalizedStatus === "queued" || normalizedStatus === "processing") {
           state.timer = window.setTimeout(function () {
             window.__adminPollToolsTestSendStatus(statusUrl, nextAttempt);
           }, 1200);
           return;
         }
 
-        state.timer = window.setTimeout(function () {
-          window.location.href = "/admin/reports";
-        }, 1800);
+        window.__adminClearToolsTestSendPoll();
       } catch (error) {
+        window.__adminClearToolsTestSendPoll();
         ensureTopNotice((error && error.message) || "Unable to read test-send status", "danger");
+        const statusHost = document.getElementById("tts-preview-status");
+        if (statusHost) {
+          statusHost.innerHTML =
+            '<span class="status-badge status-danger">failed</span>' +
+            '<div class="inline-test-status__summary">' +
+            escapeHtml((error && error.message) || "Unable to read test-send status") +
+            "</div>" +
+            '<div class="inline-test-status__summary muted">Polling stopped. The backend may have crashed or the request state became unavailable.</div>';
+        }
       }
     };
 
