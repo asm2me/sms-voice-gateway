@@ -722,12 +722,14 @@ class PJSipUASession:
                     )
 
                     answered = bool(call_outcome.get("answered"))
+                    playback_started = bool(call_outcome.get("playback_started"))
+                    playback_error = str(call_outcome.get("playback_error") or "")
                     playback_seconds = float(call_outcome.get("playback_seconds") or 0.0)
                     audio_duration_seconds = float(playback_result.audio_duration_seconds or 0.0)
                     disconnect_reason = str(call_outcome.get("disconnect_reason") or "")
                     last_status_code = int(call_outcome.get("last_status_code") or 0)
 
-                    delivered = answered and bool(playback_result.success)
+                    delivered = answered and playback_started and bool(playback_result.success)
                     read = delivered and audio_duration_seconds > 0 and playback_seconds >= (audio_duration_seconds * 0.5)
                     remote_hangup_after_answer = answered and last_status_code == 200 and disconnect_reason.upper() == "DISCONNECTED"
 
@@ -738,9 +740,12 @@ class PJSipUASession:
                         destination_number=destination,
                         registered=True,
                         audio_path=request.audio_path,
+                        error=playback_error if answered and not delivered and playback_error else "",
                         message=(
                             "Outbound SIP call answered and playback completed"
                             if read
+                            else "Outbound SIP call answered but playback did not start"
+                            if answered and not playback_started
                             else "Outbound SIP call answered"
                             if answered
                             else "Outbound SIP call was not answered"
@@ -757,6 +762,8 @@ class PJSipUASession:
                                 "read_threshold_seconds": audio_duration_seconds * 0.5 if audio_duration_seconds > 0 else 0.0,
                             },
                             "playback_prepared": bool(playback_result.success),
+                            "playback_started": playback_started,
+                            "playback_error": playback_error,
                             "call_state": str(call_outcome.get("state_text") or "completed"),
                             "remote_hangup_after_answer": remote_hangup_after_answer,
                             "display_name": request.display_name,
@@ -1524,12 +1531,16 @@ class _CallCallbackHolder:
                     str(call_audio_media),
                 )
             except Exception as exc:
+                self._playback_error = f"startTransmit failed: {type(exc).__name__}: {exc}"
                 log.error(
                     "Outbound SIP startTransmit failed account=%s call_id=%s error=%s",
                     self._account_id,
                     self._call_id,
-                    exc,
+                    self._playback_error,
                 )
+                with suppress(Exception):
+                    player = None
+                return False
 
             with _PJSUA_PLAYER_LOCK:
                 _PJSUA_ACTIVE_PLAYERS[self._call_id] = {
