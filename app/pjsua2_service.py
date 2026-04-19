@@ -1635,6 +1635,23 @@ class _CallCallbackHolder:
             self._disconnect_reason = state_text or state_name or self._disconnect_reason
             self._release_slot()
 
+    def onCallMediaState(self, *args: Any, **kwargs: Any) -> None:
+        call_obj = args[0] if args else None
+        if call_obj is None:
+            return
+
+        log.info(
+            "Outbound SIP media state changed account=%s call_id=%s answered=%s playback_started=%s audio_path=%s",
+            self._account_id,
+            self._call_id,
+            self._answered_at is not None,
+            self._playback_started,
+            self._playback_audio_path[:80] if self._playback_audio_path else "",
+        )
+
+        if self._answered_at is not None and not self._playback_started and self._playback_audio_path:
+            self._try_start_playback(call_obj)
+
     def wait_for_completion(self, timeout_seconds: float) -> dict[str, Any]:
         deadline = time.time() + max(1.0, timeout_seconds)
         while time.time() < deadline:
