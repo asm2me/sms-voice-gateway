@@ -1657,19 +1657,39 @@ class _CallCallbackHolder:
                 destination_number=_extract_display_destination(remote_uri) if remote_uri else "",
             )
             log.info(
-                "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s playback_pending=True",
+                "Outbound SIP call marked answered account=%s call_id=%s state=%s status=%s playback_started=%s audio_path=%s",
                 self._account_id,
                 self._call_id,
                 state_text or state_name,
                 last_status_code,
+                self._playback_started,
+                self._playback_audio_path[:80] if self._playback_audio_path else "",
             )
-            if self._playback_audio_path:
+            if self._playback_audio_path and not self._playback_started:
                 self._playback_pending = True
-                # Since onCallMediaState might not be called, trigger it manually after a delay
+                log.info(
+                    "Outbound SIP set playback_pending=True account=%s call_id=%s",
+                    self._account_id,
+                    self._call_id,
+                )
+                # Since onCallMediaState might not be called or fails, trigger it manually after a delay
                 import threading
                 threading.Thread(
                     target=lambda: self._delayed_media_state_trigger(call_obj),
                     name=f"media-state-{self._call_id}",
+                    daemon=True,
+                ).start()
+            elif self._playback_audio_path and self._playback_started and self._playback_error:
+                log.warning(
+                    "Outbound SIP playback started but has error, retrying account=%s call_id=%s error=%s",
+                    self._account_id,
+                    self._call_id,
+                    self._playback_error,
+                )
+                import threading
+                threading.Thread(
+                    target=lambda: self._delayed_media_state_trigger(call_obj),
+                    name=f"media-state-retry-{self._call_id}",
                     daemon=True,
                 ).start()
 
@@ -1738,7 +1758,7 @@ class _CallCallbackHolder:
             self._playback_audio_path[:80] if self._playback_audio_path else "",
         )
 
-        if self._playback_audio_path and not self._playback_started:
+        if self._playback_audio_path and not self._playback_started and self._answered_at is not None:
             log.info(
                 "Outbound SIP onCallMediaState attempting playback (will retry up to 5 times) account=%s call_id=%s answered_at=%s",
                 self._account_id,

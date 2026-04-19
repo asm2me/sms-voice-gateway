@@ -2808,35 +2808,17 @@ async def admin_tools_test_send(
         "tools_form_values": tools_form_values,
     }
 
-    requested_with = str(request.headers.get("X-Requested-With", "")).strip().lower()
-    accepts_json = "application/json" in str(request.headers.get("accept", "")).lower()
-    is_async_request = requested_with == "xmlhttprequest" or accepts_json
-
-    if is_async_request:
-        _record_admin_audit(
-            request=request,
-            action="tools.test_send",
-            section="tools",
-            detail=response_payload["message"],
-            status="success",
-            target=phone_number,
-            metadata={"smpp_username": smpp_username, "provider": provider, "job_id": job_id, "job_status": "queued"},
-        )
-        return JSONResponse(response_payload, status_code=status.HTTP_202_ACCEPTED)
-
-    final_job = _wait_for_admin_test_send_job(job_id, timeout_seconds=6.0) or response_payload
-    final_status = str(final_job.get("status", "queued")).strip().lower()
-    final_success = bool(final_job.get("success"))
-    final_message = str(final_job.get("message") or response_payload["message"]).strip()
-    final_message_level = (
-        "danger"
-        if final_status == "failed" or not final_success
-        else "warning"
-        if final_status in {"queued", "processing"}
-        else "success"
-    )
-
+    # Always return immediately - don't wait for job completion to avoid UI freeze
     _record_admin_audit(
+        request=request,
+        action="tools.test_send",
+        section="tools",
+        detail=response_payload["message"],
+        status="success",
+        target=phone_number,
+        metadata={"smpp_username": smpp_username, "provider": provider, "job_id": job_id, "job_status": "queued"},
+    )
+    return JSONResponse(response_payload, status_code=status.HTTP_202_ACCEPTED)
         request=request,
         action="tools.test_send",
         section="tools",
@@ -3172,13 +3154,21 @@ async def twilio_webhook(
 ):
     _verify_twilio_signature(request, settings)
     sms = IncomingSMS(body=Body, from_number=From, to_number=To, provider="twilio")
-    log.info("Twilio SMS from=%s body=%r", From, Body[:80])
+    log.info("Twilio SMS from=%s body=%r (processing in background)", From, Body[:80])
     phone_number = From or To
     queue_item = record_queue_item(settings, phone_number=phone_number, provider="twilio", body=Body, status="processing")
-    result = gateway.process(sms)
-    _log_result(result)
-    _record_gateway_result("twilio", result, phone_number=phone_number, message=Body[:120])
-    _update_queue_item_from_result(settings, queue_item.id, result)
+
+    # Process SMS in background to avoid blocking the event loop
+    def process_sms():
+        try:
+            result = gateway.process(sms)
+            _log_result(result)
+            _record_gateway_result("twilio", result, phone_number=phone_number, message=Body[:120])
+            _update_queue_item_from_result(settings, queue_item.id, result)
+        except Exception as exc:
+            log.exception("Twilio SMS processing error")
+
+    Thread(target=process_sms, name=f"twilio-sms-{queue_item.id}", daemon=True).start()
     return '<?xml version="1.0" encoding="UTF-8"?><Response/>'
 
 
@@ -3209,14 +3199,22 @@ async def vonage_webhook(
         to_number=payload.to,
         provider="vonage",
     )
-    log.info("Vonage SMS from=%s body=%r", payload.msisdn, payload.text[:80])
+    log.info("Vonage SMS from=%s body=%r (processing in background)", payload.msisdn, payload.text[:80])
     phone_number = payload.msisdn or payload.to
     queue_item = record_queue_item(settings, phone_number=phone_number, provider="vonage", body=payload.text, status="processing")
-    result = gateway.process(sms)
-    _log_result(result)
-    _record_gateway_result("vonage", result, phone_number=phone_number, message=payload.text[:120])
-    _update_queue_item_from_result(settings, queue_item.id, result)
-    return {"status": "ok" if result.success else "error", "detail": result.error or None}
+
+    # Process SMS in background to avoid blocking the event loop
+    def process_sms():
+        try:
+            result = gateway.process(sms)
+            _log_result(result)
+            _record_gateway_result("vonage", result, phone_number=phone_number, message=payload.text[:120])
+            _update_queue_item_from_result(settings, queue_item.id, result)
+        except Exception as exc:
+            log.exception("Vonage SMS processing error")
+
+    Thread(target=process_sms, name=f"vonage-sms-{queue_item.id}", daemon=True).start()
+    return {"status": "ok", "detail": "Processing in background"}
 
 
 class GenericSMSPayload(BaseModel):
@@ -3248,19 +3246,25 @@ async def generic_webhook(
     log.info("Generic SMS body=%r dest=%s", payload.body[:80], payload.destination)
     phone_number = payload.destination or payload.from_number or payload.to_number
     queue_item = record_queue_item(settings, phone_number=phone_number, provider="generic", body=payload.body, status="processing")
-    result = gateway.process(sms)
-    _log_result(result)
-    _record_gateway_result("generic", result, phone_number=phone_number, message=payload.body[:120])
-    _update_queue_item_from_result(settings, queue_item.id, result)
 
-    if not result.success:
-        pending_reason = (result.details or {}).get("pending_reason", "")
-        status_code = status.HTTP_429_TOO_MANY_REQUESTS if "rate limited" in (result.error or "").lower() else status.HTTP_422_UNPROCESSABLE_ENTITY
-        raise HTTPException(status_code, result.error, headers={"Retry-After": "3600"} if status_code == status.HTTP_429_TOO_MANY_REQUESTS else None)
+    # Process SMS in background to avoid blocking the event loop
+    def process_sms():
+        try:
+            result = gateway.process(sms)
+            _log_result(result)
+            _record_gateway_result("generic", result, phone_number=phone_number, message=payload.body[:120])
+            _update_queue_item_from_result(settings, queue_item.id, result)
+        except Exception as exc:
+            log.exception("Generic SMS processing error")
 
+    Thread(target=process_sms, name=f"generic-sms-{queue_item.id}", daemon=True).start()
+
+    # Return immediately - result is processed in background
     return {
         "success": True,
-        "phone_number": result.phone_number,
+        "detail": "SMS processing in background",
+        "queue_item_id": queue_item.id,
+    }
         "text_spoken": result.text_spoken,
         "audio_cached": result.was_cached,
         "ami_action_id": result.ami_action_id,
