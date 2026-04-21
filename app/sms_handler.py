@@ -203,7 +203,13 @@ class SMSGateway:
         rendered_text: str,
         template: str,
     ) -> tuple[str, bool]:
-        merged_hash = self.tts.hash_for(rendered_text)
+        # Use a dedicated cache key for static-template segmented audio.
+        # If we reuse the plain rendered_text hash, an older single-pass TTS
+        # result for the same final text can be returned here and bypass the
+        # segmented synthesis path entirely.
+        merged_hash = self.tts.hash_for(
+            f"static-template-v1\nTEMPLATE:{template}\nINBOUND:{inbound_text}\nRENDERED:{rendered_text}"
+        )
         cached_merged_audio = self.audio_cache.get_audio_path(merged_hash)
         if cached_merged_audio:
             return cached_merged_audio, True
