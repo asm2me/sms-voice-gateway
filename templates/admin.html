@@ -2061,8 +2061,8 @@
                   </label>
                   <label class="field-group field-span-2">
                     <span class="field-label">Static Default Message Template</span>
-                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is {%1} رمز التفعيل الخاص بك هو {%2}"></textarea>
-                    <small class="muted">Use parameter placeholders like {%1}, {%2}, {%3}. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces.</small>
+                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 رمز التفعيل الخاص بك هو %2"></textarea>
+                    <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
                   </label>
                 </div>
                 <div class="form-actions">
@@ -2143,8 +2143,8 @@
                   </label>
                   <label class="field-group field-span-2">
                     <span class="field-label">Static Default Message Template</span>
-                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is {%1} رمز التفعيل الخاص بك هو {%2}">{{ account.static_default_message_template or '' }}</textarea>
-                    <small class="muted">Use parameter placeholders like {%1}, {%2}, {%3}. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces.</small>
+                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 رمز التفعيل الخاص بك هو %2">{{ account.static_default_message_template or '' }}</textarea>
+                    <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
                   </label>
                 </div>
                 <div class="form-actions">
