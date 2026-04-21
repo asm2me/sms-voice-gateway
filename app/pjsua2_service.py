@@ -162,6 +162,7 @@ class PJSUA2Result:
     read: bool = False
     playback_seconds: float = 0.0
     audio_duration_seconds: float = 0.0
+    call_duration_seconds: float = 0.0
     details: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -210,6 +211,7 @@ def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
     cleanup_wav = bool(player_state.get("cleanup_wav"))
     player = player_state.get("player")
     call_audio_media = player_state.get("call_audio_media")
+    recorder = player_state.get("recorder")
     stop_transmit_error = ""
 
     # Some PJSUA2 builds assert if AudioMediaPlayer destruction happens from a
@@ -226,6 +228,30 @@ def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
                 "Outbound SIP player stopTransmit failed call_id=%s error=%s",
                 call_id,
                 stop_transmit_error,
+            )
+
+        try:
+            if player is not None and recorder is not None and hasattr(player, "stopTransmit"):
+                player.stopTransmit(recorder)
+        except Exception as exc:
+            extra_error = f"{type(exc).__name__}: {exc}"
+            stop_transmit_error = f"{stop_transmit_error}; {extra_error}".strip("; ")
+            log.warning(
+                "Outbound SIP player->recorder stopTransmit failed call_id=%s error=%s",
+                call_id,
+                extra_error,
+            )
+
+        try:
+            if call_audio_media is not None and recorder is not None and hasattr(call_audio_media, "stopTransmit"):
+                call_audio_media.stopTransmit(recorder)
+        except Exception as exc:
+            extra_error = f"{type(exc).__name__}: {exc}"
+            stop_transmit_error = f"{stop_transmit_error}; {extra_error}".strip("; ")
+            log.warning(
+                "Outbound SIP call media->recorder stopTransmit failed call_id=%s error=%s",
+                call_id,
+                extra_error,
             )
 
     retired_state = dict(player_state)
@@ -636,6 +662,7 @@ class PJSipUASession:
                     timeout_seconds=int(request.get("timeout_seconds", 30) or 30),
                     playback_repeats=int(request.get("playback_repeats", 1) or 1),
                     playback_pause_ms=int(request.get("playback_pause_ms", 0) or 0),
+                    enable_recording=bool(request.get("enable_recording", False)),
                     extra_vars=dict(request.get("extra_vars", {}) or {}),
                 )
 
@@ -754,6 +781,8 @@ class PJSipUASession:
                         repeat_count=request.playback_repeats,
                         pause_ms=request.playback_pause_ms,
                         cleanup_wav=bool(playback_result.details.get("cleanup_wav")) if playback_result.details else False,
+                        enable_recording=bool(request.enable_recording),
+                        destination_number=destination,
                     )
                     call_outcome = callback.wait_for_completion(
                         max(
@@ -1309,6 +1338,26 @@ def _prepare_playback_wav(
     )
 
 
+def _recordings_dir(settings: Settings) -> Path:
+    recordings_dir = (Path(__file__).resolve().parent.parent / "data" / "call_recordings").resolve()
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    return recordings_dir
+
+
+def _build_recording_output_path(
+    settings: Settings,
+    *,
+    account_id: str = "",
+    destination_number: str = "",
+    call_id: str = "",
+) -> Path:
+    safe_account = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(account_id or "sip"))
+    safe_destination = re.sub(r"[^0-9+]+", "", str(destination_number or "")) or "unknown"
+    safe_call_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(call_id or f"call_{int(time.time() * 1000)}"))
+    filename = f"{safe_account}_{safe_destination}_{safe_call_id}.wav"
+    return _recordings_dir(settings) / filename
+
+
 class _GatewayCall:
     """
     Best-effort PJSUA2 call object that keeps Python-side callbacks reachable.
@@ -1444,6 +1493,11 @@ class _CallCallbackHolder:
         self._playback_bridge_released = False
         self._player = None
         self._player_media = None
+        self._recorder = None
+        self._recording_enabled = False
+        self._recording_path = ""
+        self._recording_error = ""
+        self._destination_number = ""
         self._call_obj = None
 
     def _set_runtime_state(
@@ -1481,6 +1535,7 @@ class _CallCallbackHolder:
         _release_player(self._call_id, stop_transmit=stop_transmit)
         self._player = None
         self._player_media = None
+        self._recorder = None
         self._playback_pending = False
         self._playback_ready = False
 
@@ -1501,6 +1556,7 @@ class _CallCallbackHolder:
         self._release_playback_bridge(stop_transmit=False, reason="call_disconnected")
         self._player = None
         self._player_media = None
+        self._recorder = None
         self._call_obj = None
         self._playback_pending = False
         self._playback_ready = False
@@ -1545,12 +1601,18 @@ class _CallCallbackHolder:
         repeat_count: int,
         pause_ms: int,
         cleanup_wav: bool = False,
+        enable_recording: bool = False,
+        destination_number: str = "",
     ) -> None:
         self._playback_audio_path = str(audio_path or "")
         self._playback_audio_duration_seconds = max(0.0, float(audio_duration_seconds or 0.0))
         self._playback_repeat_count = max(1, int(repeat_count or 1))
         self._playback_pause_ms = max(0, int(pause_ms or 0))
         self._playback_cleanup_wav = bool(cleanup_wav)
+        self._recording_enabled = bool(enable_recording)
+        self._destination_number = str(destination_number or "")
+        self._recording_path = ""
+        self._recording_error = ""
         self._playback_hangup_requested = False
         self._hangup_requested_at = None
         self._scheduled_hangup_at = None
@@ -1660,6 +1722,38 @@ class _CallCallbackHolder:
                     player = None
                 return False
 
+            recorder = None
+            recording_path = ""
+            if self._recording_enabled:
+                try:
+                    recording_output_path = _build_recording_output_path(
+                        self._session.settings,
+                        account_id=self._account_id,
+                        destination_number=self._destination_number,
+                        call_id=self._call_id,
+                    )
+                    recorder = pj.AudioMediaRecorder()
+                    recorder.createRecorder(str(recording_output_path))
+                    recording_path = str(recording_output_path)
+                    self._recording_path = recording_path
+                    self._recording_error = ""
+                    log.info(
+                        "Outbound SIP recording prepared account=%s call_id=%s path=%s",
+                        self._account_id,
+                        self._call_id,
+                        recording_path,
+                    )
+                except Exception as exc:
+                    recorder = None
+                    self._recording_path = ""
+                    self._recording_error = f"{type(exc).__name__}: {exc}"
+                    log.warning(
+                        "Outbound SIP recording setup failed account=%s call_id=%s error=%s",
+                        self._account_id,
+                        self._call_id,
+                        self._recording_error,
+                    )
+
             log.info(
                 "Outbound SIP player created account=%s call_id=%s player=%s call_audio_media=%s",
                 self._account_id,
@@ -1678,12 +1772,18 @@ class _CallCallbackHolder:
 
             try:
                 player.startTransmit(call_audio_media)
+                if recorder is not None:
+                    with suppress(Exception):
+                        player.startTransmit(recorder)
+                    with suppress(Exception):
+                        call_audio_media.startTransmit(recorder)
                 log.info(
-                    "Outbound SIP startTransmit called successfully account=%s call_id=%s player=%s call_audio_media=%s",
+                    "Outbound SIP startTransmit called successfully account=%s call_id=%s player=%s call_audio_media=%s recorder=%s",
                     self._account_id,
                     self._call_id,
                     str(player),
                     str(call_audio_media),
+                    str(recorder),
                 )
             except Exception as exc:
                 self._playback_error = f"startTransmit failed: {type(exc).__name__}: {exc}"
@@ -1695,6 +1795,8 @@ class _CallCallbackHolder:
                 )
                 with suppress(Exception):
                     player = None
+                with suppress(Exception):
+                    recorder = None
                 return False
 
             with _PJSUA_PLAYER_LOCK:
@@ -1702,12 +1804,15 @@ class _CallCallbackHolder:
                     "player": player,
                     "player_media": player,
                     "call_audio_media": call_audio_media,
-                    "wav_path": str(wav_path),
+                    "recorder": recorder,
+                    "recording_path": recording_path,
                     "cleanup_wav": self._playback_cleanup_wav,
+                    "wav_path": str(wav_path),
                 }
 
             self._player = player
             self._player_media = player
+            self._recorder = recorder
             self._call_obj = call_obj
             self._playback_started = True
             self._playback_started_at = time.time()
@@ -2070,13 +2175,19 @@ class _CallCallbackHolder:
         answered = self._answered_at is not None
         if answered:
             end_time = self._disconnected_at or time.time()
-            playback_seconds = max(0.0, end_time - float(self._answered_at or end_time))
+            call_duration_seconds = max(0.0, end_time - float(self._answered_at or end_time))
+            playback_seconds = call_duration_seconds
         else:
+            call_duration_seconds = 0.0
             playback_seconds = 0.0
 
         return {
             "answered": answered,
             "playback_seconds": playback_seconds,
+            "call_duration_seconds": call_duration_seconds,
+            "recording_path": self._recording_path,
+            "recording_enabled": self._recording_enabled,
+            "recording_error": self._recording_error,
             "last_status_code": self._last_status_code,
             "state_text": self._state_text,
             "disconnect_reason": self._disconnect_reason,

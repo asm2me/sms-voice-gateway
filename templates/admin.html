@@ -457,6 +457,7 @@
           <th>SIP/Call Reference</th>
           <th>Audio</th>
           <th>Recording</th>
+          <th>Call Duration</th>
           <th>Message</th>
           <th>Last Error</th>
         </tr>
@@ -501,6 +502,7 @@
             <span class="muted">—</span>
             {% endif %}
           </td>
+          <td class="mono">{% if item.call_duration_seconds %}{{ "%.2fs"|format(item.call_duration_seconds) }}{% else %}—{% endif %}</td>
           <td class="message-preview">{{ item.body_preview or item.body or '—' }}</td>
           <td>{{ item.last_error or '—' }}</td>
         </tr>
@@ -898,6 +900,7 @@
               <th>SIP/Call Reference</th>
               <th>Audio</th>
               <th>Recording</th>
+              <th>Call Duration</th>
               <th>Body Preview</th>
               <th>Last Error</th>
             </tr>
@@ -941,6 +944,7 @@
                 <span class="muted">—</span>
                 {% endif %}
               </td>
+              <td class="mono">{% if item.call_duration_seconds %}{{ "%.2fs"|format(item.call_duration_seconds) }}{% else %}—{% endif %}</td>
               <td class="message-preview">{{ item.body_preview }}</td>
               <td>{{ item.last_error or '—' }}</td>
             </tr>
@@ -2612,6 +2616,7 @@
           const callReference = escapeHtml(
             (item && (item.sip_call_id || item.sip_account_id || item.ami_action_id)) || "—"
           );
+          const callDuration = escapeHtml(formatCallDuration(item && item.call_duration_seconds));
           const messagePreview = escapeHtml(
             (item && (item.body_preview || item.body)) || "—"
           );
@@ -2642,6 +2647,7 @@
             '<td class="mono">' + callReference + "</td>" +
             "<td>" + audioButton + "</td>" +
             "<td>" + recordingButton + "</td>" +
+            '<td class="mono">' + callDuration + "</td>" +
             '<td class="message-preview">' + messagePreview + "</td>" +
             "<td>" + lastError + "</td>" +
             "</tr>"

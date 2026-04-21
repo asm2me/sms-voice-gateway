@@ -25,7 +25,7 @@ class SIPAccount(BaseModel):
     default_for_outbound: bool = False
     register_enabled: bool = Field(default=True, alias="register", validation_alias="register", serialization_alias="register")
     outbound_proxy: str = ""
-    concurrency_limit: int = 1
+    concurrency_limit: int = 0
     preferred_codecs: list[str] = Field(default_factory=list)
     extra: dict[str, Any] = Field(default_factory=dict)
 

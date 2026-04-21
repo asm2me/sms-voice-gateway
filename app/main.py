@@ -148,9 +148,8 @@ def _retry_queue_item(settings: Settings, item) -> None:
         latest.sip_account_id = result.sip_account_id or latest.sip_account_id
         latest.audio_path = result.audio_path or latest.audio_path
         latest.recording_path = result.recording_path or latest.recording_path
-        latest.call_duration_seconds = float(
-            (result.details or {}).get("playback_seconds")
-            or (result.details or {}).get("audio_duration_seconds")
+        latest.call_duration_seconds = (
+            _resolve_call_duration_seconds(result)
             or getattr(latest, "call_duration_seconds", 0.0)
             or 0.0
         )
@@ -575,6 +574,31 @@ def _build_live_call_context(settings: Settings) -> dict:
     }
 
 
+def _resolve_call_duration_seconds(result) -> float:
+    explicit_duration = getattr(result, "call_duration_seconds", None)
+    if explicit_duration not in (None, ""):
+        try:
+            numeric = float(explicit_duration)
+            if numeric > 0:
+                return numeric
+        except Exception:
+            pass
+
+    details = getattr(result, "details", {}) or {}
+    for key in ("call_duration_seconds", "playback_seconds", "audio_duration_seconds"):
+        value = details.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            numeric = float(value)
+            if numeric > 0:
+                return numeric
+        except Exception:
+            continue
+
+    return 0.0
+
+
 def _record_gateway_result(provider: str, result, *, phone_number: str = "", message: str = "") -> None:
     try:
         status_value = (
@@ -589,11 +613,7 @@ def _record_gateway_result(provider: str, result, *, phone_number: str = "", mes
             else "error"
         )
         details = result.details or {}
-        call_duration_seconds = float(
-            details.get("playback_seconds")
-            or details.get("audio_duration_seconds")
-            or 0.0
-        )
+        call_duration_seconds = _resolve_call_duration_seconds(result)
         record_delivery_report(
             dep_settings(),
             status=status_value,
@@ -662,9 +682,8 @@ def _update_queue_item_from_result(settings: Settings, queue_item_id: str, resul
         current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
         current_queue_item.audio_path = result.audio_path or getattr(current_queue_item, "audio_path", "")
         current_queue_item.recording_path = result.recording_path or getattr(current_queue_item, "recording_path", "")
-        current_queue_item.call_duration_seconds = float(
-            (result.details or {}).get("playback_seconds")
-            or (result.details or {}).get("audio_duration_seconds")
+        current_queue_item.call_duration_seconds = (
+            _resolve_call_duration_seconds(result)
             or getattr(current_queue_item, "call_duration_seconds", 0.0)
             or 0.0
         )
@@ -836,7 +855,7 @@ def _build_sip_account_from_form(form) -> SIPAccount:
     account_id = str(form.get("account_id", "")).strip() or _slugify_identifier(label or username or host, "sip-account")
     port_raw = str(form.get("port", "5060")).strip()
     concurrency_limit_raw = str(
-        form.get("concurrency_limit", form.get("max_concurrent_channels", "1"))
+        form.get("concurrency_limit", form.get("max_concurrent_channels", "0"))
     ).strip()
     return SIPAccount(
         id=account_id,
@@ -854,7 +873,7 @@ def _build_sip_account_from_form(form) -> SIPAccount:
         default_for_outbound=_form_bool(form, "default_for_outbound"),
         register_enabled=_form_bool(form, "register"),
         outbound_proxy=str(form.get("outbound_proxy", "")).strip(),
-        concurrency_limit=max(1, int(concurrency_limit_raw or "1")),
+        concurrency_limit=max(0, int(concurrency_limit_raw or "0")),
         preferred_codecs=_parse_codec_list(str(form.get("preferred_codecs", "")).strip()),
     )
 
@@ -989,11 +1008,7 @@ def _simulate_smpp_test_send(
             "sip_call_id": result.sip_call_id,
             "sip_account_id": result.sip_account_id,
             "recording_path": result.recording_path,
-            "call_duration_seconds": float(
-                (result.details or {}).get("playback_seconds")
-                or (result.details or {}).get("audio_duration_seconds")
-                or 0.0
-            ),
+            "call_duration_seconds": _resolve_call_duration_seconds(result),
             "error": result.error,
             "delivered": result.delivered,
             "read": result.read,
@@ -2270,7 +2285,7 @@ def _build_sip_profile_from_account(account: SIPAccount) -> SipAccountProfile:
         caller_id=caller_id,
         enabled=bool(account.enabled),
         auth_realm="*",
-        concurrency_limit=max(1, int(getattr(account, "concurrency_limit", 1) or 1)),
+        concurrency_limit=max(0, int(getattr(account, "concurrency_limit", 0) or 0)),
         extra={
             "host": host,
             "port": port,
@@ -2405,15 +2420,15 @@ async def admin_test_sip_account_connection(
         register_enabled=str(payload.get("register", "true")).strip().lower() in {"1", "true", "yes", "on"},
         outbound_proxy=str(payload.get("outbound_proxy", "")).strip(),
         concurrency_limit=max(
-            1,
+            0,
             int(
                 str(
                     payload.get(
                         "concurrency_limit",
-                        payload.get("max_concurrent_channels", "1"),
+                        payload.get("max_concurrent_channels", "0"),
                     )
                 ).strip()
-                or "1"
+                or "0"
             ),
         ),
         preferred_codecs=_parse_codec_list(str(payload.get("preferred_codecs", "")).strip()),
