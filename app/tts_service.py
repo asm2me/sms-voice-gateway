@@ -8,8 +8,11 @@ audioop (stdlib) so no heavy DSP library is required.
 from __future__ import annotations
 
 import audioop
+import hashlib
 import io
+import json
 import logging
+import os
 import re
 import struct
 import wave
@@ -344,6 +347,73 @@ class ElevenLabsTTSBackend(TTSBackend):
 # Backend factory
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _google_credentials_signature(credentials_path: str | None) -> str:
+    path = (credentials_path or "").strip()
+    if not path:
+        return ""
+    try:
+        stat = os.stat(path)
+        return f"{path}:{stat.st_mtime_ns}:{stat.st_size}"
+    except OSError:
+        return path
+
+
+def _tts_signature_payload(settings: Settings, *, include_credentials: bool) -> dict[str, object]:
+    provider = (settings.tts_provider or "").strip()
+    payload: dict[str, object] = {
+        "provider": provider,
+        "tts_language": (settings.tts_language or "").strip(),
+        "tts_voice": (settings.tts_voice or "").strip(),
+        "tts_speaking_rate": settings.tts_speaking_rate,
+        "tts_audio_encoding": (settings.tts_audio_encoding or "").strip(),
+        "tts_multilingual_mode": bool(getattr(settings, "tts_multilingual_mode", False)),
+        "tts_secondary_language": (getattr(settings, "tts_secondary_language", "") or "").strip(),
+        "tts_secondary_voice": (getattr(settings, "tts_secondary_voice", "") or "").strip(),
+    }
+
+    if provider == "google":
+        payload["google_credentials_json"] = (
+            _google_credentials_signature(settings.google_credentials_json)
+            if include_credentials
+            else _google_credentials_signature(settings.google_credentials_json)
+        )
+    elif provider == "aws_polly":
+        payload.update(
+            {
+                "aws_region": (settings.aws_region or "").strip(),
+                "aws_polly_voice_id": (settings.aws_polly_voice_id or "").strip(),
+                "aws_polly_engine": (settings.aws_polly_engine or "").strip(),
+            }
+        )
+        if include_credentials:
+            payload["aws_access_key_id"] = (settings.aws_access_key_id or "").strip()
+            payload["aws_secret_access_key"] = (settings.aws_secret_access_key or "").strip()
+    elif provider == "openai":
+        payload.update(
+            {
+                "openai_tts_model": (settings.openai_tts_model or "").strip(),
+                "openai_tts_voice": (settings.openai_tts_voice or "").strip(),
+            }
+        )
+        if include_credentials:
+            payload["openai_api_key"] = (settings.openai_api_key or "").strip()
+    elif provider == "elevenlabs":
+        payload["elevenlabs_voice_id"] = (settings.elevenlabs_voice_id or "").strip()
+        if include_credentials:
+            payload["elevenlabs_api_key"] = (settings.elevenlabs_api_key or "").strip()
+
+    return payload
+
+
+def _tts_settings_signature(settings: Settings, *, include_credentials: bool) -> str:
+    raw = json.dumps(
+        _tts_signature_payload(settings, include_credentials=include_credentials),
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 _BACKENDS = {
     "google": GoogleTTSBackend,
     "aws_polly": AWSPollyBackend,
@@ -352,19 +422,20 @@ _BACKENDS = {
 }
 
 _backend_instance: Optional[TTSBackend] = None
-_backend_provider: str | None = None
+_backend_signature: str | None = None
 
 
 def get_backend(settings: Settings) -> TTSBackend:
-    global _backend_instance, _backend_provider
+    global _backend_instance, _backend_signature
     requested_provider = (settings.tts_provider or "").strip()
+    requested_signature = _tts_settings_signature(settings, include_credentials=True)
 
-    if _backend_instance is None or _backend_provider != requested_provider:
+    if _backend_instance is None or _backend_signature != requested_signature:
         cls = _BACKENDS.get(requested_provider)
         if cls is None:
             raise ValueError(f"Unknown TTS provider: {requested_provider}")
         _backend_instance = cls(settings)
-        _backend_provider = requested_provider
+        _backend_signature = requested_signature
         log.info("TTS backend initialised: %s", requested_provider)
     return _backend_instance
 
@@ -449,7 +520,7 @@ class TTSService:
         Generates and caches TTS audio if not already cached.
         The returned WAV is 8 kHz / 16-bit / mono (Asterisk-ready).
         """
-        hkey = text_hash(text, self.settings.tts_voice, self.settings.tts_language)
+        hkey = self.hash_for(text)
 
         cached = self.cache.get_audio_path(hkey)
         if cached:
@@ -471,4 +542,5 @@ class TTSService:
         return path, False
 
     def hash_for(self, text: str) -> str:
-        return text_hash(text, self.settings.tts_voice, self.settings.tts_language)
+        cache_variant = _tts_settings_signature(self.settings, include_credentials=False)[:16]
+        return text_hash(text, cache_variant, "tts-cache-v2")
