@@ -40,6 +40,8 @@ class SMPPAccount(BaseModel):
     default_sip_account_id: str = ""
     delivery_retry_count: int | None = None
     delivery_retry_interval_seconds: int | None = None
+    static_default_message_enabled: bool = False
+    static_default_message_template: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

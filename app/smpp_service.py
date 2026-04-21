@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import threading
 import time
@@ -53,6 +54,25 @@ _SM_PP_BIND_TRANSCEIVER = 0x00000009
 _SM_PP_BIND_TRANSCEIVER_RESP = 0x80000009
 _SM_PP_ENQUIRE_LINK = 0x00000015
 _SM_PP_ENQUIRE_LINK_RESP = 0x80000015
+
+_STATIC_TEMPLATE_PARAMETER_RE = re.compile(r"\{\%\s*(\d+)\s*\}")
+
+
+def _render_static_default_message(template: str, inbound_message: str) -> str:
+    rendered_template = str(template or "")
+    inbound_parts = str(inbound_message or "").split()
+
+    def replace_parameter(match: re.Match[str]) -> str:
+        try:
+            parameter_index = int(match.group(1)) - 1
+        except (TypeError, ValueError):
+            return ""
+        if parameter_index < 0 or parameter_index >= len(inbound_parts):
+            return ""
+        return inbound_parts[parameter_index]
+
+    rendered_message = _STATIC_TEMPLATE_PARAMETER_RE.sub(replace_parameter, rendered_template).strip()
+    return rendered_message or str(inbound_message or "").strip()
 
 
 @dataclass
@@ -231,6 +251,22 @@ class SMPPService:
                         (a for a in self.settings.smpp_accounts if a.username == smpp_username),
                         None,
                     )
+                    queue_body = submit_fields["short_message"]
+                    if (
+                        smpp_account
+                        and smpp_account.static_default_message_enabled
+                        and smpp_account.static_default_message_template
+                    ):
+                        queue_body = _render_static_default_message(
+                            smpp_account.static_default_message_template,
+                            submit_fields["short_message"],
+                        )
+                        log.info(
+                            "SMPP static default message applied for username=%s original=%r rendered=%r",
+                            smpp_username,
+                            submit_fields["short_message"][:120],
+                            queue_body[:120],
+                        )
                     retry_count = (
                         smpp_account.delivery_retry_count
                         if smpp_account and smpp_account.delivery_retry_count is not None
@@ -249,8 +285,8 @@ class SMPPService:
                         updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
                         phone_number=submit_fields["destination_addr"],
                         provider="smpp",
-                        body=submit_fields["short_message"],
-                        body_preview=submit_fields["short_message"][:160],
+                        body=queue_body,
+                        body_preview=queue_body[:160],
                         status="queued",
                         attempts=0,
                         max_attempts=max(1, int(retry_count) + 1),

@@ -2051,6 +2051,19 @@
                     <input type="number" step="1" min="0" name="delivery_retry_interval_seconds" placeholder="Use global default" />
                     <small class="muted">Optional per-user retry interval override.</small>
                   </label>
+                  <label class="field-group">
+                    <span class="field-label">Static Default Message Enabled</span>
+                    <select name="static_default_message_enabled">
+                      <option value="false" selected>False</option>
+                      <option value="true">True</option>
+                    </select>
+                    <small class="muted">When enabled, the inbound SMPP text is treated as parameters for the static template below.</small>
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Static Default Message Template</span>
+                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is {%1} رمز التفعيل الخاص بك هو {%2}"></textarea>
+                    <small class="muted">Use parameter placeholders like {%1}, {%2}, {%3}. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces.</small>
+                  </label>
                 </div>
                 <div class="form-actions">
                   <a href="#" class="button button-secondary">Cancel</a>
@@ -2119,6 +2132,19 @@
                     <span class="field-label">Retry Interval Seconds</span>
                     <input type="number" step="1" min="0" name="delivery_retry_interval_seconds" value="{{ account.delivery_retry_interval_seconds if account.delivery_retry_interval_seconds is not none else '' }}" placeholder="Use global default" />
                     <small class="muted">Optional per-user retry interval override.</small>
+                  </label>
+                  <label class="field-group">
+                    <span class="field-label">Static Default Message Enabled</span>
+                    <select name="static_default_message_enabled">
+                      <option value="true" {% if account.static_default_message_enabled %}selected{% endif %}>True</option>
+                      <option value="false" {% if not account.static_default_message_enabled %}selected{% endif %}>False</option>
+                    </select>
+                    <small class="muted">When enabled, the inbound SMPP text is treated as parameters for the static template below.</small>
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Static Default Message Template</span>
+                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is {%1} رمز التفعيل الخاص بك هو {%2}">{{ account.static_default_message_template or '' }}</textarea>
+                    <small class="muted">Use parameter placeholders like {%1}, {%2}, {%3}. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces.</small>
                   </label>
                 </div>
                 <div class="form-actions">

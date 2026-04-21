@@ -885,6 +885,8 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
 
     delivery_retry_count_raw = str(form.get("delivery_retry_count", "")).strip()
     delivery_retry_interval_raw = str(form.get("delivery_retry_interval_seconds", "")).strip()
+    static_default_message_enabled = _form_bool(form, "static_default_message_enabled")
+    static_default_message_template = str(form.get("static_default_message_template", "")).strip()
 
     return SMPPAccount(
         id=account_id,
@@ -896,6 +898,8 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
         default_sip_account_id=str(form.get("default_sip_account_id", "")).strip(),
         delivery_retry_count=int(delivery_retry_count_raw) if delivery_retry_count_raw != "" else None,
         delivery_retry_interval_seconds=int(delivery_retry_interval_raw) if delivery_retry_interval_raw != "" else None,
+        static_default_message_enabled=static_default_message_enabled,
+        static_default_message_template=static_default_message_template,
     )
 
 
