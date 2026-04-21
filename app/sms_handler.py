@@ -26,8 +26,9 @@ from .admin_reports import QueueItem, get_queue_store
 from .cache import AudioCache
 from .config import SIPAccount, Settings
 from .config_store import get_sip_account_for_smpp_username
+from .message_parts import extract_spoken_segments, render_static_default_message
 from .pjsua2_service import SipCallRequest, build_pjsua2_service
-from .tts_service import TTSService, _generate_silence
+from .tts_service import TTSService, _concat_wavs, _ensure_wav_format, _generate_silence
 
 log = logging.getLogger(__name__)
 
@@ -195,6 +196,35 @@ class SMSGateway:
             None,
         )
 
+    def _resolve_static_template_audio(
+        self,
+        *,
+        inbound_text: str,
+        rendered_text: str,
+        template: str,
+    ) -> tuple[str, bool]:
+        merged_hash = self.tts.hash_for(rendered_text)
+        cached_merged_audio = self.audio_cache.get_audio_path(merged_hash)
+        if cached_merged_audio:
+            return cached_merged_audio, True
+
+        spoken_segments = [
+            segment
+            for segment in extract_spoken_segments(template, inbound_text)
+            if str(segment).strip()
+        ]
+        if len(spoken_segments) <= 1:
+            return self.tts.get_or_create_audio(rendered_text)
+
+        wav_parts: list[bytes] = []
+        for segment in spoken_segments:
+            segment_audio_path, _segment_cached = self.tts.get_or_create_audio(segment)
+            wav_parts.append(Path(segment_audio_path).read_bytes())
+
+        merged_audio = _ensure_wav_format(_concat_wavs(wav_parts))
+        stored_path = self.audio_cache.store_audio(merged_hash, merged_audio)
+        return stored_path, False
+
     def process(self, sms: IncomingSMS, *, queue_retries: bool = True) -> GatewayResult:
         try:
             phone, spoken_text = extract_destination(sms)
@@ -206,6 +236,19 @@ class SMSGateway:
                 details={"pending_reason": _derive_pending_reason(stage="destination", detail=str(exc))},
             )
 
+        smpp_account = self._resolve_smpp_account(sms)
+        rendered_from_static_template = False
+        if (
+            smpp_account
+            and smpp_account.static_default_message_enabled
+            and smpp_account.static_default_message_template
+        ):
+            spoken_text = render_static_default_message(
+                smpp_account.static_default_message_template,
+                spoken_text,
+            )
+            rendered_from_static_template = True
+
         if not spoken_text:
             return GatewayResult(
                 success=False,
@@ -215,7 +258,14 @@ class SMSGateway:
             )
 
         try:
-            audio_path, was_cached = self.tts.get_or_create_audio(spoken_text)
+            if rendered_from_static_template and smpp_account is not None:
+                audio_path, was_cached = self._resolve_static_template_audio(
+                    inbound_text=extract_destination(sms)[1],
+                    rendered_text=spoken_text,
+                    template=smpp_account.static_default_message_template,
+                )
+            else:
+                audio_path, was_cached = self.tts.get_or_create_audio(spoken_text)
         except Exception as exc:
             log.exception("TTS failed for text=%r", spoken_text[:60])
             if sms.provider == "admin-test":
@@ -236,7 +286,6 @@ class SMSGateway:
                 )
 
         hkey = self.tts.hash_for(spoken_text)
-        smpp_account = self._resolve_smpp_account(sms)
         retry_count = (
             smpp_account.delivery_retry_count
             if smpp_account and smpp_account.delivery_retry_count is not None
@@ -267,7 +316,8 @@ class SMSGateway:
                     "pending_reason": _derive_pending_reason(stage="sip_trunk", detail="no enabled SIP account is assigned for this SMPP user"),
                     "tts_cached": was_cached,
                     "hash": hkey,
-                    "smpp_username": sms.smpp_username or "",
+                        "smpp_username": sms.smpp_username or "",
+                        "static_template_applied": rendered_from_static_template,
                 },
             )
 
@@ -336,6 +386,7 @@ class SMSGateway:
                         "retry_interval_seconds": retry_interval_seconds,
                         "sip_account_id": sip_account_id,
                         "smpp_username": sms.smpp_username or "",
+                        "static_template_applied": rendered_from_static_template,
                         "delivery_state": "DELIVRD" if sip_result.delivered else "UNDELIV",
                         "read_state": "READ" if sip_result.read else "UNREAD",
                         "answered": bool(sip_result.answered),
@@ -371,6 +422,7 @@ class SMSGateway:
                         "sip_account_id": sip_account_id,
                         "smpp_username": sms.smpp_username or "",
                         "smpp_retry_count": retry_count,
+                        "static_template_applied": rendered_from_static_template,
                         "recording_path": recording_path,
                     },
                 )
@@ -396,6 +448,7 @@ class SMSGateway:
                         "retry_interval_seconds": retry_interval_seconds,
                         "sip_account_id": sip_account_id,
                         "smpp_username": sms.smpp_username or "",
+                        "static_template_applied": rendered_from_static_template,
                         "state": "missed",
                         "recording_path": recording_path,
                     },
@@ -446,6 +499,7 @@ class SMSGateway:
                 "sip_account_id": sip_account_id,
                 "smpp_username": sms.smpp_username or "",
                 "smpp_retry_count": retry_count,
+                "static_template_applied": rendered_from_static_template,
                 "recording_path": recording_path,
             },
         )

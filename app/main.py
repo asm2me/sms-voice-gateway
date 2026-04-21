@@ -39,6 +39,7 @@ from starlette.requests import ClientDisconnect
 from pydantic import BaseModel
 
 from .admin_audit import list_audit_entries, record_audit_event
+from .message_parts import describe_static_message_template
 from .admin_reports import (
     batch_delete_inbox_messages,
     batch_delete_queue_items,
@@ -1323,7 +1324,15 @@ def _admin_context(
         "health": health_payload,
         "sip_accounts": [account.model_dump(by_alias=True) for account in settings.sip_accounts],
         "smpp_accounts": [
-            account.model_dump()
+            {
+                **account.model_dump(),
+                "static_message_template_description": describe_static_message_template(
+                    account.static_default_message_template
+                ),
+                "static_message_parts": describe_static_message_template(
+                    account.static_default_message_template
+                )["parts"],
+            }
             for account in settings.smpp_accounts
         ],
         "system_users": [user.model_dump() for user in settings.system_users],
@@ -2771,6 +2780,81 @@ async def admin_tools_tts_preview_audio(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Generated audio file not found")
 
     return FileResponse(audio_path, media_type="audio/wav", filename=audio_path.name)
+
+
+@app.post("/admin/config/smpp-template-part-preview")
+async def admin_config_smpp_template_part_preview(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    form = await request.form()
+    part_text = str(form.get("part_text", ""))
+    account_id = str(form.get("account_id", "")).strip()
+    part_ordinal = str(form.get("part_ordinal", "")).strip()
+
+    if not part_text.strip():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "part_text is required")
+
+    _append_admin_log(
+        f"SMPP static template part preview started account_id={account_id or '-'} ordinal={part_ordinal or '-'} text={part_text[:80]!r}"
+    )
+
+    try:
+        tts = TTSService(settings, AudioCache(settings))
+        audio_path, was_cached = tts.get_or_create_audio(part_text)
+        audio_url = f"/admin/tools/tts-preview/audio?path={audio_path}"
+        _record_admin_audit(
+            request=request,
+            action="config.smpp_template_part_preview",
+            section="config",
+            detail=(
+                f"Previewed SMPP static template part"
+                f"{' #' + part_ordinal if part_ordinal else ''}"
+                f"{' for ' + account_id if account_id else ''}"
+                f" (cached={'yes' if was_cached else 'no'})."
+            ),
+            status="success",
+            target=account_id or part_ordinal or "smpp-template-part",
+            metadata={
+                "account_id": account_id,
+                "part_ordinal": part_ordinal,
+                "cached": bool(was_cached),
+                "audio_path": str(audio_path),
+            },
+        )
+        _append_admin_log(
+            f"SMPP static template part preview finished account_id={account_id or '-'} ordinal={part_ordinal or '-'} cached={was_cached} audio_path={audio_path}"
+        )
+        return JSONResponse(
+            {
+                "success": True,
+                "audio_url": audio_url,
+                "cached": was_cached,
+                "message": "Static template part preview audio generated.",
+            }
+        )
+    except Exception as exc:
+        _append_admin_log(
+            f"SMPP static template part preview failed account_id={account_id or '-'} ordinal={part_ordinal or '-'} error={exc}"
+        )
+        _record_admin_audit(
+            request=request,
+            action="config.smpp_template_part_preview",
+            section="config",
+            detail=f"SMPP static template part preview failed: {exc}",
+            status="error",
+            target=account_id or part_ordinal or "smpp-template-part",
+            metadata={"account_id": account_id, "part_ordinal": part_ordinal},
+        )
+        return JSONResponse(
+            {
+                "success": False,
+                "error": str(exc),
+                "message": f"Static template part preview failed: {exc}",
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
 
 
 @app.post("/admin/tools/test-send")

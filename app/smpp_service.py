@@ -8,10 +8,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .admin_reports import record_inbox_message
+from .admin_reports import QueueItem, get_queue_store, record_inbox_message
 from .config import Settings
 from .config_store import get_default_smpp_account, get_sip_account_for_smpp_username
-from .admin_reports import QueueItem, get_queue_store
+from .message_parts import describe_static_message_template
 
 log = logging.getLogger(__name__)
 
@@ -54,27 +54,6 @@ _SM_PP_BIND_TRANSCEIVER = 0x00000009
 _SM_PP_BIND_TRANSCEIVER_RESP = 0x80000009
 _SM_PP_ENQUIRE_LINK = 0x00000015
 _SM_PP_ENQUIRE_LINK_RESP = 0x80000015
-
-_STATIC_TEMPLATE_PARAMETER_RE = re.compile(r"(?:\{\%\s*(\d+)\s*\}|%(\d+))")
-
-
-def _render_static_default_message(template: str, inbound_message: str) -> str:
-    rendered_template = str(template or "")
-    inbound_parts = str(inbound_message or "").split()
-
-    def replace_parameter(match: re.Match[str]) -> str:
-        parameter_token = match.group(1) or match.group(2)
-        try:
-            parameter_index = int(parameter_token) - 1
-        except (TypeError, ValueError):
-            return ""
-        if parameter_index < 0 or parameter_index >= len(inbound_parts):
-            return ""
-        return inbound_parts[parameter_index]
-
-    rendered_message = _STATIC_TEMPLATE_PARAMETER_RE.sub(replace_parameter, rendered_template).strip()
-    return rendered_message or str(inbound_message or "").strip()
-
 
 @dataclass
 class SMPPResult:
@@ -253,20 +232,21 @@ class SMPPService:
                         None,
                     )
                     queue_body = submit_fields["short_message"]
+                    static_template_info = None
                     if (
                         smpp_account
                         and smpp_account.static_default_message_enabled
                         and smpp_account.static_default_message_template
                     ):
-                        queue_body = _render_static_default_message(
+                        static_template_info = describe_static_message_template(
                             smpp_account.static_default_message_template,
-                            submit_fields["short_message"],
                         )
                         log.info(
-                            "SMPP static default message applied for username=%s original=%r rendered=%r",
+                            "SMPP static default message enabled for username=%s original=%r template=%r parts=%s",
                             smpp_username,
                             submit_fields["short_message"][:120],
-                            queue_body[:120],
+                            smpp_account.static_default_message_template[:120],
+                            len(static_template_info.get("parts", [])),
                         )
                     retry_count = (
                         smpp_account.delivery_retry_count
@@ -287,7 +267,11 @@ class SMPPService:
                         phone_number=submit_fields["destination_addr"],
                         provider="smpp",
                         body=queue_body,
-                        body_preview=queue_body[:160],
+                        body_preview=(
+                            smpp_account.static_default_message_template[:160]
+                            if static_template_info is not None
+                            else queue_body[:160]
+                        ),
                         status="queued",
                         attempts=0,
                         max_attempts=max(1, int(retry_count) + 1),

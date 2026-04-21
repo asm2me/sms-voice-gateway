@@ -1946,6 +1946,7 @@
                   <th>Enabled</th>
                   <th>Default</th>
                   <th>Default SIP</th>
+                  <th>Static Message Parts</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -1969,6 +1970,39 @@
                   </td>
                   <td class="mono">{{ account.default_sip_account_id or '—' }}</td>
                   <td>
+                    {% if account.static_message_parts %}
+                    <div class="permission-summary">
+                      {% for part in account.static_message_parts %}
+                      <div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">
+                        <strong>Part {{ part.ordinal }}</strong>
+                        {% if part.kind == 'parameter' %}
+                        <span class="mono">{{ part.display_value }}</span>
+                        <span class="muted">unspoken parameter</span>
+                        {% else %}
+                        <span class="mono">{{ part.display_value or '—' }}</span>
+                        {% if part.spoken %}
+                        <button
+                          type="button"
+                          class="button button-secondary button-small"
+                          title="Play static message part {{ part.ordinal }}"
+                          aria-label="Play static message part {{ part.ordinal }}"
+                          data-account-id="{{ account.id }}"
+                          data-part-ordinal="{{ part.ordinal }}"
+                          data-part-text="{{ part.value }}"
+                          onclick="window.__adminPreviewSmppTemplatePart(this)"
+                        >▶</button>
+                        {% else %}
+                        <span class="muted">unspoken</span>
+                        {% endif %}
+                        {% endif %}
+                      </div>
+                      {% endfor %}
+                    </div>
+                    {% else %}
+                    <span class="muted">No static template</span>
+                    {% endif %}
+                  </td>
+                  <td>
                     <div class="table-actions">
                       <a class="button button-secondary button-small" href="#smpp-user-edit-{{ account.id }}">Edit</a>
                       <form method="post" action="/admin/config/smpp-accounts/delete" class="inline-form">
@@ -1976,6 +2010,7 @@
                         <button type="submit" class="button button-danger button-small">Delete</button>
                       </form>
                     </div>
+                    <div id="smpp-template-part-status-{{ account.id }}" class="inline-test-status" aria-live="polite"></div>
                   </td>
                 </tr>
                 {% endfor %}
@@ -2064,6 +2099,10 @@
                     <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 رمز التفعيل الخاص بك هو %2"></textarea>
                     <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
                   </label>
+                  <div class="notice">
+                    <strong>Template caching behavior.</strong>
+                    Static text is split into separate cached spoken parts around parameter placeholders. Parameters such as <span class="mono">%1</span> and <span class="mono">%2</span> are shown in configuration as unspoken placeholders and are inserted at runtime.
+                  </div>
                 </div>
                 <div class="form-actions">
                   <a href="#" class="button button-secondary">Cancel</a>
@@ -2146,6 +2185,41 @@
                     <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 رمز التفعيل الخاص بك هو %2">{{ account.static_default_message_template or '' }}</textarea>
                     <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
                   </label>
+                  <div class="field-group field-span-2">
+                    <span class="field-label">Split Static Message Parts</span>
+                    {% if account.static_message_parts %}
+                    <div class="permission-summary">
+                      {% for part in account.static_message_parts %}
+                      <div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">
+                        <strong>Part {{ part.ordinal }}</strong>
+                        {% if part.kind == 'parameter' %}
+                        <span class="mono">{{ part.display_value }}</span>
+                        <span class="muted">unspoken parameter</span>
+                        {% else %}
+                        <span class="mono">{{ part.display_value or '—' }}</span>
+                        {% if part.spoken %}
+                        <button
+                          type="button"
+                          class="button button-secondary button-small"
+                          title="Play static message part {{ part.ordinal }}"
+                          aria-label="Play static message part {{ part.ordinal }}"
+                          data-account-id="{{ account.id }}"
+                          data-part-ordinal="{{ part.ordinal }}"
+                          data-part-text="{{ part.value }}"
+                          onclick="window.__adminPreviewSmppTemplatePart(this)"
+                        >▶</button>
+                        {% else %}
+                        <span class="muted">unspoken</span>
+                        {% endif %}
+                        {% endif %}
+                      </div>
+                      {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="muted">No split parts yet. Save a template with text and placeholders like <span class="mono">%1</span>.</div>
+                    {% endif %}
+                    <div id="smpp-template-part-status-modal-{{ account.id }}" class="inline-test-status" aria-live="polite"></div>
+                  </div>
                 </div>
                 <div class="form-actions">
                   <a href="#" class="button button-secondary">Cancel</a>
@@ -2263,6 +2337,76 @@
     return notice;
   }
 
+  window.__adminPreviewSmppTemplatePart =
+    window.__adminPreviewSmppTemplatePart ||
+    async function (button) {
+      if (!button) return;
+
+      const accountId = button.getAttribute("data-account-id") || "";
+      const partOrdinal = button.getAttribute("data-part-ordinal") || "";
+      const partText = button.getAttribute("data-part-text") || "";
+      const statusTargets = [
+        document.getElementById("smpp-template-part-status-" + accountId),
+        document.getElementById("smpp-template-part-status-modal-" + accountId),
+      ].filter(Boolean);
+
+      if (!partText.trim()) {
+        statusTargets.forEach(function (target) {
+          target.innerHTML =
+            '<span class="status-badge status-danger">Missing text</span>' +
+            '<div class="inline-test-status__summary">This template part has no spoken text to preview.</div>';
+        });
+        return;
+      }
+
+      button.disabled = true;
+      statusTargets.forEach(function (target) {
+        target.innerHTML =
+          '<span class="status-badge status-pending">Generating…</span>' +
+          '<div class="inline-test-status__summary">Creating audio for static template part ' +
+          escapeHtml(partOrdinal || "?") +
+          ".</div>";
+      });
+
+      try {
+        const formData = new FormData();
+        formData.set("account_id", accountId);
+        formData.set("part_ordinal", partOrdinal);
+        formData.set("part_text", partText);
+
+        const response = await fetch("/admin/config/smpp-template-part-preview", {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin",
+        });
+
+        const result = await response.json();
+        if (!response.ok || !result.success || !result.audio_url) {
+          throw new Error((result && (result.message || result.error)) || "Static template part preview failed");
+        }
+
+        window.__adminPlayQueueAudio(result.audio_url, button);
+
+        statusTargets.forEach(function (target) {
+          target.innerHTML =
+            '<span class="status-badge status-success">Ready</span>' +
+            '<div class="inline-test-status__summary">' +
+            escapeHtml(result.message || "Static template part preview audio generated.") +
+            "</div>";
+        });
+      } catch (error) {
+        statusTargets.forEach(function (target) {
+          target.innerHTML =
+            '<span class="status-badge status-danger">Failed</span>' +
+            '<div class="inline-test-status__summary">' +
+            escapeHtml((error && error.message) || "Static template part preview failed") +
+            "</div>";
+        });
+      } finally {
+        button.disabled = false;
+      }
+    };
+
   window.__adminPreviewTTS =
     window.__adminPreviewTTS ||
     async function () {
@@ -2335,7 +2479,7 @@
       if (!player || !url) return;
 
       if (button) {
-        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"], [aria-label="Play call recording for delivery report"]').forEach((candidate) => {
+        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"], [aria-label="Play call recording for delivery report"], [aria-label^="Play static message part "]').forEach((candidate) => {
           if (candidate !== button) candidate.textContent = "▶";
         });
       }
@@ -2359,13 +2503,13 @@
 
       player.onended = function () {
         player.dataset.currentUrl = "";
-        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"], [aria-label="Play call recording for delivery report"]').forEach((candidate) => {
+        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"], [aria-label="Play call recording for delivery report"], [aria-label^="Play static message part "]').forEach((candidate) => {
           candidate.textContent = "▶";
         });
       };
       player.onpause = function () {
         if (!player.dataset.currentUrl) return;
-        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"], [aria-label="Play call recording for delivery report"]').forEach((candidate) => {
+        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"], [aria-label="Play call recording for delivery report"], [aria-label^="Play static message part "]').forEach((candidate) => {
           candidate.textContent = "▶";
         });
       };
