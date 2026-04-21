@@ -267,23 +267,23 @@
   <div class="status-grid report-summary-grid">
     <div class="stat-card">
       <span class="stat-label">Success</span>
-      <strong>{{ report_success }}</strong>
+      <strong id="live-report-success">{{ report_success }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Error</span>
-      <strong>{{ report_error }}</strong>
+      <strong id="live-report-error">{{ report_error }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Pending</span>
-      <strong>{{ report_pending }}</strong>
+      <strong id="live-report-pending">{{ report_pending }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Unknown</span>
-      <strong>{{ report_unknown }}</strong>
+      <strong id="live-report-unknown">{{ report_unknown }}</strong>
     </div>
     <div class="stat-card">
       <span class="stat-label">Total</span>
-      <strong>{{ report_summary.total }}</strong>
+      <strong id="live-report-total">{{ report_summary.total }}</strong>
     </div>
   </div>
 
@@ -298,11 +298,13 @@
           <th>Destination</th>
           <th>Message Excerpt</th>
           <th>SIP/Call Reference</th>
+          <th>Call Duration</th>
+          <th>Recording</th>
           <th>Provider</th>
           <th>Error</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody id="live-reports-body">
         {% for report in recent_reports %}
         <tr>
           <td class="mono">{{ report.timestamp }}</td>
@@ -318,6 +320,20 @@
           <td class="mono">{{ report.destination }}</td>
           <td>{{ report.message_excerpt }}</td>
           <td class="mono">{{ report.sip_call_id or report.sip_account_id or report.ami_action_id or '—' }}</td>
+          <td class="mono">{% if report.call_duration_seconds %}{{ "%.2fs"|format(report.call_duration_seconds) }}{% else %}—{% endif %}</td>
+          <td>
+            {% if report.recording_path %}
+            <button
+              type="button"
+              class="button button-secondary button-small"
+              title="Play call recording"
+              aria-label="Play call recording for delivery report"
+              onclick="window.__adminPlayQueueAudio('/admin/reports/recording?path={{ report.recording_path|urlencode }}', this)"
+            >▶</button>
+            {% else %}
+            <span class="muted">—</span>
+            {% endif %}
+          </td>
           <td>{{ report.source }}</td>
           <td>{{ report.error or '—' }}</td>
         </tr>
@@ -2275,6 +2291,12 @@
       }
     };
 
+  function formatCallDuration(value) {
+    const numeric = Number(value || 0);
+    if (!Number.isFinite(numeric) || numeric <= 0) return "—";
+    return numeric.toFixed(2) + "s";
+  }
+
   window.__adminQueueAudioPlayer = window.__adminQueueAudioPlayer || new Audio();
   window.__adminPlayQueueAudio =
     window.__adminPlayQueueAudio ||
@@ -2283,7 +2305,7 @@
       if (!player || !url) return;
 
       if (button) {
-        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"]').forEach((candidate) => {
+        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"], [aria-label="Play call recording for delivery report"]').forEach((candidate) => {
           if (candidate !== button) candidate.textContent = "▶";
         });
       }
@@ -2307,13 +2329,13 @@
 
       player.onended = function () {
         player.dataset.currentUrl = "";
-        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"]').forEach((candidate) => {
+        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"], [aria-label="Play call recording for delivery report"]').forEach((candidate) => {
           candidate.textContent = "▶";
         });
       };
       player.onpause = function () {
         if (!player.dataset.currentUrl) return;
-        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"]').forEach((candidate) => {
+        document.querySelectorAll('[aria-label="Play generated audio for queued message"], [aria-label="Play call recording for queued message"], [aria-label="Play call recording for delivery report"]').forEach((candidate) => {
           candidate.textContent = "▶";
         });
       };
@@ -2457,6 +2479,85 @@
       if (state) {
         state.busy = false;
       }
+    };
+
+  window.__adminRenderReportSummary =
+    window.__adminRenderReportSummary ||
+    function (payload) {
+      const reportSummary = payload && payload.report_summary ? payload.report_summary : {};
+      const counts = Array.isArray(reportSummary.status_counts) ? reportSummary.status_counts : [];
+      const countByStatus = counts.reduce(function (accumulator, entry) {
+        const key = String((entry && entry.status) || "").toLowerCase();
+        accumulator[key] = Number(entry && entry.count ? entry.count : 0);
+        return accumulator;
+      }, {});
+      const successNode = document.getElementById("live-report-success");
+      const errorNode = document.getElementById("live-report-error");
+      const pendingNode = document.getElementById("live-report-pending");
+      const unknownNode = document.getElementById("live-report-unknown");
+      const totalNode = document.getElementById("live-report-total");
+
+      if (successNode) successNode.textContent = String(countByStatus.success || 0);
+      if (errorNode) errorNode.textContent = String(countByStatus.error || 0);
+      if (pendingNode) pendingNode.textContent = String(countByStatus.pending || 0);
+      if (unknownNode) unknownNode.textContent = String(countByStatus.unknown || 0);
+      if (totalNode) totalNode.textContent = String(reportSummary.total || 0);
+    };
+
+  window.__adminRenderReportRows =
+    window.__adminRenderReportRows ||
+    function (payload) {
+      const reports = payload && Array.isArray(payload.recent_reports) ? payload.recent_reports : [];
+      const body = document.getElementById("live-reports-body");
+      if (!body) return;
+
+      if (!reports.length) {
+        body.innerHTML = "";
+        return;
+      }
+
+      body.innerHTML = reports
+        .map(function (report) {
+          const timestamp = escapeHtml(report && report.timestamp ? report.timestamp : "—");
+          const phoneNumber = escapeHtml(report && report.phone_number ? report.phone_number : "—");
+          const statusValue = escapeHtml(report && report.status ? report.status : "unknown");
+          const statusClass = escapeHtml(report && report.status_class ? report.status_class : "unknown");
+          const destination = escapeHtml(report && report.destination ? report.destination : "—");
+          const messageExcerpt = escapeHtml(report && report.message_excerpt ? report.message_excerpt : "—");
+          const reference = escapeHtml(
+            (report && (report.sip_call_id || report.sip_account_id || report.ami_action_id)) || "—"
+          );
+          const duration = escapeHtml(formatCallDuration(report && report.call_duration_seconds));
+          const provider = escapeHtml((report && (report.source || report.provider)) || "—");
+          const errorValue = escapeHtml(report && report.error ? report.error : "—");
+          const reportReason = escapeHtml(report && report.error ? report.error : "No delivery reason recorded");
+          const recordingButton =
+            report && report.recording_path
+              ? '<button type="button" class="button button-secondary button-small" title="Play call recording" aria-label="Play call recording for delivery report" onclick="window.__adminPlayQueueAudio(\'/admin/reports/recording?path=' +
+                encodeURIComponent(report.recording_path) +
+                '\', this)">▶</button>'
+              : '<span class="muted">—</span>';
+          const statusBadge =
+            report && report.status === "error"
+              ? '<span class="status-badge status-danger" title="' + reportReason + '">failed</span>'
+              : '<span class="status-badge status-' + statusClass + '">' + statusValue + "</span>";
+
+          return (
+            "<tr>" +
+            '<td class="mono">' + timestamp + "</td>" +
+            '<td class="mono">' + phoneNumber + "</td>" +
+            "<td>" + statusBadge + "</td>" +
+            '<td class="mono">' + destination + "</td>" +
+            "<td>" + messageExcerpt + "</td>" +
+            '<td class="mono">' + reference + "</td>" +
+            '<td class="mono">' + duration + "</td>" +
+            "<td>" + recordingButton + "</td>" +
+            "<td>" + provider + "</td>" +
+            "<td>" + errorValue + "</td>" +
+            "</tr>"
+          );
+        })
+        .join("");
     };
 
   window.__adminRenderQueueSummary =
@@ -2657,6 +2758,8 @@
           throw new Error((payload && payload.detail) || "Unable to refresh live queue data");
         }
 
+        window.__adminRenderReportSummary(payload);
+        window.__adminRenderReportRows(payload);
         window.__adminRenderQueueSummary(payload);
         window.__adminRenderQueueRows(payload);
         window.__adminRenderLiveCalls(payload);

@@ -54,6 +54,13 @@ def _coerce_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _coerce_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
 def _status_class(status: str) -> str:
     mapping = {
         "success": "success",
@@ -80,6 +87,10 @@ class DeliveryReport:
     message: str = ""
     error: str | None = None
     ami_action_id: str | None = None
+    sip_call_id: str | None = None
+    sip_account_id: str = ""
+    recording_path: str = ""
+    call_duration_seconds: float = 0.0
     audio_cached: bool | None = None
     text_spoken: str | None = None
     details: dict[str, Any] | None = None
@@ -153,6 +164,7 @@ class QueueItem:
     smpp_username: str = ""
     audio_path: str = ""
     recording_path: str = ""
+    call_duration_seconds: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -182,6 +194,7 @@ class QueueItem:
             smpp_username=_coerce_text(data.get("smpp_username")),
             audio_path=_coerce_text(data.get("audio_path")),
             recording_path=_coerce_text(data.get("recording_path")),
+            call_duration_seconds=_coerce_float(data.get("call_duration_seconds")),
         )
 
 
@@ -240,6 +253,10 @@ class FileBackedDeliveryReportCollector(DeliveryReportCollector):
                         message=str(item.get("message") or ""),
                         error=item.get("error"),
                         ami_action_id=item.get("ami_action_id"),
+                        sip_call_id=item.get("sip_call_id"),
+                        sip_account_id=_coerce_text(item.get("sip_account_id")),
+                        recording_path=_coerce_text(item.get("recording_path")),
+                        call_duration_seconds=_coerce_float(item.get("call_duration_seconds")),
                         audio_cached=item.get("audio_cached"),
                         text_spoken=item.get("text_spoken"),
                         details=item.get("details") if isinstance(item.get("details"), dict) else None,
@@ -412,6 +429,7 @@ class FileBackedQueueStore:
                     smpp_username=existing.smpp_username,
                     audio_path=existing.audio_path,
                     recording_path=existing.recording_path,
+                    call_duration_seconds=existing.call_duration_seconds,
                 )
                 updated += 1
             if updated:
@@ -452,6 +470,7 @@ class FileBackedQueueStore:
                     item.sip_account_id or "",
                     item.audio_path or "",
                     item.recording_path or "",
+                    str(item.call_duration_seconds or 0.0),
                 ]
             ).lower():
                 continue
@@ -560,6 +579,7 @@ def record_queue_item(
     sip_account_id: str = "",
     audio_path: str = "",
     recording_path: str = "",
+    call_duration_seconds: float = 0.0,
     smpp_username: str = "",
     item_id: str | None = None,
 ) -> QueueItem:
@@ -584,6 +604,7 @@ def record_queue_item(
         smpp_username=smpp_username,
         audio_path=audio_path,
         recording_path=recording_path,
+        call_duration_seconds=call_duration_seconds,
     )
     return get_queue_store(settings).upsert(item)
 
@@ -844,6 +865,10 @@ def record_delivery_report(
     message: str = "",
     error: str | None = None,
     ami_action_id: str | None = None,
+    sip_call_id: str | None = None,
+    sip_account_id: str = "",
+    recording_path: str = "",
+    call_duration_seconds: float = 0.0,
     audio_cached: bool | None = None,
     text_spoken: str | None = None,
     details: dict[str, Any] | None = None,
@@ -856,6 +881,10 @@ def record_delivery_report(
         message=message,
         error=error,
         ami_action_id=ami_action_id,
+        sip_call_id=sip_call_id,
+        sip_account_id=sip_account_id,
+        recording_path=recording_path,
+        call_duration_seconds=call_duration_seconds,
         audio_cached=audio_cached,
         text_spoken=text_spoken,
         details=details,

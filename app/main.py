@@ -148,6 +148,12 @@ def _retry_queue_item(settings: Settings, item) -> None:
         latest.sip_account_id = result.sip_account_id or latest.sip_account_id
         latest.audio_path = result.audio_path or latest.audio_path
         latest.recording_path = result.recording_path or latest.recording_path
+        latest.call_duration_seconds = float(
+            (result.details or {}).get("playback_seconds")
+            or (result.details or {}).get("audio_duration_seconds")
+            or getattr(latest, "call_duration_seconds", 0.0)
+            or 0.0
+        )
 
         if result.success:
             latest.status = "read" if result.read else "delivered" if (result.delivered or result.answered or result.success) else "processed"
@@ -582,6 +588,12 @@ def _record_gateway_result(provider: str, result, *, phone_number: str = "", mes
             )
             else "error"
         )
+        details = result.details or {}
+        call_duration_seconds = float(
+            details.get("playback_seconds")
+            or details.get("audio_duration_seconds")
+            or 0.0
+        )
         record_delivery_report(
             dep_settings(),
             status=status_value,
@@ -589,14 +601,18 @@ def _record_gateway_result(provider: str, result, *, phone_number: str = "", mes
             phone_number=result.phone_number or phone_number,
             message=message,
             error=(
-                (result.details or {}).get("pending_reason")
+                details.get("pending_reason")
                 or result.error
                 or None
             ),
             ami_action_id=result.ami_action_id or None,
+            sip_call_id=getattr(result, "sip_call_id", "") or "",
+            sip_account_id=getattr(result, "sip_account_id", "") or "",
+            recording_path=getattr(result, "recording_path", "") or "",
+            call_duration_seconds=call_duration_seconds,
             audio_cached=result.was_cached if hasattr(result, "was_cached") else None,
             text_spoken=result.text_spoken or None,
-            details=result.details or None,
+            details=details or None,
         )
     except Exception as exc:
         log.debug("Unable to persist delivery report: %s", exc)
@@ -646,6 +662,12 @@ def _update_queue_item_from_result(settings: Settings, queue_item_id: str, resul
         current_queue_item.sip_account_id = result.sip_account_id or getattr(current_queue_item, "sip_account_id", "")
         current_queue_item.audio_path = result.audio_path or getattr(current_queue_item, "audio_path", "")
         current_queue_item.recording_path = result.recording_path or getattr(current_queue_item, "recording_path", "")
+        current_queue_item.call_duration_seconds = float(
+            (result.details or {}).get("playback_seconds")
+            or (result.details or {}).get("audio_duration_seconds")
+            or getattr(current_queue_item, "call_duration_seconds", 0.0)
+            or 0.0
+        )
 
         details = result.details or {}
         attempts = max((current_queue_item.attempts or 0) + 1, int(details.get("attempts", 1) or 1))
@@ -967,6 +989,11 @@ def _simulate_smpp_test_send(
             "sip_call_id": result.sip_call_id,
             "sip_account_id": result.sip_account_id,
             "recording_path": result.recording_path,
+            "call_duration_seconds": float(
+                (result.details or {}).get("playback_seconds")
+                or (result.details or {}).get("audio_duration_seconds")
+                or 0.0
+            ),
             "error": result.error,
             "delivered": result.delivered,
             "read": result.read,
@@ -2960,6 +2987,20 @@ async def admin_queue_recording(
     raw_recording_path = str(item.get("recording_path", "")).strip()
     if not raw_recording_path:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Queue item has no call recording")
+
+    recording_path = _resolve_queue_media_path(settings, raw_recording_path)
+    return FileResponse(recording_path, media_type="audio/wav", filename=recording_path.name)
+
+
+@app.get("/admin/reports/recording")
+async def admin_report_recording(
+    path: str,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    raw_recording_path = str(path or "").strip()
+    if not raw_recording_path:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "path is required")
 
     recording_path = _resolve_queue_media_path(settings, raw_recording_path)
     return FileResponse(recording_path, media_type="audio/wav", filename=recording_path.name)
