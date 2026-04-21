@@ -55,7 +55,7 @@ _SM_PP_BIND_TRANSCEIVER_RESP = 0x80000009
 _SM_PP_ENQUIRE_LINK = 0x00000015
 _SM_PP_ENQUIRE_LINK_RESP = 0x80000015
 
-_STATIC_TEMPLATE_PARAMETER_RE = re.compile(r"\{\%\s*(\d+)\s*\}")
+_STATIC_TEMPLATE_PARAMETER_RE = re.compile(r"(?:\{\%\s*(\d+)\s*\}|%(\d+))")
 
 
 def _render_static_default_message(template: str, inbound_message: str) -> str:
@@ -63,8 +63,9 @@ def _render_static_default_message(template: str, inbound_message: str) -> str:
     inbound_parts = str(inbound_message or "").split()
 
     def replace_parameter(match: re.Match[str]) -> str:
+        parameter_token = match.group(1) or match.group(2)
         try:
-            parameter_index = int(match.group(1)) - 1
+            parameter_index = int(parameter_token) - 1
         except (TypeError, ValueError):
             return ""
         if parameter_index < 0 or parameter_index >= len(inbound_parts):
@@ -491,6 +492,31 @@ class SMPPService:
                 "0x34,0x50",
             )
             return False
+
+        configured_accounts = [
+            account
+            for account in self.settings.smpp_accounts
+            if account.enabled and (account.username or "").strip()
+        ]
+        if configured_accounts:
+            matched_account = next(
+                (
+                    account
+                    for account in configured_accounts
+                    if account.username.strip() == system_id and account.password.strip() == password
+                ),
+                None,
+            )
+            if matched_account is None:
+                log.warning(
+                    "SMPP bind auth mismatch from client: system_id=%r configured_usernames=%s password_len=%d interface_version=%r",
+                    system_id,
+                    [account.username for account in configured_accounts],
+                    len(password),
+                    interface_version,
+                )
+                return False
+            return True
 
         if not self.settings.smpp_username and not self.settings.smpp_password and not default_smpp_account:
             return True
