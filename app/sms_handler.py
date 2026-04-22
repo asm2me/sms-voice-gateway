@@ -238,6 +238,27 @@ class SMSGateway:
         stored_path = self.audio_cache.store_audio(merged_hash, merged_audio)
         return stored_path, False
 
+    def _resolve_uploaded_smpp_audio(self, smpp_account) -> str:
+        raw_path = str(getattr(smpp_account, "uploaded_audio_path", "") or "").strip()
+        if not raw_path:
+            return ""
+
+        audio_path = Path(raw_path)
+        if not audio_path.is_absolute():
+            audio_path = (Path(__file__).resolve().parent.parent / audio_path).resolve()
+        else:
+            audio_path = audio_path.resolve()
+
+        if not audio_path.exists() or not audio_path.is_file():
+            log.warning(
+                "Uploaded SMPP audio file is missing for account '%s': %s",
+                getattr(smpp_account, "id", ""),
+                audio_path,
+            )
+            return ""
+
+        return str(audio_path)
+
     def process(self, sms: IncomingSMS, *, queue_retries: bool = True) -> GatewayResult:
         try:
             phone, spoken_text = extract_destination(sms)
@@ -270,8 +291,17 @@ class SMSGateway:
                 details={"pending_reason": _derive_pending_reason(stage="voice_tts", detail="message body is empty after number parsing")},
             )
 
+        uploaded_audio_path = (
+            self._resolve_uploaded_smpp_audio(smpp_account)
+            if smpp_account is not None
+            else ""
+        )
+        used_uploaded_audio = bool(uploaded_audio_path)
+
         try:
-            if rendered_from_static_template and smpp_account is not None:
+            if used_uploaded_audio:
+                audio_path, was_cached = uploaded_audio_path, False
+            elif rendered_from_static_template and smpp_account is not None:
                 audio_path, was_cached = self._resolve_static_template_audio(
                     inbound_text=extract_destination(sms)[1],
                     rendered_text=spoken_text,
@@ -298,7 +328,11 @@ class SMSGateway:
                     details={"pending_reason": _derive_pending_reason(stage="voice_tts", detail=str(exc))},
                 )
 
-        hkey = self.tts.hash_for(spoken_text)
+        hkey = (
+            self.tts.hash_for(f"uploaded-smpp-audio:{sms.smpp_username}:{audio_path}")
+            if used_uploaded_audio
+            else self.tts.hash_for(spoken_text)
+        )
         retry_count = (
             smpp_account.delivery_retry_count
             if smpp_account and smpp_account.delivery_retry_count is not None
@@ -331,6 +365,7 @@ class SMSGateway:
                     "hash": hkey,
                         "smpp_username": sms.smpp_username or "",
                         "static_template_applied": rendered_from_static_template,
+                        "uploaded_audio_applied": used_uploaded_audio,
                 },
             )
 

@@ -106,6 +106,52 @@ _slot_available_event = Event()
 _bulk_jobs: dict[str, dict] = {}
 _bulk_jobs_lock = threading.Lock()
 
+SMPP_ACCOUNT_AUDIO_DIR = BASE_DIR / "data" / "smpp_account_audio"
+
+
+def _resolve_managed_path(raw_path: str) -> Path | None:
+    normalized = str(raw_path or "").strip()
+    if not normalized:
+        return None
+    candidate = Path(normalized)
+    if not candidate.is_absolute():
+        candidate = BASE_DIR / candidate
+    return candidate
+
+
+def _delete_managed_file(raw_path: str) -> None:
+    candidate = _resolve_managed_path(raw_path)
+    if candidate is None:
+        return
+    try:
+        candidate.relative_to(BASE_DIR)
+    except ValueError:
+        log.warning("Refusing to delete path outside project directory: %s", candidate)
+        return
+    try:
+        if candidate.exists():
+            candidate.unlink()
+    except Exception:
+        log.warning("Failed deleting managed file: %s", candidate, exc_info=True)
+
+
+async def _store_smpp_account_uploaded_audio(*, account_id: str, upload: UploadFile) -> tuple[str, str]:
+    original_name = str(getattr(upload, "filename", "") or "").strip()
+    if not original_name:
+        return "", ""
+
+    payload = await upload.read()
+    if not payload:
+        return "", ""
+
+    suffix = Path(original_name).suffix.lower() or ".wav"
+    digest = hashlib.sha1(payload).hexdigest()[:12]
+    SMPP_ACCOUNT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{_slugify_identifier(account_id, 'smpp-account')}-{digest}{suffix}"
+    stored_path = SMPP_ACCOUNT_AUDIO_DIR / stored_name
+    stored_path.write_bytes(payload)
+    return stored_path.relative_to(BASE_DIR).as_posix(), original_name
+
 
 def _get_account_inflight_count(account_id: str) -> int:
     with _account_inflight_lock:
@@ -1174,7 +1220,12 @@ def _build_sip_account_from_form(form) -> SIPAccount:
     )
 
 
-def _build_smpp_account_from_form(form) -> SMPPAccount:
+def _build_smpp_account_from_form(
+    form,
+    *,
+    uploaded_audio_path: str = "",
+    uploaded_audio_original_name: str = "",
+) -> SMPPAccount:
     label = str(form.get("label", "")).strip()
     username = str(form.get("username", "")).strip()
     account_id = str(form.get("account_id", "")).strip() or _slugify_identifier(label or username, "smpp-account")
@@ -1196,6 +1247,8 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
         delivery_retry_interval_seconds=int(delivery_retry_interval_raw) if delivery_retry_interval_raw != "" else None,
         static_default_message_enabled=static_default_message_enabled,
         static_default_message_template=static_default_message_template,
+        uploaded_audio_path=str(uploaded_audio_path or "").strip(),
+        uploaded_audio_original_name=str(uploaded_audio_original_name or "").strip(),
     )
 
 
@@ -1338,7 +1391,11 @@ def _delete_sip_account(settings: Settings, account_id: str) -> Settings:
 
 
 def _delete_smpp_account(settings: Settings, account_id: str) -> Settings:
-    removed_usernames = {account.username for account in settings.smpp_accounts if account.id == account_id and account.username}
+    removed_accounts = [account for account in settings.smpp_accounts if account.id == account_id]
+    removed_usernames = {account.username for account in removed_accounts if account.username}
+    for account in removed_accounts:
+        _delete_managed_file(account.uploaded_audio_path)
+
     filtered_accounts = [account for account in settings.smpp_accounts if account.id != account_id]
     filtered_assignments = {
         smpp_username: sip_id
@@ -2829,7 +2886,38 @@ async def admin_add_smpp_account(
 ):
     form = await request.form()
     current = ensure_default_accounts(load_settings_from_store())
-    new_account = _build_smpp_account_from_form(form)
+    requested_account_id = str(form.get("account_id", "")).strip()
+    existing_account = next((account for account in current.smpp_accounts if account.id == requested_account_id), None)
+
+    uploaded_audio_path = existing_account.uploaded_audio_path if existing_account else ""
+    uploaded_audio_original_name = existing_account.uploaded_audio_original_name if existing_account else ""
+
+    if _form_bool(form, "remove_uploaded_audio"):
+        _delete_managed_file(uploaded_audio_path)
+        uploaded_audio_path = ""
+        uploaded_audio_original_name = ""
+
+    uploaded_audio = form.get("uploaded_audio_file")
+    if getattr(uploaded_audio, "filename", None):
+        upload_account_id = requested_account_id or _slugify_identifier(
+            str(form.get("label", "")).strip() or str(form.get("username", "")).strip(),
+            "smpp-account",
+        )
+        new_uploaded_audio_path, new_uploaded_audio_original_name = await _store_smpp_account_uploaded_audio(
+            account_id=upload_account_id,
+            upload=uploaded_audio,
+        )
+        if new_uploaded_audio_path:
+            if uploaded_audio_path and uploaded_audio_path != new_uploaded_audio_path:
+                _delete_managed_file(uploaded_audio_path)
+            uploaded_audio_path = new_uploaded_audio_path
+            uploaded_audio_original_name = new_uploaded_audio_original_name
+
+    new_account = _build_smpp_account_from_form(
+        form,
+        uploaded_audio_path=uploaded_audio_path,
+        uploaded_audio_original_name=uploaded_audio_original_name,
+    )
     smpp_accounts = [account for account in current.smpp_accounts if account.id != new_account.id]
     if new_account.default_for_inbound:
         smpp_accounts = [account.model_copy(update={"default_for_inbound": False}) for account in smpp_accounts]

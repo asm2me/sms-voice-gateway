@@ -42,6 +42,8 @@ class SMPPAccount(BaseModel):
     delivery_retry_interval_seconds: int | None = None
     static_default_message_enabled: bool = False
     static_default_message_template: str = ""
+    uploaded_audio_path: str = ""
+    uploaded_audio_original_name: str = ""
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

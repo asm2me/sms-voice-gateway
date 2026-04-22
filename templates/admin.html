@@ -2027,6 +2027,7 @@
                   <th>Default</th>
                   <th>Default SIP</th>
                   <th>Static Message Parts</th>
+                  <th>Uploaded Audio</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -2083,6 +2084,18 @@
                     {% endif %}
                   </td>
                   <td>
+                    {% if account.uploaded_audio_path %}
+                    <div class="permission-summary">
+                      <div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">
+                        <strong>Uploaded file</strong>
+                        <span class="mono">{{ account.uploaded_audio_original_name or account.uploaded_audio_path }}</span>
+                      </div>
+                    </div>
+                    {% else %}
+                    <span class="muted">No uploaded audio</span>
+                    {% endif %}
+                  </td>
+                  <td>
                     <div class="table-actions">
                       <a class="button button-secondary button-small" href="#smpp-user-edit-{{ account.id }}">Edit</a>
                       <form method="post" action="/admin/config/smpp-accounts/delete" class="inline-form">
@@ -2115,7 +2128,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/smpp-accounts" class="admin-form js-modal-async-form">
+              <form method="post" action="/admin/config/smpp-accounts" class="admin-form js-modal-async-form" enctype="multipart/form-data">
                 <div class="form-grid">
                   <label class="field-group">
                     <span class="field-label">Account ID</span>
@@ -2176,8 +2189,13 @@
                   </label>
                   <label class="field-group field-span-2">
                     <span class="field-label">Static Default Message Template</span>
-                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 رمز التفعيل الخاص بك هو %2"></textarea>
+                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 Ø±Ù…Ø² Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„Ø®Ø§Øµ Ø¨Ùƒ Ù‡Ùˆ %2"></textarea>
                     <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Uploaded Audio File</span>
+                    <input type="file" name="uploaded_audio_file" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
+                    <small class="muted">Optional. When provided, this file is played for this SMPP user instead of generating TTS audio.</small>
                   </label>
                   <div class="notice">
                     <strong>Template caching behavior.</strong>
@@ -2204,7 +2222,7 @@
                 <a href="#" class="button button-secondary button-small">Close</a>
               </div>
 
-              <form method="post" action="/admin/config/smpp-accounts" class="admin-form js-modal-async-form">
+              <form method="post" action="/admin/config/smpp-accounts" class="admin-form js-modal-async-form" enctype="multipart/form-data">
                 <div class="form-grid">
                   <input type="hidden" name="account_id" value="{{ account.id }}" />
                   <label class="field-group">
@@ -2262,8 +2280,34 @@
                   </label>
                   <label class="field-group field-span-2">
                     <span class="field-label">Static Default Message Template</span>
-                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 رمز التفعيل الخاص بك هو %2">{{ account.static_default_message_template or '' }}</textarea>
+                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 Ø±Ù…Ø² Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„Ø®Ø§Øµ Ø¨Ùƒ Ù‡Ùˆ %2">{{ account.static_default_message_template or '' }}</textarea>
                     <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
+                  </label>
+                  <div class="field-group field-span-2">
+                    <span class="field-label">Current Uploaded Audio</span>
+                    {% if account.uploaded_audio_path %}
+                    <div class="permission-summary">
+                      <div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">
+                        <strong>Current file</strong>
+                        <span class="mono">{{ account.uploaded_audio_original_name or account.uploaded_audio_path }}</span>
+                      </div>
+                    </div>
+                    {% else %}
+                    <span class="muted">No uploaded audio file configured for this SMPP user.</span>
+                    {% endif %}
+                  </div>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Replace Uploaded Audio File</span>
+                    <input type="file" name="uploaded_audio_file" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
+                    <small class="muted">Optional. Uploading a new file replaces the existing one and overrides TTS playback for this SMPP user.</small>
+                  </label>
+                  <label class="field-group field-span-2">
+                    <span class="field-label">Remove Uploaded Audio</span>
+                    <select name="remove_uploaded_audio">
+                      <option value="false" selected>False</option>
+                      <option value="true">True</option>
+                    </select>
+                    <small class="muted">Set to True to remove the current uploaded audio file and fall back to template/TTS audio.</small>
                   </label>
                   <div class="field-group field-span-2">
                     <span class="field-label">Split Static Message Parts</span>
