@@ -127,7 +127,7 @@ class SipAccountProfile:
     enabled: bool = True
     registration_timeout: int = 300
     auth_realm: str = ""
-    concurrency_limit: int = 1
+    concurrency_limit: int = 0
     preferred_codecs: list[str] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -495,7 +495,7 @@ class PJSipUASession:
             enabled=bool(profile.get("enabled", True)),
             registration_timeout=int(profile.get("registration_timeout", 300) or 300),
             auth_realm=str(profile.get("auth_realm", "")),
-            concurrency_limit=max(1, int(profile.get("concurrency_limit", 1) or 1)),
+            concurrency_limit=max(0, int(profile.get("concurrency_limit", 0) or 0)),
             preferred_codecs=[str(item).strip() for item in (profile.get("preferred_codecs", []) or []) if str(item).strip()],
             extra=dict(profile.get("extra", {}) or {}),
         )
@@ -651,31 +651,31 @@ class PJSipUASession:
         profile: SipAccountProfile | dict[str, Any] | None = None,
     ) -> PJSUA2Result:
         self._register_current_thread()
+        if isinstance(request, dict):
+            request = SipCallRequest(
+                destination_number=str(request.get("destination_number", "")),
+                audio_path=str(request.get("audio_path", "")),
+                account_id=str(request.get("account_id", "")),
+                display_name=str(request.get("display_name", "")),
+                caller_id=str(request.get("caller_id", "")),
+                timeout_seconds=int(request.get("timeout_seconds", 30) or 30),
+                playback_repeats=int(request.get("playback_repeats", 1) or 1),
+                playback_pause_ms=int(request.get("playback_pause_ms", 0) or 0),
+                enable_recording=bool(request.get("enable_recording", False)),
+                extra_vars=dict(request.get("extra_vars", {}) or {}),
+            )
+
+        try:
+            destination = _normalise_number(request.destination_number)
+        except ValueError as exc:
+            return PJSUA2Result(
+                success=False,
+                destination_number=request.destination_number,
+                account_id=request.account_id,
+                error=str(exc),
+            )
+
         with self._lock:
-            if isinstance(request, dict):
-                request = SipCallRequest(
-                    destination_number=str(request.get("destination_number", "")),
-                    audio_path=str(request.get("audio_path", "")),
-                    account_id=str(request.get("account_id", "")),
-                    display_name=str(request.get("display_name", "")),
-                    caller_id=str(request.get("caller_id", "")),
-                    timeout_seconds=int(request.get("timeout_seconds", 30) or 30),
-                    playback_repeats=int(request.get("playback_repeats", 1) or 1),
-                    playback_pause_ms=int(request.get("playback_pause_ms", 0) or 0),
-                    enable_recording=bool(request.get("enable_recording", False)),
-                    extra_vars=dict(request.get("extra_vars", {}) or {}),
-                )
-
-            try:
-                destination = _normalise_number(request.destination_number)
-            except ValueError as exc:
-                return PJSUA2Result(
-                    success=False,
-                    destination_number=request.destination_number,
-                    account_id=request.account_id,
-                    error=str(exc),
-                )
-
             if profile is not None:
                 selected = self.select_profile(profile)
                 if not self._current_profile or self._current_profile.id != selected.id:
@@ -700,12 +700,14 @@ class PJSipUASession:
             try:
                 pj = self._pj
                 assert pj is not None
-                account_id = self._current_profile.id
-                concurrency_limit = max(1, int(self._current_profile.concurrency_limit or 1))
+                account = self._account
+                current_profile = self._current_profile
+                account_id = current_profile.id
+                concurrency_limit = max(0, int(current_profile.concurrency_limit or 0))
 
                 with _TRUNK_CONCURRENCY_LOCK:
                     active_calls = _TRUNK_ACTIVE_CALLS.get(account_id, 0)
-                    if active_calls >= concurrency_limit:
+                    if concurrency_limit > 0 and active_calls >= concurrency_limit:
                         return PJSUA2Result(
                             success=False,
                             account_id=account_id,
@@ -720,156 +722,156 @@ class PJSipUASession:
                         )
                     _TRUNK_ACTIVE_CALLS[account_id] = active_calls + 1
 
-                call_started = False
-                try:
-                    call_id = f"pj_{int(time.time() * 1000)}"
-                    invite_uri = self._build_sip_uri(destination)
-                    callback = _CallCallbackHolder(self, account_id, call_id)
-                    call = self._account.makeCall(
-                        invite_uri,
-                        callback,
-                    )
-                    callback.attach_call(call)
-                    log.info(
-                        "Starting outbound SIP INVITE account=%s destination=%s uri=%s transport=%s trunk_host=%s trunk_port=%s",
-                        account_id,
-                        destination,
-                        invite_uri,
-                        (self._current_profile.transport if self._current_profile else ""),
-                        (
-                            self._current_profile.domain
-                            or self._current_profile.host
-                            or str(self._current_profile.extra.get("host", "") or "")
-                            if self._current_profile
-                            else ""
-                        ),
-                        (
-                            self._current_profile.port
-                            or self._current_profile.extra.get("port")
-                            if self._current_profile
-                            else ""
-                        ),
-                    )
-                    self._last_call = call
-                    call_started = True
-
-                    with suppress(Exception):
-                        call_info = call.getInfo()
-                        media_list = getattr(call_info, "media", None)
-                        if media_list is not None:
-                            for media in list(media_list):
-                                media_status = getattr(media, "status", None)
-                                media_type = getattr(media, "type", None)
-                                log.info(
-                                    "Outbound SIP media state account=%s destination=%s type=%s status=%s",
-                                    account_id,
-                                    destination,
-                                    media_type,
-                                    media_status,
-                                )
-
-                    playback_result = self.prepare_playback(
-                        request.audio_path,
-                        destination_number=destination,
-                        account_id=account_id,
-                        repeat_count=request.playback_repeats,
-                        pause_ms=request.playback_pause_ms,
-                    )
-                    callback.set_playback_context(
-                        audio_path=playback_result.audio_path or request.audio_path,
-                        audio_duration_seconds=float(playback_result.audio_duration_seconds or 0.0),
-                        repeat_count=request.playback_repeats,
-                        pause_ms=request.playback_pause_ms,
-                        cleanup_wav=bool(playback_result.details.get("cleanup_wav")) if playback_result.details else False,
-                        enable_recording=bool(request.enable_recording),
-                        destination_number=destination,
-                    )
-                    call_outcome = callback.wait_for_completion(
-                        max(
-                            1.0,
-                            float(request.timeout_seconds or 30)
-                            + float(playback_result.audio_duration_seconds or 0.0)
-                            + max(5.0, float(request.playback_pause_ms or 0) / 1000.0),
-                        )
-                    )
-
-                    answered = bool(call_outcome.get("answered"))
-                    playback_started = bool(call_outcome.get("playback_started"))
-                    playback_error = str(call_outcome.get("playback_error") or "")
-                    playback_seconds = float(call_outcome.get("playback_seconds") or 0.0)
-                    audio_duration_seconds = float(playback_result.audio_duration_seconds or 0.0)
-                    disconnect_reason = str(call_outcome.get("disconnect_reason") or "")
-                    last_status_code = int(call_outcome.get("last_status_code") or 0)
-
-                    delivered = answered and playback_started and bool(playback_result.success)
-                    read = delivered and audio_duration_seconds > 0 and playback_seconds >= (audio_duration_seconds * 0.5)
-                    remote_hangup_after_answer = answered and last_status_code == 200 and disconnect_reason.upper() == "DISCONNECTED"
-
-                    return PJSUA2Result(
-                        success=delivered,
-                        account_id=account_id,
-                        call_id=call_id,
-                        destination_number=destination,
-                        registered=True,
-                        audio_path=request.audio_path,
-                        error=playback_error if answered and not delivered and playback_error else "",
-                        message=(
-                            "Outbound SIP call answered and playback completed"
-                            if read
-                            else "Outbound SIP call answered but playback did not start"
-                            if answered and not playback_started
-                            else "Outbound SIP call answered"
-                            if answered
-                            else "Outbound SIP call was not answered"
-                        ),
-                        answered=answered,
-                        delivered=delivered,
-                        read=read,
-                        playback_seconds=playback_seconds,
-                        audio_duration_seconds=audio_duration_seconds,
-                        details={
-                            "playback": {
-                                **(playback_result.details or {}),
-                                "playback_seconds": playback_seconds,
-                                "read_threshold_seconds": audio_duration_seconds * 0.5 if audio_duration_seconds > 0 else 0.0,
-                            },
-                            "playback_prepared": bool(playback_result.success),
-                            "playback_started": playback_started,
-                            "playback_error": playback_error,
-                            "call_state": str(call_outcome.get("state_text") or "completed"),
-                            "remote_hangup_after_answer": remote_hangup_after_answer,
-                            "display_name": request.display_name,
-                            "caller_id": request.caller_id or self._current_profile.caller_id,
-                            "extra_vars": request.extra_vars,
-                            "active_calls": _TRUNK_ACTIVE_CALLS.get(account_id, 0),
-                            "all_active_calls": dict(_TRUNK_ACTIVE_CALLS),
-                            "concurrency_limit": concurrency_limit,
-                            "answered": answered,
-                            "delivered": delivered,
-                            "read": read,
-                            "last_status_code": last_status_code,
-                            "disconnect_reason": disconnect_reason,
-                        },
-                    )
-                finally:
-                    if not call_started:
-                        with _TRUNK_CONCURRENCY_LOCK:
-                            current = _TRUNK_ACTIVE_CALLS.get(account_id, 0)
-                            if current <= 1:
-                                _TRUNK_ACTIVE_CALLS.pop(account_id, None)
-                            else:
-                                _TRUNK_ACTIVE_CALLS[account_id] = current - 1
-            except Exception as exc:
-                log.exception("Outbound SIP call failed")
-                return PJSUA2Result(
-                    success=False,
-                    account_id=self._current_profile.id,
-                    destination_number=destination,
-                    audio_path=request.audio_path,
-                    registered=True,
-                    error=str(exc),
-                    details={"exception": f"{type(exc).__name__}: {exc}"},
+                call_id = f"pj_{int(time.time() * 1000)}"
+                invite_uri = self._build_sip_uri(destination)
+                callback = _CallCallbackHolder(self, account_id, call_id)
+                call = account.makeCall(
+                    invite_uri,
+                    callback,
                 )
+                callback.attach_call(call)
+                log.info(
+                    "Starting outbound SIP INVITE account=%s destination=%s uri=%s transport=%s trunk_host=%s trunk_port=%s",
+                    account_id,
+                    destination,
+                    invite_uri,
+                    (current_profile.transport if current_profile else ""),
+                    (
+                        current_profile.domain
+                        or current_profile.host
+                        or str(current_profile.extra.get("host", "") or "")
+                        if current_profile
+                        else ""
+                    ),
+                    (
+                        current_profile.port
+                        or current_profile.extra.get("port")
+                        if current_profile
+                        else ""
+                    ),
+                )
+                self._last_call = call
+                call_started = True
+            except Exception:
+                with _TRUNK_CONCURRENCY_LOCK:
+                    current = _TRUNK_ACTIVE_CALLS.get(account_id, 0)
+                    if current <= 1:
+                        _TRUNK_ACTIVE_CALLS.pop(account_id, None)
+                    else:
+                        _TRUNK_ACTIVE_CALLS[account_id] = current - 1
+                raise
+
+        try:
+
+            with suppress(Exception):
+                call_info = call.getInfo()
+                media_list = getattr(call_info, "media", None)
+                if media_list is not None:
+                    for media in list(media_list):
+                        media_status = getattr(media, "status", None)
+                        media_type = getattr(media, "type", None)
+                        log.info(
+                            "Outbound SIP media state account=%s destination=%s type=%s status=%s",
+                            account_id,
+                            destination,
+                            media_type,
+                            media_status,
+                        )
+
+            playback_result = self.prepare_playback(
+                request.audio_path,
+                destination_number=destination,
+                account_id=account_id,
+                repeat_count=request.playback_repeats,
+                pause_ms=request.playback_pause_ms,
+            )
+            callback.set_playback_context(
+                audio_path=playback_result.audio_path or request.audio_path,
+                audio_duration_seconds=float(playback_result.audio_duration_seconds or 0.0),
+                repeat_count=request.playback_repeats,
+                pause_ms=request.playback_pause_ms,
+                cleanup_wav=bool(playback_result.details.get("cleanup_wav")) if playback_result.details else False,
+                enable_recording=bool(request.enable_recording),
+                destination_number=destination,
+            )
+            call_outcome = callback.wait_for_completion(
+                max(
+                    1.0,
+                    float(request.timeout_seconds or 30)
+                    + float(playback_result.audio_duration_seconds or 0.0)
+                    + max(5.0, float(request.playback_pause_ms or 0) / 1000.0),
+                )
+            )
+
+            answered = bool(call_outcome.get("answered"))
+            playback_started = bool(call_outcome.get("playback_started"))
+            playback_error = str(call_outcome.get("playback_error") or "")
+            playback_seconds = float(call_outcome.get("playback_seconds") or 0.0)
+            audio_duration_seconds = float(playback_result.audio_duration_seconds or 0.0)
+            disconnect_reason = str(call_outcome.get("disconnect_reason") or "")
+            last_status_code = int(call_outcome.get("last_status_code") or 0)
+
+            delivered = answered and playback_started and bool(playback_result.success)
+            read = delivered and audio_duration_seconds > 0 and playback_seconds >= (audio_duration_seconds * 0.5)
+            remote_hangup_after_answer = answered and last_status_code == 200 and disconnect_reason.upper() == "DISCONNECTED"
+
+            return PJSUA2Result(
+                success=delivered,
+                account_id=account_id,
+                call_id=call_id,
+                destination_number=destination,
+                registered=True,
+                audio_path=request.audio_path,
+                error=playback_error if answered and not delivered and playback_error else "",
+                message=(
+                    "Outbound SIP call answered and playback completed"
+                    if read
+                    else "Outbound SIP call answered but playback did not start"
+                    if answered and not playback_started
+                    else "Outbound SIP call answered"
+                    if answered
+                    else "Outbound SIP call was not answered"
+                ),
+                answered=answered,
+                delivered=delivered,
+                read=read,
+                playback_seconds=playback_seconds,
+                audio_duration_seconds=audio_duration_seconds,
+                details={
+                    "playback": {
+                        **(playback_result.details or {}),
+                        "playback_seconds": playback_seconds,
+                        "read_threshold_seconds": audio_duration_seconds * 0.5 if audio_duration_seconds > 0 else 0.0,
+                    },
+                    "playback_prepared": bool(playback_result.success),
+                    "playback_started": playback_started,
+                    "playback_error": playback_error,
+                    "call_state": str(call_outcome.get("state_text") or "completed"),
+                    "remote_hangup_after_answer": remote_hangup_after_answer,
+                    "display_name": request.display_name,
+                    "caller_id": request.caller_id or current_profile.caller_id,
+                    "extra_vars": request.extra_vars,
+                    "active_calls": _TRUNK_ACTIVE_CALLS.get(account_id, 0),
+                    "all_active_calls": dict(_TRUNK_ACTIVE_CALLS),
+                    "concurrency_limit": concurrency_limit,
+                    "answered": answered,
+                    "delivered": delivered,
+                    "read": read,
+                    "last_status_code": last_status_code,
+                    "disconnect_reason": disconnect_reason,
+                },
+            )
+        except Exception as exc:
+            log.exception("Outbound SIP call failed")
+            return PJSUA2Result(
+                success=False,
+                account_id=self._current_profile.id if self._current_profile else request.account_id,
+                destination_number=destination,
+                audio_path=request.audio_path,
+                registered=True,
+                error=str(exc),
+                details={"exception": f"{type(exc).__name__}: {exc}"},
+            )
 
     def prepare_playback(
         self,
