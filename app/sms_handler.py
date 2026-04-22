@@ -175,7 +175,7 @@ class SMSGateway:
         settings: Settings,
         *,
         sip_scope: str = _SMS_GATEWAY_PJSUA_SCOPE,
-        isolated_sip: bool = False,
+        isolated_sip: bool = True,
     ):
         self.settings = settings
         self.audio_cache = AudioCache(settings)
@@ -185,6 +185,13 @@ class SMSGateway:
             scope=sip_scope,
             isolated=isolated_sip,
         )
+
+    def close(self) -> None:
+        try:
+            self.sip_ua.close()
+        except Exception:
+            log.debug("Failed closing SIP runtime", exc_info=True)
+
     def _resolve_sip_account(self, sms: IncomingSMS) -> Optional[SIPAccount]:
         return get_sip_account_for_smpp_username(self.settings, sms.smpp_username)
 

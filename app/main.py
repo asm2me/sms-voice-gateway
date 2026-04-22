@@ -231,8 +231,9 @@ def _retry_queue_item(settings: Settings, item) -> None:
     )
 
     result = None
+    gateway = SMSGateway(settings)
     try:
-        result = SMSGateway(settings).process(sms, queue_retries=False)
+        result = gateway.process(sms, queue_retries=False)
 
         latest = queue_store.get(item.id)
         if latest is None:
@@ -285,6 +286,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
     except Exception as exc:
         log.exception("Retry queue item %s failed: %s", current.id, exc)
     finally:
+        gateway.close()
         latest = queue_store.get(item.id)
         if latest is not None and latest.status == "processing":
             log.warning("Queue item %s still processing after retry — recovering", item.id)
@@ -1128,10 +1130,7 @@ def _simulate_smpp_test_send(
             result=result,
         )
     finally:
-        try:
-            gateway.sip_ua.close()
-        except Exception:
-            pass
+        gateway.close()
 
     return {
         "queue_item": (get_queue_item(settings, queue_item.id) or queue_item.to_dict()),
@@ -3443,8 +3442,10 @@ async def twilio_webhook(
             _log_result(result)
             _record_gateway_result("twilio", result, phone_number=phone_number, message=Body[:120])
             _update_queue_item_from_result(settings, queue_item.id, result)
-        except Exception as exc:
+        except Exception:
             log.exception("Twilio SMS processing error")
+        finally:
+            gateway.close()
 
     Thread(target=process_sms, name=f"twilio-sms-{queue_item.id}", daemon=True).start()
     return '<?xml version="1.0" encoding="UTF-8"?><Response/>'
@@ -3488,8 +3489,10 @@ async def vonage_webhook(
             _log_result(result)
             _record_gateway_result("vonage", result, phone_number=phone_number, message=payload.text[:120])
             _update_queue_item_from_result(settings, queue_item.id, result)
-        except Exception as exc:
+        except Exception:
             log.exception("Vonage SMS processing error")
+        finally:
+            gateway.close()
 
     Thread(target=process_sms, name=f"vonage-sms-{queue_item.id}", daemon=True).start()
     return {"status": "ok", "detail": "Processing in background"}
@@ -3532,8 +3535,10 @@ async def generic_webhook(
             _log_result(result)
             _record_gateway_result("generic", result, phone_number=phone_number, message=payload.body[:120])
             _update_queue_item_from_result(settings, queue_item.id, result)
-        except Exception as exc:
+        except Exception:
             log.exception("Generic SMS processing error")
+        finally:
+            gateway.close()
 
     Thread(target=process_sms, name=f"generic-sms-{queue_item.id}", daemon=True).start()
 
@@ -3620,19 +3625,22 @@ async def debug_call(
 
     sms = IncomingSMS(body=req.text, destination=req.phone, provider="debug")
     queue_item = record_queue_item(settings, phone_number=req.phone, provider="debug", body=req.text, status="processing")
-    result = gateway.process(sms)
-    _record_gateway_result("debug", result, phone_number=req.phone, message=req.text[:120])
-    _update_queue_item_from_result(settings, queue_item.id, result)
-    return {
-        "success": result.success,
-        "phone_number": result.phone_number,
-        "text_spoken": result.text_spoken,
-        "audio_cached": result.was_cached,
-        "sip_call_id": result.sip_call_id,
-        "sip_account_id": result.sip_account_id,
-        "error": result.error,
-        "details": result.details,
-    }
+    try:
+        result = gateway.process(sms)
+        _record_gateway_result("debug", result, phone_number=req.phone, message=req.text[:120])
+        _update_queue_item_from_result(settings, queue_item.id, result)
+        return {
+            "success": result.success,
+            "phone_number": result.phone_number,
+            "text_spoken": result.text_spoken,
+            "audio_cached": result.was_cached,
+            "sip_call_id": result.sip_call_id,
+            "sip_account_id": result.sip_account_id,
+            "error": result.error,
+            "details": result.details,
+        }
+    finally:
+        gateway.close()
 
 
 def _log_result(result) -> None:
