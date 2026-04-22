@@ -247,7 +247,7 @@
     </div>
     <div class="page-actions">
       <span class="pill live-indicator"><span class="live-dot"></span> Live auto-refresh</span>
-      <a class="button button-secondary" href="/admin/reports">Refresh</a>
+      <a class="button button-secondary" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Refresh</a>
       <a class="button button-secondary" href="/admin/reports/export/reports.csv">Export Reports CSV</a>
       <a class="button button-secondary" href="/admin/reports/export/reports.xls">Export Reports XLS</a>
       <a class="button button-secondary" href="/admin/reports/export/inbox.csv">Export Inbox CSV</a>
@@ -389,6 +389,7 @@
           <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
           <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
           <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
+          <input type="hidden" name="inbox_page_size" value="{{ inbox_pagination.page_size }}" />
           <label class="field-group">
             <span class="field-label">Queue Search</span>
             <input type="text" name="search" value="{{ queue_filters.search }}" placeholder="Search queue items" />
@@ -400,6 +401,15 @@
           <label class="field-group">
             <span class="field-label">Provider</span>
             <input type="text" name="provider" value="{{ queue_filters.provider }}" placeholder="twilio, generic, admin-test" />
+          </label>
+          <label class="field-group">
+            <span class="field-label">Queue Page Size</span>
+            <select name="queue_page_size">
+              <option value="10" {% if queue_pagination.page_size == 10 %}selected{% endif %}>10</option>
+              <option value="20" {% if queue_pagination.page_size == 20 %}selected{% endif %}>20</option>
+              <option value="50" {% if queue_pagination.page_size == 50 %}selected{% endif %}>50</option>
+              <option value="100" {% if queue_pagination.page_size == 100 %}selected{% endif %}>100</option>
+            </select>
           </label>
           <div class="form-actions">
             <button type="submit" class="button button-secondary">Apply Queue Filters</button>
@@ -416,6 +426,7 @@
           <input type="hidden" name="status" value="{{ queue_filters.status }}" />
           <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
           <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
+          <input type="hidden" name="queue_page_size" value="{{ queue_pagination.page_size }}" />
           <label class="field-group">
             <span class="field-label">Inbox Search</span>
             <input type="text" name="inbox_search" value="{{ inbox_filters.search }}" placeholder="Search inbox messages" />
@@ -427,6 +438,15 @@
           <label class="field-group">
             <span class="field-label">Inbox Provider</span>
             <input type="text" name="inbox_provider" value="{{ inbox_filters.provider }}" placeholder="smpp, twilio, generic" />
+          </label>
+          <label class="field-group">
+            <span class="field-label">Inbox Page Size</span>
+            <select name="inbox_page_size">
+              <option value="10" {% if inbox_pagination.page_size == 10 %}selected{% endif %}>10</option>
+              <option value="20" {% if inbox_pagination.page_size == 20 %}selected{% endif %}>20</option>
+              <option value="50" {% if inbox_pagination.page_size == 50 %}selected{% endif %}>50</option>
+              <option value="100" {% if inbox_pagination.page_size == 100 %}selected{% endif %}>100</option>
+            </select>
           </label>
           <div class="form-actions">
             <button type="submit" class="button button-secondary">Apply Inbox Filters</button>
@@ -516,13 +536,13 @@
     <p>Queued voice delivery jobs and their statuses will appear here once traffic is processed.</p>
   </div>
   <div class="pagination-row">
-    <span class="muted">Page {{ queue_pagination.page }} of {{ queue_pagination.total_pages }}</span>
+    <span class="muted">Page {{ queue_pagination.page }} of {{ queue_pagination.total_pages }} · {{ queue_pagination.page_size }} per page</span>
     <div class="page-actions">
       {% if queue_pagination.has_previous %}
-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.previous_page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}">Previous</a>
+      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.previous_page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Previous</a>
       {% endif %}
       {% if queue_pagination.has_next %}
-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.next_page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}">Next</a>
+      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.next_page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Next</a>
       {% endif %}
     </div>
   </div>
@@ -640,13 +660,13 @@
   </div>
   </form>
   <div class="pagination-row">
-    <span class="muted">Page {{ inbox_pagination.page }} of {{ inbox_pagination.total_pages }}</span>
+    <span class="muted">Page {{ inbox_pagination.page }} of {{ inbox_pagination.total_pages }} · {{ inbox_pagination.page_size }} per page</span>
     <div class="page-actions">
       {% if inbox_pagination.has_previous %}
-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.previous_page }}">Previous</a>
+      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.previous_page }}&inbox_page_size={{ inbox_pagination.page_size }}">Previous</a>
       {% endif %}
       {% if inbox_pagination.has_next %}
-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.next_page }}">Next</a>
+      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.next_page }}&inbox_page_size={{ inbox_pagination.page_size }}">Next</a>
       {% endif %}
     </div>
   </div>
@@ -2921,7 +2941,7 @@
 
       state.busy = true;
       try {
-        const response = await fetch("/admin/reports/live", {
+        const response = await fetch("/admin/reports/live" + (window.location.search || ""), {
           method: "GET",
           credentials: "same-origin",
           headers: {

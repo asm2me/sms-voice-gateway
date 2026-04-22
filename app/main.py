@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -92,6 +93,10 @@ security = HTTPBasic()
 
 _retry_worker_stop = Event()
 _retry_worker_thread: Thread | None = None
+_retry_dispatch_lock = threading.Lock()
+_retry_inflight_items: set[str] = set()
+_retry_executor: ThreadPoolExecutor | None = None
+_retry_executor_workers = 0
 _admin_test_send_jobs: dict[str, dict[str, object]] = {}
 _admin_test_send_lock = threading.Lock()
 
@@ -116,6 +121,96 @@ def _queue_item_ready_for_retry(item, *, now: datetime) -> bool:
     if next_attempt_at is None:
         return True
     return next_attempt_at <= now
+
+
+def _coerce_page_size(value: str | None, *, default: int = 20, max_value: int = 200) -> int:
+    try:
+        numeric = int(str(value or "").strip() or str(default))
+    except Exception:
+        numeric = default
+    return max(1, min(numeric, max_value))
+
+
+def _retry_worker_concurrency(settings: Settings) -> int:
+    enabled_accounts = [
+        account
+        for account in getattr(settings, "sip_accounts", [])
+        if bool(getattr(account, "enabled", False))
+    ]
+    if not enabled_accounts:
+        return 4
+
+    explicit_capacity = 0
+    unlimited_accounts = 0
+    for account in enabled_accounts:
+        limit = max(0, int(getattr(account, "concurrency_limit", 0) or 0))
+        if limit > 0:
+            explicit_capacity += limit
+        else:
+            unlimited_accounts += 1
+
+    if explicit_capacity > 0:
+        desired = explicit_capacity + unlimited_accounts
+    else:
+        desired = max(4, len(enabled_accounts))
+
+    return max(1, min(desired, 32))
+
+
+def _ensure_retry_executor(settings: Settings) -> ThreadPoolExecutor:
+    global _retry_executor, _retry_executor_workers
+
+    desired_workers = _retry_worker_concurrency(settings)
+    previous_executor = None
+
+    with _retry_dispatch_lock:
+        if _retry_executor is None or _retry_executor_workers != desired_workers:
+            previous_executor = _retry_executor
+            _retry_executor = ThreadPoolExecutor(
+                max_workers=desired_workers,
+                thread_name_prefix="retry-item",
+            )
+            _retry_executor_workers = desired_workers
+
+        executor = _retry_executor
+
+    if previous_executor is not None:
+        previous_executor.shutdown(wait=False)
+        log.info("Retry worker pool resized to max_workers=%d", desired_workers)
+    elif executor is not None and desired_workers:
+        log.info("Retry worker pool ready max_workers=%d", desired_workers)
+
+    assert executor is not None
+    return executor
+
+
+def _mark_retry_item_inflight(item_id: str) -> bool:
+    with _retry_dispatch_lock:
+        if item_id in _retry_inflight_items:
+            return False
+        _retry_inflight_items.add(item_id)
+        return True
+
+
+def _finish_retry_item(item_id: str) -> None:
+    with _retry_dispatch_lock:
+        _retry_inflight_items.discard(item_id)
+
+
+def _retry_queue_item_task(item_id: str) -> None:
+    try:
+        settings = load_settings_from_store()
+        queue_store = get_queue_store(settings)
+        item = queue_store.get(item_id)
+        if item is None:
+            return
+        if not _queue_item_ready_for_retry(item, now=datetime.now(timezone.utc)):
+            return
+        _retry_queue_item(settings, item)
+    except Exception:
+        log.exception("Retry queue task %s crashed", item_id)
+    finally:
+        _finish_retry_item(item_id)
 
 
 def _retry_queue_item(settings: Settings, item) -> None:
@@ -213,19 +308,42 @@ def _retry_worker_loop() -> None:
         try:
             settings = load_settings_from_store()
             queue_store = get_queue_store(settings)
+            executor = _ensure_retry_executor(settings)
             now = datetime.now(timezone.utc)
             due_items = [
                 item
                 for item in queue_store.list_items(limit=getattr(settings, "delivery_report_max_items", 1000))
                 if _queue_item_ready_for_retry(item, now=now)
             ]
+
+            submitted = 0
             for item in due_items:
                 if _retry_worker_stop.is_set():
                     break
-                _retry_queue_item(settings, item)
+                if not _mark_retry_item_inflight(item.id):
+                    continue
+
+                latest = queue_store.get(item.id)
+                if latest is None or not _queue_item_ready_for_retry(latest, now=now):
+                    _finish_retry_item(item.id)
+                    continue
+
+                try:
+                    executor.submit(_retry_queue_item_task, item.id)
+                    submitted += 1
+                except Exception:
+                    _finish_retry_item(item.id)
+                    raise
+
+            if submitted:
+                log.info(
+                    "Retry worker dispatched %d queued voice item(s) with pool_size=%d",
+                    submitted,
+                    _retry_executor_workers,
+                )
         except Exception as exc:
             log.debug("Retry worker loop issue: %s", exc)
-        _retry_worker_stop.wait(5)
+        _retry_worker_stop.wait(1)
 
 
 def _start_retry_worker() -> None:
@@ -239,9 +357,22 @@ def _start_retry_worker() -> None:
 
 
 def _stop_retry_worker() -> None:
+    global _retry_executor, _retry_executor_workers
+
     _retry_worker_stop.set()
     if _retry_worker_thread and _retry_worker_thread.is_alive():
         _retry_worker_thread.join(timeout=2)
+
+    executor = None
+    with _retry_dispatch_lock:
+        executor = _retry_executor
+        _retry_executor = None
+        _retry_executor_workers = 0
+        _retry_inflight_items.clear()
+
+    if executor is not None:
+        executor.shutdown(wait=False)
+
     log.info("Retry worker stopped")
 
 
@@ -378,11 +509,12 @@ def _build_queue_context(
     status_filter: str = "",
     provider_filter: str = "",
     page: int = 1,
+    queue_page_size: int = 20,
     inbox_search: str = "",
     inbox_status: str = "",
     inbox_provider: str = "",
     inbox_page: int = 1,
-    page_size: int = 20,
+    inbox_page_size: int = 20,
 ) -> tuple[dict, dict, dict, dict, dict, dict]:
     from .admin_reports import summarize_inbox, summarize_queue
 
@@ -406,8 +538,8 @@ def _build_queue_context(
     )
     if not isinstance(inbox_summary, dict) or inbox_summary.get("total_items") in (None, ""):
         inbox_summary = {**(inbox_summary if isinstance(inbox_summary, dict) else {}), "total_items": len(all_inbox_messages)}
-    recent_queue_items = paginate_items(all_queue_items, page=page, page_size=page_size)
-    recent_inbox_messages = paginate_items(all_inbox_messages, page=inbox_page, page_size=page_size)
+    recent_queue_items = paginate_items(all_queue_items, page=page, page_size=queue_page_size)
+    recent_inbox_messages = paginate_items(all_inbox_messages, page=inbox_page, page_size=inbox_page_size)
     queue_filters = {
         "search": search,
         "status": status_filter,
@@ -1206,20 +1338,24 @@ def _admin_context(
     queue_status = str(request.query_params.get("status", "")).strip()
     queue_provider = str(request.query_params.get("provider", "")).strip()
     queue_page = int(request.query_params.get("queue_page", "1") or "1")
+    queue_page_size = _coerce_page_size(request.query_params.get("queue_page_size"), default=20)
     inbox_search = str(request.query_params.get("inbox_search", "")).strip()
     inbox_status = str(request.query_params.get("inbox_status", "")).strip()
     inbox_provider = str(request.query_params.get("inbox_provider", "")).strip()
     inbox_page = int(request.query_params.get("inbox_page", "1") or "1")
+    inbox_page_size = _coerce_page_size(request.query_params.get("inbox_page_size"), default=20)
     sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(
         settings,
         search=queue_search,
         status_filter=queue_status,
         provider_filter=queue_provider,
         page=queue_page,
+        queue_page_size=queue_page_size,
         inbox_search=inbox_search,
         inbox_status=inbox_status,
         inbox_provider=inbox_provider,
         inbox_page=inbox_page,
+        inbox_page_size=inbox_page_size,
     )
     live_calls = _build_live_call_context(settings)
     sip_trunks_health = _build_sip_trunk_health_context(settings)
@@ -3132,11 +3268,34 @@ async def admin_tools_test_send_status(
 
 @app.get("/admin/reports/live")
 async def admin_reports_live(
+    request: Request,
     _: None = Depends(dep_admin_credentials),
     settings: Settings = Depends(dep_settings),
 ):
     report_summary, recent_reports = _report_context(settings)
-    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(settings)
+    queue_search = str(request.query_params.get("search", "")).strip()
+    queue_status = str(request.query_params.get("status", "")).strip()
+    queue_provider = str(request.query_params.get("provider", "")).strip()
+    queue_page = int(request.query_params.get("queue_page", "1") or "1")
+    queue_page_size = _coerce_page_size(request.query_params.get("queue_page_size"), default=20)
+    inbox_search = str(request.query_params.get("inbox_search", "")).strip()
+    inbox_status = str(request.query_params.get("inbox_status", "")).strip()
+    inbox_provider = str(request.query_params.get("inbox_provider", "")).strip()
+    inbox_page = int(request.query_params.get("inbox_page", "1") or "1")
+    inbox_page_size = _coerce_page_size(request.query_params.get("inbox_page_size"), default=20)
+    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(
+        settings,
+        search=queue_search,
+        status_filter=queue_status,
+        provider_filter=queue_provider,
+        page=queue_page,
+        queue_page_size=queue_page_size,
+        inbox_search=inbox_search,
+        inbox_status=inbox_status,
+        inbox_provider=inbox_provider,
+        inbox_page=inbox_page,
+        inbox_page_size=inbox_page_size,
+    )
     live_calls = _build_live_call_context(settings)
     queue_items = []
     for item in recent_queue_items.get("items", []):
