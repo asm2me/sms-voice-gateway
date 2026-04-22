@@ -3139,6 +3139,124 @@ async def admin_tools_test_send(
     return JSONResponse(response_payload, status_code=status.HTTP_202_ACCEPTED)
 
 
+@app.post("/admin/tools/bulk-send")
+async def admin_tools_bulk_send(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    try:
+        form = await request.form()
+    except ClientDisconnect:
+        log.warning("Admin bulk-send request client disconnected before form parsing completed")
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "client_disconnected",
+                "message": "Client disconnected before the bulk-send request body was fully received.",
+            },
+            status_code=499,
+        )
+    smpp_username = str(form.get("smpp_username", "")).strip()
+    numbers_raw = str(form.get("phone_numbers", "")).strip()
+    body = str(form.get("body", "")).strip()
+
+    if not smpp_username or not numbers_raw or not body:
+        return JSONResponse(
+            {
+                "success": False,
+                "status": "failed",
+                "message": "smpp_username, phone_numbers and body are required",
+                "error": "missing_required_fields",
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    smpp_account = next(
+        (account for account in settings.smpp_accounts if account.username == smpp_username),
+        None,
+    )
+    if smpp_account is None:
+        return JSONResponse(
+            {
+                "success": False,
+                "status": "failed",
+                "message": f"SMPP user '{smpp_username}' not found",
+                "error": "unknown_smpp_user",
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not smpp_account.enabled:
+        return JSONResponse(
+            {
+                "success": False,
+                "status": "failed",
+                "message": f"SMPP user '{smpp_username}' is disabled",
+                "error": "smpp_user_disabled",
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    numbers = []
+    for line in numbers_raw.splitlines():
+        for num in line.split(","):
+            num = re.sub(r"[^\d+]", "", str(num).strip())
+            if num and len(num) >= 7:
+                numbers.append(num)
+
+    if not numbers:
+        return JSONResponse(
+            {
+                "success": False,
+                "status": "failed",
+                "message": "No valid phone numbers found. Provide numbers separated by commas or newlines.",
+                "error": "no_valid_numbers",
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    queue_ids = []
+    now = _utc_now_iso()
+    for phone_number in numbers:
+        queue_item = record_queue_item(
+            settings,
+            phone_number=phone_number,
+            provider="bulk-send",
+            body=body,
+            status="queued",
+            smpp_username=smpp_username,
+        )
+        queue_ids.append(queue_item.id)
+
+    _append_admin_log(
+        f"Tools bulk-send queued {len(queue_ids)} messages smpp_username={smpp_username} numbers={len(numbers)} body={body[:80]!r}"
+    )
+    _record_admin_audit(
+        action="tools.bulk_send",
+        section="tools",
+        detail=f"Queued {len(queue_ids)} voice messages for bulk send using SMPP user '{smpp_username}'",
+        status="success",
+        metadata={
+            "smpp_username": smpp_username,
+            "total_numbers": len(numbers),
+            "queued_count": len(queue_ids),
+            "sample_numbers": numbers[:3] if numbers else [],
+            "queue_ids": queue_ids,
+        },
+    )
+    return JSONResponse(
+        {
+            "success": True,
+            "status": "queued",
+            "total_queued": len(queue_ids),
+            "total_numbers": len(numbers),
+            "message": f"Queued {len(queue_ids)} voice message(s) for delivery to {len(numbers)} number(s). Processing continues in the background.",
+            "queue_ids": queue_ids,
+        },
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+
+
 @app.post("/admin/queue/delete")
 async def admin_delete_queue_item_route(
     request: Request,
