@@ -100,6 +100,44 @@ _retry_executor_workers = 0
 _admin_test_send_jobs: dict[str, dict[str, object]] = {}
 _admin_test_send_lock = threading.Lock()
 
+_account_inflight_count: dict[str, int] = {}
+_account_inflight_lock = threading.Lock()
+_slot_available_event = Event()
+
+
+def _get_account_inflight_count(account_id: str) -> int:
+    with _account_inflight_lock:
+        return _account_inflight_count.get(account_id, 0)
+
+
+def _increment_account_inflight(account_id: str, limit: int) -> bool:
+    with _account_inflight_lock:
+        current = _account_inflight_count.get(account_id, 0)
+        if limit > 0 and current >= limit:
+            return False
+        _account_inflight_count[account_id] = current + 1
+        return True
+
+
+def _decrement_account_inflight(account_id: str) -> None:
+    with _account_inflight_lock:
+        current = _account_inflight_count.get(account_id, 0)
+        if current <= 1:
+            _account_inflight_count.pop(account_id, None)
+        else:
+            _account_inflight_count[account_id] = current - 1
+        _slot_available_event.set()
+        _slot_available_event.clear()
+
+
+def _find_sip_account_for_item(settings: Settings, item) -> SIPAccount | None:
+    if item.smpp_username:
+        from .config_store import get_sip_account_for_smpp_username
+        return get_sip_account_for_smpp_username(settings, item.smpp_username)
+    if item.sip_account_id:
+        return next((acc for acc in settings.sip_accounts if acc.id == item.sip_account_id), None)
+    return next((acc for acc in settings.sip_accounts if acc.enabled), None)
+
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
     text = str(value or "").strip()
@@ -197,7 +235,7 @@ def _finish_retry_item(item_id: str) -> None:
         _retry_inflight_items.discard(item_id)
 
 
-def _retry_queue_item_task(item_id: str) -> None:
+def _retry_queue_item_task(item_id: str, account_id: str, concurrency_limit: int) -> None:
     try:
         settings = load_settings_from_store()
         queue_store = get_queue_store(settings)
@@ -211,6 +249,8 @@ def _retry_queue_item_task(item_id: str) -> None:
         log.exception("Retry queue task %s crashed", item_id)
     finally:
         _finish_retry_item(item_id)
+        if concurrency_limit > 0:
+            _decrement_account_inflight(account_id)
 
 
 def _retry_queue_item(settings: Settings, item) -> None:
@@ -330,11 +370,25 @@ def _retry_worker_loop() -> None:
                     _finish_retry_item(item.id)
                     continue
 
+                sip_account = _find_sip_account_for_item(settings, latest)
+                if sip_account is None:
+                    log.warning("No SIP account found for queue item %s, skipping", latest.id)
+                    _finish_retry_item(latest.id)
+                    continue
+
+                concurrency_limit = max(0, int(sip_account.concurrency_limit or 0))
+                if concurrency_limit > 0:
+                    if not _increment_account_inflight(sip_account.id, concurrency_limit):
+                        _finish_retry_item(latest.id)
+                        continue
+
                 try:
-                    executor.submit(_retry_queue_item_task, item.id)
+                    executor.submit(_retry_queue_item_task, item.id, sip_account.id, concurrency_limit)
                     submitted += 1
                 except Exception:
-                    _finish_retry_item(item.id)
+                    _finish_retry_item(latest.id)
+                    if concurrency_limit > 0:
+                        _decrement_account_inflight(sip_account.id)
                     raise
 
             if submitted:
@@ -346,6 +400,7 @@ def _retry_worker_loop() -> None:
         except Exception as exc:
             log.debug("Retry worker loop issue: %s", exc)
         _retry_worker_stop.wait(1)
+        _slot_available_event.wait(0.1)
 
 
 def _start_retry_worker() -> None:
@@ -353,6 +408,9 @@ def _start_retry_worker() -> None:
     if _retry_worker_thread and _retry_worker_thread.is_alive():
         return
     _retry_worker_stop.clear()
+    _slot_available_event.clear()
+    with _account_inflight_lock:
+        _account_inflight_count.clear()
     _retry_worker_thread = Thread(target=_retry_worker_loop, name="retry-worker", daemon=True)
     _retry_worker_thread.start()
     log.info("Retry worker started")
@@ -362,6 +420,7 @@ def _stop_retry_worker() -> None:
     global _retry_executor, _retry_executor_workers
 
     _retry_worker_stop.set()
+    _slot_available_event.set()
     if _retry_worker_thread and _retry_worker_thread.is_alive():
         _retry_worker_thread.join(timeout=2)
 
@@ -374,6 +433,9 @@ def _stop_retry_worker() -> None:
 
     if executor is not None:
         executor.shutdown(wait=False)
+
+    with _account_inflight_lock:
+        _account_inflight_count.clear()
 
     log.info("Retry worker stopped")
 

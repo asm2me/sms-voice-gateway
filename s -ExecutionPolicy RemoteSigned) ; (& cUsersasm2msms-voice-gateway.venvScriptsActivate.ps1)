@@ -1,0 +1,379 @@
+warning: in the working copy of 'templates/admin.html', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/app/main.py b/app/main.py[m
+[1mindex 77b72f7..6c870f8 100644[m
+[1m--- a/app/main.py[m
+[1m+++ b/app/main.py[m
+[36m@@ -23,6 +23,7 @@[m [mimport re[m
+ import subprocess[m
+ import sys[m
+ import time[m
+[32m+[m[32mfrom concurrent.futures import ThreadPoolExecutor[m
+ from contextlib import asynccontextmanager[m
+ from datetime import datetime, timezone[m
+ from pathlib import Path[m
+[36m@@ -92,6 +93,10 @@[m [msecurity = HTTPBasic()[m
+ [m
+ _retry_worker_stop = Event()[m
+ _retry_worker_thread: Thread | None = None[m
+[32m+[m[32m_retry_dispatch_lock = threading.Lock()[m
+[32m+[m[32m_retry_inflight_items: set[str] = set()[m
+[32m+[m[32m_retry_executor: ThreadPoolExecutor | None = None[m
+[32m+[m[32m_retry_executor_workers = 0[m
+ _admin_test_send_jobs: dict[str, dict[str, object]] = {}[m
+ _admin_test_send_lock = threading.Lock()[m
+ [m
+[36m@@ -118,6 +123,96 @@[m [mdef _queue_item_ready_for_retry(item, *, now: datetime) -> bool:[m
+     return next_attempt_at <= now[m
+ [m
+ [m
+[32m+[m[32mdef _coerce_page_size(value: str | None, *, default: int = 20, max_value: int = 200) -> int:[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        numeric = int(str(value or "").strip() or str(default))[m
+[32m+[m[32m    except Exception:[m
+[32m+[m[32m        numeric = default[m
+[32m+[m[32m    return max(1, min(numeric, max_value))[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _retry_worker_concurrency(settings: Settings) -> int:[m
+[32m+[m[32m    enabled_accounts = [[m
+[32m+[m[32m        account[m
+[32m+[m[32m        for account in getattr(settings, "sip_accounts", [])[m
+[32m+[m[32m        if bool(getattr(account, "enabled", False))[m
+[32m+[m[32m    ][m
+[32m+[m[32m    if not enabled_accounts:[m
+[32m+[m[32m        return 4[m
+[32m+[m
+[32m+[m[32m    explicit_capacity = 0[m
+[32m+[m[32m    unlimited_accounts = 0[m
+[32m+[m[32m    for account in enabled_accounts:[m
+[32m+[m[32m        limit = max(0, int(getattr(account, "concurrency_limit", 0) or 0))[m
+[32m+[m[32m        if limit > 0:[m
+[32m+[m[32m            explicit_capacity += limit[m
+[32m+[m[32m        else:[m
+[32m+[m[32m            unlimited_accounts += 1[m
+[32m+[m
+[32m+[m[32m    if explicit_capacity > 0:[m
+[32m+[m[32m        desired = explicit_capacity + unlimited_accounts[m
+[32m+[m[32m    else:[m
+[32m+[m[32m        desired = max(4, len(enabled_accounts))[m
+[32m+[m
+[32m+[m[32m    return max(1, min(desired, 32))[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _ensure_retry_executor(settings: Settings) -> ThreadPoolExecutor:[m
+[32m+[m[32m    global _retry_executor, _retry_executor_workers[m
+[32m+[m
+[32m+[m[32m    desired_workers = _retry_worker_concurrency(settings)[m
+[32m+[m[32m    previous_executor = None[m
+[32m+[m
+[32m+[m[32m    with _retry_dispatch_lock:[m
+[32m+[m[32m        if _retry_executor is None or _retry_executor_workers != desired_workers:[m
+[32m+[m[32m            previous_executor = _retry_executor[m
+[32m+[m[32m            _retry_executor = ThreadPoolExecutor([m
+[32m+[m[32m                max_workers=desired_workers,[m
+[32m+[m[32m                thread_name_prefix="retry-item",[m
+[32m+[m[32m            )[m
+[32m+[m[32m            _retry_executor_workers = desired_workers[m
+[32m+[m
+[32m+[m[32m        executor = _retry_executor[m
+[32m+[m
+[32m+[m[32m    if previous_executor is not None:[m
+[32m+[m[32m        previous_executor.shutdown(wait=False)[m
+[32m+[m[32m        log.info("Retry worker pool resized to max_workers=%d", desired_workers)[m
+[32m+[m[32m    elif executor is not None and desired_workers:[m
+[32m+[m[32m        log.info("Retry worker pool ready max_workers=%d", desired_workers)[m
+[32m+[m
+[32m+[m[32m    assert executor is not None[m
+[32m+[m[32m    return executor[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _mark_retry_item_inflight(item_id: str) -> bool:[m
+[32m+[m[32m    with _retry_dispatch_lock:[m
+[32m+[m[32m        if item_id in _retry_inflight_items:[m
+[32m+[m[32m            return False[m
+[32m+[m[32m        _retry_inflight_items.add(item_id)[m
+[32m+[m[32m        return True[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _finish_retry_item(item_id: str) -> None:[m
+[32m+[m[32m    with _retry_dispatch_lock:[m
+[32m+[m[32m        _retry_inflight_items.discard(item_id)[m
+[32m+[m
+[32m+[m
+[32m+[m[32mdef _retry_queue_item_task(item_id: str) -> None:[m
+[32m+[m[32m    try:[m
+[32m+[m[32m        settings = load_settings_from_store()[m
+[32m+[m[32m        queue_store = get_queue_store(settings)[m
+[32m+[m[32m        item = queue_store.get(item_id)[m
+[32m+[m[32m        if item is None:[m
+[32m+[m[32m            return[m
+[32m+[m[32m        if not _queue_item_ready_for_retry(item, now=datetime.now(timezone.utc)):[m
+[32m+[m[32m            return[m
+[32m+[m[32m        _retry_queue_item(settings, item)[m
+[32m+[m[32m    except Exception:[m
+[32m+[m[32m        log.exception("Retry queue task %s crashed", item_id)[m
+[32m+[m[32m    finally:[m
+[32m+[m[32m        _finish_retry_item(item_id)[m
+[32m+[m
+[32m+[m
+ def _retry_queue_item(settings: Settings, item) -> None:[m
+     queue_store = get_queue_store(settings)[m
+     current = queue_store.get(item.id)[m
+[36m@@ -213,19 +308,42 @@[m [mdef _retry_worker_loop() -> None:[m
+         try:[m
+             settings = load_settings_from_store()[m
+             queue_store = get_queue_store(settings)[m
+[32m+[m[32m            executor = _ensure_retry_executor(settings)[m
+             now = datetime.now(timezone.utc)[m
+             due_items = [[m
+                 item[m
+                 for item in queue_store.list_items(limit=getattr(settings, "delivery_report_max_items", 1000))[m
+                 if _queue_item_ready_for_retry(item, now=now)[m
+             ][m
+[32m+[m
+[32m+[m[32m            submitted = 0[m
+             for item in due_items:[m
+                 if _retry_worker_stop.is_set():[m
+                     break[m
+[31m-                _retry_queue_item(settings, item)[m
+[32m+[m[32m                if not _mark_retry_item_inflight(item.id):[m
+[32m+[m[32m                    continue[m
+[32m+[m
+[32m+[m[32m                latest = queue_store.get(item.id)[m
+[32m+[m[32m                if latest is None or not _queue_item_ready_for_retry(latest, now=now):[m
+[32m+[m[32m                    _finish_retry_item(item.id)[m
+[32m+[m[32m                    continue[m
+[32m+[m
+[32m+[m[32m                try:[m
+[32m+[m[32m                    executor.submit(_retry_queue_item_task, item.id)[m
+[32m+[m[32m                    submitted += 1[m
+[32m+[m[32m                except Exception:[m
+[32m+[m[32m                    _finish_retry_item(item.id)[m
+[32m+[m[32m                    raise[m
+[32m+[m
+[32m+[m[32m            if submitted:[m
+[32m+[m[32m                log.info([m
+[32m+[m[32m                    "Retry worker dispatched %d queued voice item(s) with pool_size=%d",[m
+[32m+[m[32m                    submitted,[m
+[32m+[m[32m                    _retry_executor_workers,[m
+[32m+[m[32m                )[m
+         except Exception as exc:[m
+             log.debug("Retry worker loop issue: %s", exc)[m
+[31m-        _retry_worker_stop.wait(5)[m
+[32m+[m[32m        _retry_worker_stop.wait(1)[m
+ [m
+ [m
+ def _start_retry_worker() -> None:[m
+[36m@@ -239,9 +357,22 @@[m [mdef _start_retry_worker() -> None:[m
+ [m
+ [m
+ def _stop_retry_worker() -> None:[m
+[32m+[m[32m    global _retry_executor, _retry_executor_workers[m
+[32m+[m
+     _retry_worker_stop.set()[m
+     if _retry_worker_thread and _retry_worker_thread.is_alive():[m
+         _retry_worker_thread.join(timeout=2)[m
+[32m+[m
+[32m+[m[32m    executor = None[m
+[32m+[m[32m    with _retry_dispatch_lock:[m
+[32m+[m[32m        executor = _retry_executor[m
+[32m+[m[32m        _retry_executor = None[m
+[32m+[m[32m        _retry_executor_workers = 0[m
+[32m+[m[32m        _retry_inflight_items.clear()[m
+[32m+[m
+[32m+[m[32m    if executor is not None:[m
+[32m+[m[32m        executor.shutdown(wait=False)[m
+[32m+[m
+     log.info("Retry worker stopped")[m
+ [m
+ [m
+[36m@@ -378,11 +509,12 @@[m [mdef _build_queue_context([m
+     status_filter: str = "",[m
+     provider_filter: str = "",[m
+     page: int = 1,[m
+[32m+[m[32m    queue_page_size: int = 20,[m
+     inbox_search: str = "",[m
+     inbox_status: str = "",[m
+     inbox_provider: str = "",[m
+     inbox_page: int = 1,[m
+[31m-    page_size: int = 20,[m
+[32m+[m[32m    inbox_page_size: int = 20,[m
+ ) -> tuple[dict, dict, dict, dict, dict, dict]:[m
+     from .admin_reports import summarize_inbox, summarize_queue[m
+ [m
+[36m@@ -406,8 +538,8 @@[m [mdef _build_queue_context([m
+     )[m
+     if not isinstance(inbox_summary, dict) or inbox_summary.get("total_items") in (None, ""):[m
+         inbox_summary = {**(inbox_summary if isinstance(inbox_summary, dict) else {}), "total_items": len(all_inbox_messages)}[m
+[31m-    recent_queue_items = paginate_items(all_queue_items, page=page, page_size=page_size)[m
+[31m-    recent_inbox_messages = paginate_items(all_inbox_messages, page=inbox_page, page_size=page_size)[m
+[32m+[m[32m    recent_queue_items = paginate_items(all_queue_items, page=page, page_size=queue_page_size)[m
+[32m+[m[32m    recent_inbox_messages = paginate_items(all_inbox_messages, page=inbox_page, page_size=inbox_page_size)[m
+     queue_filters = {[m
+         "search": search,[m
+         "status": status_filter,[m
+[36m@@ -1206,20 +1338,24 @@[m [mdef _admin_context([m
+     queue_status = str(request.query_params.get("status", "")).strip()[m
+     queue_provider = str(request.query_params.get("provider", "")).strip()[m
+     queue_page = int(request.query_params.get("queue_page", "1") or "1")[m
+[32m+[m[32m    queue_page_size = _coerce_page_size(request.query_params.get("queue_page_size"), default=20)[m
+     inbox_search = str(request.query_params.get("inbox_search", "")).strip()[m
+     inbox_status = str(request.query_params.get("inbox_status", "")).strip()[m
+     inbox_provider = str(request.query_params.get("inbox_provider", "")).strip()[m
+     inbox_page = int(request.query_params.get("inbox_page", "1") or "1")[m
+[32m+[m[32m    inbox_page_size = _coerce_page_size(request.query_params.get("inbox_page_size"), default=20)[m
+     sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context([m
+         settings,[m
+         search=queue_search,[m
+         status_filter=queue_status,[m
+         provider_filter=queue_provider,[m
+         page=queue_page,[m
+[32m+[m[32m        queue_page_size=queue_page_size,[m
+         inbox_search=inbox_search,[m
+         inbox_status=inbox_status,[m
+         inbox_provider=inbox_provider,[m
+         inbox_page=inbox_page,[m
+[32m+[m[32m        inbox_page_size=inbox_page_size,[m
+     )[m
+     live_calls = _build_live_call_context(settings)[m
+     sip_trunks_health = _build_sip_trunk_health_context(settings)[m
+[36m@@ -3132,11 +3268,34 @@[m [masync def admin_tools_test_send_status([m
+ [m
+ @app.get("/admin/reports/live")[m
+ async def admin_reports_live([m
+[32m+[m[32m    request: Request,[m
+     _: None = Depends(dep_admin_credentials),[m
+     settings: Settings = Depends(dep_settings),[m
+ ):[m
+     report_summary, recent_reports = _report_context(settings)[m
+[31m-    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(settings)[m
+[32m+[m[32m    queue_search = str(request.query_params.get("search", "")).strip()[m
+[32m+[m[32m    queue_status = str(request.query_params.get("status", "")).strip()[m
+[32m+[m[32m    queue_provider = str(request.query_params.get("provider", "")).strip()[m
+[32m+[m[32m    queue_page = int(request.query_params.get("queue_page", "1") or "1")[m
+[32m+[m[32m    queue_page_size = _coerce_page_size(request.query_params.get("queue_page_size"), default=20)[m
+[32m+[m[32m    inbox_search = str(request.query_params.get("inbox_search", "")).strip()[m
+[32m+[m[32m    inbox_status = str(request.query_params.get("inbox_status", "")).strip()[m
+[32m+[m[32m    inbox_provider = str(request.query_params.get("inbox_provider", "")).strip()[m
+[32m+[m[32m    inbox_page = int(request.query_params.get("inbox_page", "1") or "1")[m
+[32m+[m[32m    inbox_page_size = _coerce_page_size(request.query_params.get("inbox_page_size"), default=20)[m
+[32m+[m[32m    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context([m
+[32m+[m[32m        settings,[m
+[32m+[m[32m        search=queue_search,[m
+[32m+[m[32m        status_filter=queue_status,[m
+[32m+[m[32m        provider_filter=queue_provider,[m
+[32m+[m[32m        page=queue_page,[m
+[32m+[m[32m        queue_page_size=queue_page_size,[m
+[32m+[m[32m        inbox_search=inbox_search,[m
+[32m+[m[32m        inbox_status=inbox_status,[m
+[32m+[m[32m        inbox_provider=inbox_provider,[m
+[32m+[m[32m        inbox_page=inbox_page,[m
+[32m+[m[32m        inbox_page_size=inbox_page_size,[m
+[32m+[m[32m    )[m
+     live_calls = _build_live_call_context(settings)[m
+     queue_items = [][m
+     for item in recent_queue_items.get("items", []):[m
+[1mdiff --git a/templates/admin.html b/templates/admin.html[m
+[1mindex ac6fbff..a4f5170 100644[m
+[1m--- a/templates/admin.html[m
+[1m+++ b/templates/admin.html[m
+[36m@@ -247,7 +247,7 @@[m
+     </div>[m
+     <div class="page-actions">[m
+       <span class="pill live-indicator"><span class="live-dot"></span> Live auto-refresh</span>[m
+[31m-      <a class="button button-secondary" href="/admin/reports">Refresh</a>[m
+[32m+[m[32m      <a class="button button-secondary" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Refresh</a>[m
+       <a class="button button-secondary" href="/admin/reports/export/reports.csv">Export Reports CSV</a>[m
+       <a class="button button-secondary" href="/admin/reports/export/reports.xls">Export Reports XLS</a>[m
+       <a class="button button-secondary" href="/admin/reports/export/inbox.csv">Export Inbox CSV</a>[m
+[36m@@ -389,6 +389,7 @@[m
+           <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />[m
+           <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />[m
+           <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />[m
+[32m+[m[32m          <input type="hidden" name="inbox_page_size" value="{{ inbox_pagination.page_size }}" />[m
+           <label class="field-group">[m
+             <span class="field-label">Queue Search</span>[m
+             <input type="text" name="search" value="{{ queue_filters.search }}" placeholder="Search queue items" />[m
+[36m@@ -401,6 +402,15 @@[m
+             <span class="field-label">Provider</span>[m
+             <input type="text" name="provider" value="{{ queue_filters.provider }}" placeholder="twilio, generic, admin-test" />[m
+           </label>[m
+[32m+[m[32m          <label class="field-group">[m
+[32m+[m[32m            <span class="field-label">Queue Page Size</span>[m
+[32m+[m[32m            <select name="queue_page_size">[m
+[32m+[m[32m              <option value="10" {% if queue_pagination.page_size == 10 %}selected{% endif %}>10</option>[m
+[32m+[m[32m              <option value="20" {% if queue_pagination.page_size == 20 %}selected{% endif %}>20</option>[m
+[32m+[m[32m              <option value="50" {% if queue_pagination.page_size == 50 %}selected{% endif %}>50</option>[m
+[32m+[m[32m              <option value="100" {% if queue_pagination.page_size == 100 %}selected{% endif %}>100</option>[m
+[32m+[m[32m            </select>[m
+[32m+[m[32m          </label>[m
+           <div class="form-actions">[m
+             <button type="submit" class="button button-secondary">Apply Queue Filters</button>[m
+           </div>[m
+[36m@@ -416,6 +426,7 @@[m
+           <input type="hidden" name="status" value="{{ queue_filters.status }}" />[m
+           <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />[m
+           <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />[m
+[32m+[m[32m          <input type="hidden" name="queue_page_size" value="{{ queue_pagination.page_size }}" />[m
+           <label class="field-group">[m
+             <span class="field-label">Inbox Search</span>[m
+             <input type="text" name="inbox_search" value="{{ inbox_filters.search }}" placeholder="Search inbox messages" />[m
+[36m@@ -428,6 +439,15 @@[m
+             <span class="field-label">Inbox Provider</span>[m
+             <input type="text" name="inbox_provider" value="{{ inbox_filters.provider }}" placeholder="smpp, twilio, generic" />[m
+           </label>[m
+[32m+[m[32m          <label class="field-group">[m
+[32m+[m[32m            <span class="field-label">Inbox Page Size</span>[m
+[32m+[m[32m            <select name="inbox_page_size">[m
+[32m+[m[32m              <option value="10" {% if inbox_pagination.page_size == 10 %}selected{% endif %}>10</option>[m
+[32m+[m[32m              <option value="20" {% if inbox_pagination.page_size == 20 %}selected{% endif %}>20</option>[m
+[32m+[m[32m              <option value="50" {% if inbox_pagination.page_size == 50 %}selected{% endif %}>50</option>[m
+[32m+[m[32m              <option value="100" {% if inbox_pagination.page_size == 100 %}selected{% endif %}>100</option>[m
+[32m+[m[32m            </select>[m
+[32m+[m[32m          </label>[m
+           <div class="form-actions">[m
+             <button type="submit" class="button button-secondary">Apply Inbox Filters</button>[m
+           </div>[m
+[36m@@ -516,13 +536,13 @@[m
+     <p>Queued voice delivery jobs and their statuses will appear here once traffic is processed.</p>[m
+   </div>[m
+   <div class="pagination-row">[m
+[31m-    <span class="muted">Page {{ queue_pagination.page }} of {{ queue_pagination.total_pages }}</span>[m
+[32m+[m[32m    <span class="muted">Page {{ queue_pagination.page }} of {{ queue_pagination.total_pages }} · {{ queue_pagination.page_size }} per page</span>[m
+     <div class="page-actions">[m
+       {% if queue_pagination.has_previous %}[m
+[31m-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.previous_page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}">Previous</a>[m
+[32m+[m[32m      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.previous_page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Previous</a>[m
+       {% endif %}[m
+       {% if queue_pagination.has_next %}[m
+[31m-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.next_page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}">Next</a>[m
+[32m+[m[32m      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.next_page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Next</a>[m
+       {% endif %}[m
+     </div>[m
+   </div>[m
+[36m@@ -640,13 +660,13 @@[m
+   </div>[m
+   </form>[m
+   <div class="pagination-row">[m
+[31m-    <span class="muted">Page {{ inbox_pagination.page }} of {{ inbox_pagination.total_pages }}</span>[m
+[32m+[m[32m    <span class="muted">Page {{ inbox_pagination.page }} of {{ inbox_pagination.total_pages }} · {{ inbox_pagination.page_size }} per page</span>[m
+     <div class="page-actions">[m
+       {% if inbox_pagination.has_previous %}[m
+[31m-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.previous_page }}">Previous</a>[m
+[32m+[m[32m      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.previous_page }}&inbox_page_size={{ inbox_pagination.page_size }}">Previous</a>[m
+       {% endif %}[m
+       {% if inbox_pagination.has_next %}[m
+[31m-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.next_page }}">Next</a>[m
+[32m+[m[32m      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.next_page }}&inbox_page_size={{ inbox_pagination.page_size }}">Next</a>[m
+       {% endif %}[m
+     </div>[m
+   </div>[m
+[36m@@ -2921,7 +2941,7 @@[m
+ [m
+       state.busy = true;[m
+       try {[m
+[31m-        const response = await fetch("/admin/reports/live", {[m
+[32m+[m[32m        const response = await fetch("/admin/reports/live" + (window.location.search || ""), {[m
+           method: "GET",[m
+           credentials: "same-origin",[m
+           headers: {[m
