@@ -103,6 +103,8 @@ _admin_test_send_lock = threading.Lock()
 _account_inflight_count: dict[str, int] = {}
 _account_inflight_lock = threading.Lock()
 _slot_available_event = Event()
+_bulk_jobs: dict[str, dict] = {}
+_bulk_jobs_lock = threading.Lock()
 
 
 def _get_account_inflight_count(account_id: str) -> int:
@@ -153,12 +155,49 @@ def _queue_item_ready_for_retry(item, *, now: datetime) -> bool:
     item_status = str(getattr(item, "status", "")).strip().lower()
     if item_status == "queued":
         return True
+    if item_status == "sequential_pending":
+        return True
     if item_status != "retry_scheduled":
         return False
     next_attempt_at = _parse_iso_datetime(getattr(item, "next_attempt_at", None))
     if next_attempt_at is None:
         return True
     return next_attempt_at <= now
+
+
+def _create_bulk_job(numbers: list[str], simultaneous: bool) -> str:
+    bulk_job_id = f"bulk_{int(time.time() * 1000)}"
+    with _bulk_jobs_lock:
+        _bulk_jobs[bulk_job_id] = {
+            "numbers": numbers.copy(),
+            "current_index": 0,
+            "simultaneous": simultaneous,
+        }
+    return bulk_job_id
+
+
+def _get_next_sequential_number(bulk_job_id: str) -> str | None:
+    with _bulk_jobs_lock:
+        job = _bulk_jobs.get(bulk_job_id)
+        if job is None or job["simultaneous"]:
+            return None
+        if job["current_index"] >= len(job["numbers"]):
+            _bulk_jobs.pop(bulk_job_id, None)
+            return None
+        phone_number = job["numbers"][job["current_index"]]
+        job["current_index"] += 1
+        return phone_number
+
+
+def _mark_bulk_job_complete(bulk_job_id: str) -> bool:
+    with _bulk_jobs_lock:
+        job = _bulk_jobs.get(bulk_job_id)
+        if job is None:
+            return False
+        if job["current_index"] >= len(job["numbers"]):
+            _bulk_jobs.pop(bulk_job_id, None)
+            return True
+        return False
 
 
 def _coerce_page_size(value: str | None, *, default: int = 20, max_value: int = 200) -> int:
@@ -236,12 +275,16 @@ def _finish_retry_item(item_id: str) -> None:
 
 
 def _retry_queue_item_task(item_id: str, account_id: str, concurrency_limit: int) -> None:
+    bulk_job_id = None
     try:
         settings = load_settings_from_store()
         queue_store = get_queue_store(settings)
         item = queue_store.get(item_id)
         if item is None:
             return
+
+        bulk_job_id = getattr(item, "bulk_job_id", None)
+
         if not _queue_item_ready_for_retry(item, now=datetime.now(timezone.utc)):
             return
         _retry_queue_item(settings, item)
@@ -251,6 +294,56 @@ def _retry_queue_item_task(item_id: str, account_id: str, concurrency_limit: int
         _finish_retry_item(item_id)
         if concurrency_limit > 0:
             _decrement_account_inflight(account_id)
+
+        if bulk_job_id:
+            _process_next_sequential_call(bulk_job_id)
+
+
+def _process_next_sequential_call(bulk_job_id: str) -> None:
+    settings = load_settings_from_store()
+    queue_store = get_queue_store(settings)
+    next_number = _get_next_sequential_number(bulk_job_id)
+    if next_number is None:
+        _mark_bulk_job_complete(bulk_job_id)
+        log.info("Sequential bulk job %s completed", bulk_job_id)
+        return
+
+    smpp_username = ""
+    existing_items = queue_store.query_items(
+        status="sequential_pending",
+        limit=100,
+    )
+    for existing in existing_items:
+        if getattr(existing, "bulk_job_id", "") == bulk_job_id:
+            smpp_username = getattr(existing, "smpp_username", "")
+            break
+
+    now = _utc_now_iso()
+    queue_item = QueueItem(
+        id=now,
+        created_at=now,
+        updated_at=now,
+        phone_number=next_number,
+        provider="bulk-send",
+        body=smpp_username,
+        body_preview=smpp_username[:160],
+        status="queued",
+        attempts=0,
+        max_attempts=0,
+        retry_interval_seconds=0,
+        next_attempt_at=None,
+        last_error="",
+        ami_action_id=None,
+        sip_call_id=None,
+        sip_account_id="",
+        smpp_username=smpp_username,
+        audio_path="",
+        recording_path="",
+        call_duration_seconds=0.0,
+        bulk_job_id=bulk_job_id,
+    )
+    queue_store.upsert(queue_item)
+    log.info("Sequential bulk job %s queued next call to %s", bulk_job_id, next_number)
 
 
 def _retry_queue_item(settings: Settings, item) -> None:
@@ -3160,6 +3253,7 @@ async def admin_tools_bulk_send(
     smpp_username = str(form.get("smpp_username", "")).strip()
     numbers_raw = str(form.get("phone_numbers", "")).strip()
     body = str(form.get("body", "")).strip()
+    simultaneous = str(form.get("simultaneous", "true")).strip().lower() == "true"
 
     if not smpp_username or not numbers_raw or not body:
         return JSONResponse(
@@ -3215,33 +3309,65 @@ async def admin_tools_bulk_send(
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
+    bulk_job_id = _create_bulk_job(numbers, simultaneous)
     queue_ids = []
     now = _utc_now_iso()
-    for phone_number in numbers:
+
+    if simultaneous:
+        for phone_number in numbers:
+            queue_item = record_queue_item(
+                settings,
+                phone_number=phone_number,
+                provider="bulk-send",
+                body=body,
+                status="queued",
+                smpp_username=smpp_username,
+                bulk_job_id=bulk_job_id,
+            )
+            queue_ids.append(queue_item.id)
+        processing_mode = "simultaneous"
+    else:
         queue_item = record_queue_item(
             settings,
-            phone_number=phone_number,
+            phone_number=numbers[0],
             provider="bulk-send",
             body=body,
             status="queued",
             smpp_username=smpp_username,
+            bulk_job_id=bulk_job_id,
         )
         queue_ids.append(queue_item.id)
 
+        for phone_number in numbers[1:]:
+            queue_item = record_queue_item(
+                settings,
+                phone_number=phone_number,
+                provider="bulk-send",
+                body=body,
+                status="sequential_pending",
+                smpp_username=smpp_username,
+                bulk_job_id=bulk_job_id,
+            )
+            queue_ids.append(queue_item.id)
+        processing_mode = "sequential"
+
     _append_admin_log(
-        f"Tools bulk-send queued {len(queue_ids)} messages smpp_username={smpp_username} numbers={len(numbers)} body={body[:80]!r}"
+        f"Tools bulk-send queued {len(queue_ids)} messages smpp_username={smpp_username} numbers={len(numbers)} mode={processing_mode} body={body[:80]!r}"
     )
     _record_admin_audit(
         action="tools.bulk_send",
         section="tools",
-        detail=f"Queued {len(queue_ids)} voice messages for bulk send using SMPP user '{smpp_username}'",
+        detail=f"Queued {len(queue_ids)} voice messages for bulk send using SMPP user '{smpp_username}' in {processing_mode} mode",
         status="success",
         metadata={
             "smpp_username": smpp_username,
             "total_numbers": len(numbers),
             "queued_count": len(queue_ids),
+            "processing_mode": processing_mode,
+            "simultaneous": simultaneous,
             "sample_numbers": numbers[:3] if numbers else [],
             "queue_ids": queue_ids,
+            "bulk_job_id": bulk_job_id,
         },
     )
     return JSONResponse(
@@ -3250,8 +3376,11 @@ async def admin_tools_bulk_send(
             "status": "queued",
             "total_queued": len(queue_ids),
             "total_numbers": len(numbers),
-            "message": f"Queued {len(queue_ids)} voice message(s) for delivery to {len(numbers)} number(s). Processing continues in the background.",
+            "processing_mode": processing_mode,
+            "simultaneous": simultaneous,
+            "message": f"Queued {len(queue_ids)} voice message(s) for delivery to {len(numbers)} number(s) in {processing_mode} mode. Processing continues in the background.",
             "queue_ids": queue_ids,
+            "bulk_job_id": bulk_job_id,
         },
         status_code=status.HTTP_202_ACCEPTED,
     )

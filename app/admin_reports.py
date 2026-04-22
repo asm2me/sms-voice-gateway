@@ -165,6 +165,7 @@ class QueueItem:
     audio_path: str = ""
     recording_path: str = ""
     call_duration_seconds: float = 0.0
+    bulk_job_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -195,6 +196,7 @@ class QueueItem:
             audio_path=_coerce_text(data.get("audio_path")),
             recording_path=_coerce_text(data.get("recording_path")),
             call_duration_seconds=_coerce_float(data.get("call_duration_seconds")),
+            bulk_job_id=_coerce_text(data.get("bulk_job_id")),
         )
 
 
@@ -582,6 +584,7 @@ def record_queue_item(
     call_duration_seconds: float = 0.0,
     smpp_username: str = "",
     item_id: str | None = None,
+    bulk_job_id: str = "",
 ) -> QueueItem:
     now = _isoformat(_utc_now())
     item = QueueItem(
@@ -605,6 +608,7 @@ def record_queue_item(
         audio_path=audio_path,
         recording_path=recording_path,
         call_duration_seconds=call_duration_seconds,
+        bulk_job_id=bulk_job_id,
     )
     return get_queue_store(settings).upsert(item)
 
