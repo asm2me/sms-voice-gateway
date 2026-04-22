@@ -3567,6 +3567,39 @@ async def admin_tools_test_send_status(
                 "status": "expired",
                 "error": "job_state_unavailable",
                 "message": "Live test-send status is no longer available in memory. Check Delivery Reports or the queue below for the persisted result.",
+            },
+        )
+
+@app.get("/admin/queue/poll")
+async def admin_queue_bulk_poll(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    bulk_job_id = str(request.query_params.get("bulk_job_id", "")).strip()
+    if not bulk_job_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "bulk_job_id is required")
+
+    with _bulk_jobs_lock:
+        job = _bulk_jobs.get(bulk_job_id)
+        if job is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Bulk job not found")
+
+    queue_store = get_queue_store(settings)
+    items = queue_store.query_items(
+        status="queued",
+        limit=200,
+    )
+    bulk_items = [item for item in items if getattr(item, "bulk_job_id", "") == bulk_job_id]
+
+    return JSONResponse(
+        {
+            "success": True,
+            "bulk_job_id": bulk_job_id,
+            "simultaneous": job.get("simultaneous", True),
+            "total_numbers": job.get("total_numbers", 0),
+            "items": [item.to_dict() for item in bulk_items],
+        },
                 "result": None,
                 "queue_item": None,
             }
