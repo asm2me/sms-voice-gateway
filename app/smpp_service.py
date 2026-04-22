@@ -260,8 +260,9 @@ class SMPPService:
                     )
                     queue_store = get_queue_store(self.settings)
                     now = time.time()
+                    message_id_value = f"smpp-{smpp_username or 'anon'}-{sequence}"
                     queue_item = QueueItem(
-                        id=f"smpp:{submit_fields['source_addr']}:{sequence}",
+                        id=message_id_value,
                         created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
                         updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
                         phone_number=submit_fields["destination_addr"],
@@ -299,7 +300,6 @@ class SMPPService:
                         smpp_username,
                         sip_account.id if sip_account else "",
                     )
-                    message_id_value = f"smpp-{sequence}"
                     session = self._active_clients.get(conn)
                     if session is not None:
                         session.submitted_messages[message_id_value] = {
@@ -538,22 +538,29 @@ class SMPPService:
         sequence = int(time.time() * 1000) & 0x7FFFFFFF
         stat_value = (delivery_state or "UNDELIV").strip().upper()[:7] or "UNDELIV"
         text_value = (error or "").strip()[:20]
-        body = (
+        short_message = (
             f"id:{message_id} sub:001 dlvrd:{1 if delivered else 0:03d} "
             f"submit date:0000000000 done date:0000000000 stat:{stat_value:<7} "
             f"err:000 text:{text_value}"
         ).encode("latin-1", "ignore")[:254]
+
         payload = (
-            b"\x00"
-            + bytes([0, 0])
+            b"\x00"  # service_type
+            + bytes([0, 0])  # source_addr_ton, source_addr_npi
             + (source_addr or "").encode("ascii", "ignore") + b"\x00"
-            + bytes([0, 0])
+            + bytes([0, 0])  # dest_addr_ton, dest_addr_npi
             + (destination_addr or "").encode("ascii", "ignore") + b"\x00"
-            + bytes([4, 0, 0])
-            + b"\x00"
-            + b"\x00"
-            + bytes([1])
-            + body
+            + bytes([0x04])  # esm_class = MC delivery receipt
+            + bytes([0x00])  # protocol_id
+            + bytes([0x00])  # priority_flag
+            + b"\x00"  # schedule_delivery_time
+            + b"\x00"  # validity_period
+            + bytes([0x00])  # registered_delivery
+            + bytes([0x00])  # replace_if_present_flag
+            + bytes([0x00])  # data_coding
+            + bytes([0x00])  # sm_default_msg_id
+            + bytes([len(short_message)])  # sm_length
+            + short_message
         )
         self._send_pdu(session.conn, _SM_PP_DELIVER_SM, 0, sequence, payload)
         return SMPPResult(
