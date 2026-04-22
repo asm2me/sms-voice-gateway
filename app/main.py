@@ -309,6 +309,7 @@ def _process_next_sequential_call(bulk_job_id: str) -> None:
         return
 
     smpp_username = ""
+    body = ""
     existing_items = queue_store.query_items(
         status="sequential_pending",
         limit=100,
@@ -316,6 +317,7 @@ def _process_next_sequential_call(bulk_job_id: str) -> None:
     for existing in existing_items:
         if getattr(existing, "bulk_job_id", "") == bulk_job_id:
             smpp_username = getattr(existing, "smpp_username", "")
+            body = getattr(existing, "body", "")
             break
 
     now = _utc_now_iso()
@@ -325,8 +327,8 @@ def _process_next_sequential_call(bulk_job_id: str) -> None:
         updated_at=now,
         phone_number=next_number,
         provider="bulk-send",
-        body=smpp_username,
-        body_preview=smpp_username[:160],
+        body=body,
+        body_preview=body[:160],
         status="queued",
         attempts=0,
         max_attempts=0,

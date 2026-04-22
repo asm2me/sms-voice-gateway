@@ -3039,6 +3039,7 @@
     const selectAllCheckboxes = document.querySelectorAll("input[type='checkbox'][data-select-all-target]");
     const modalAsyncForms = document.querySelectorAll(".js-modal-async-form");
     const toolsForm = document.querySelector('form[action="/admin/tools/test-send"]');
+    const bulkSendForm = document.getElementById("bulk-send-form");
 
     function syncSelectAllState(tableId) {
       const table = document.getElementById(tableId);
@@ -3328,6 +3329,77 @@
               '<span class="status-badge status-danger">Failed</span>' +
               '<div class="inline-test-status__summary">' +
               escapeHtml((error && error.message) || "Test send failed") +
+              "</div>";
+          }
+        } finally {
+          if (submitButton) submitButton.disabled = false;
+        }
+      });
+    }
+
+    if (bulkSendForm) {
+      bulkSendForm.addEventListener("submit", async function (event) {
+        event.preventDefault();
+
+        const formData = new FormData(bulkSendForm);
+        const submitButton = bulkSendForm.querySelector('button[type="submit"]');
+        const inlineStatus = document.getElementById("bulk-send-status");
+        if (submitButton) submitButton.disabled = true;
+        if (inlineStatus) {
+          inlineStatus.innerHTML =
+            '<span class="status-badge status-pending">Queued</span>' +
+            '<div class="inline-test-status__summary">Submitting bulk delivery request.</div>';
+        }
+
+        try {
+          const response = await fetch("/admin/tools/bulk-send", {
+            method: "POST",
+            body: formData,
+            credentials: "same-origin",
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+            },
+          });
+          const payload = await response.json();
+          if (!response.ok || !payload.success) {
+            throw new Error((payload && (payload.message || payload.error)) || "Bulk send failed");
+          }
+
+          const modeLabel =
+            payload && payload.processing_mode
+              ? escapeHtml(payload.processing_mode)
+              : "queued";
+          const queuedCount =
+            payload && typeof payload.total_queued !== "undefined"
+              ? escapeHtml(String(payload.total_queued))
+              : "0";
+          const numberCount =
+            payload && typeof payload.total_numbers !== "undefined"
+              ? escapeHtml(String(payload.total_numbers))
+              : queuedCount;
+
+          if (inlineStatus) {
+            inlineStatus.innerHTML =
+              '<span class="status-badge status-success">Queued</span>' +
+              '<div class="inline-test-status__summary">' +
+              escapeHtml((payload && payload.message) || "Bulk send queued successfully") +
+              "</div>" +
+              '<div class="inline-test-status__detail">Queued ' +
+              queuedCount +
+              " voice message(s) for " +
+              numberCount +
+              " number(s) in " +
+              modeLabel +
+              " mode.</div>";
+          }
+          ensureTopNotice((payload && payload.message) || "Bulk send queued successfully", "success");
+        } catch (error) {
+          ensureTopNotice((error && error.message) || "Bulk send failed", "danger");
+          if (inlineStatus) {
+            inlineStatus.innerHTML =
+              '<span class="status-badge status-danger">Failed</span>' +
+              '<div class="inline-test-status__summary">' +
+              escapeHtml((error && error.message) || "Bulk send failed") +
               "</div>";
           }
         } finally {
