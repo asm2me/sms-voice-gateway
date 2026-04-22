@@ -82,6 +82,66 @@
   <div class="audio-preview-panel" id="tts-preview-panel" style="display: none;">
     <audio id="tts-preview-audio" controls preload="metadata"></audio>
   </div>
+
+  <hr class="section-divider">
+
+  <div class="card-header" style="margin-top: 2rem;">
+    <div>
+      <h2>Send to Multiple Numbers</h2>
+      <p class="muted">Send the same message to multiple phone numbers at once. Messages will be queued and processed according to SIP trunk concurrency limits.</p>
+    </div>
+    <span class="pill">Bulk delivery</span>
+  </div>
+
+  <form method="post" action="/admin/tools/bulk-send" class="admin-form tools-form" id="bulk-send-form">
+    <div class="form-grid">
+      <label class="field-group">
+        <span class="field-label">SMPP Username</span>
+        <select name="smpp_username" required>
+          <option value="">Select SMPP user</option>
+          {% for account in smpp_accounts %}
+          <option value="{{ account.username }}">{{ account.label or account.username or account.id }}</option>
+          {% endfor %}
+        </select>
+        <small class="muted">The message will be routed using this SMPP identity.</small>
+      </label>
+
+      <label class="field-group field-span-2">
+        <span class="field-label">Phone Numbers</span>
+        <textarea id="bulk-phone-numbers" name="phone_numbers" rows="6" placeholder="+9661234567890&#10;+9669876543210&#10;+966555123456&#10;..." required></textarea>
+        <small class="muted">Multiple phone numbers separated by commas or newlines (one per line).</small>
+      </label>
+
+      <label class="field-group field-span-2">
+        <span class="field-label">Message Body</span>
+        <textarea id="bulk-message-body" name="body" rows="4" placeholder="Your OTP code is 123456">{{ tools_form_values.body }}</textarea>
+        <small class="muted">The body is enqueued, synthesized to speech, and delivered through the assigned SIP trunk.</small>
+      </label>
+
+      <label class="field-group">
+        <span class="field-label">Delivery Mode</span>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" name="simultaneous" value="true" checked />
+            <span>Simultaneous</span>
+            <small class="muted">Calls run concurrently up to SIP trunk concurrency limit</small>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="simultaneous" value="false" />
+            <span>Sequential</span>
+            <small class="muted">Calls run one at a time (wait for each to complete)</small>
+          </label>
+        </div>
+      </label>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="button">Send to Multiple Numbers</button>
+      <button type="button" class="button button-secondary js-count-numbers">Count Numbers</button>
+    </div>
+  </form>
+
+  <div id="bulk-send-status" class="inline-test-status" aria-live="polite"></div>
 </section>
 {% endif %}
 
