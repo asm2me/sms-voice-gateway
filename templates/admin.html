@@ -2325,14 +2325,23 @@
                     <input type="file" name="uploaded_audio_file" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
                     <small class="muted">Optional. Upload a single audio file for this SMPP user. This audio overrides generated speech for the account when present.</small>
                     {% if account.uploaded_audio_path %}
-                    <input type="checkbox" name="remove_uploaded_audio" class="uploaded-audio-cancel-hidden-input" style="display:none;" />
-                    <button
-                      type="button"
-                      class="button button-secondary button-small button-danger"
-                      title="Remove uploaded audio for this SMPP user"
-                      aria-label="Remove uploaded audio for this SMPP user"
-                      onclick="window.cancelUploadedAudio(this)"
-                    >✕ Cancel Audio</button>
+                    <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
+                      <button
+                        type="button"
+                        class="button button-secondary button-small"
+                        title="Play uploaded account audio"
+                        aria-label="Play uploaded account audio"
+                        onclick="window.playAccountAudio('{{ account.id }}')"
+                      >▶ Play</button>
+                      <input type="checkbox" name="remove_uploaded_audio" class="uploaded-audio-cancel-hidden-input" style="display:none;" />
+                      <button
+                        type="button"
+                        class="button button-secondary button-small button-danger"
+                        title="Remove uploaded audio for this SMPP user"
+                        aria-label="Remove uploaded audio for this SMPP user"
+                        onclick="window.cancelUploadedAudio(this)"
+                      >✕ Cancel</button>
+                    </div>
                     {% endif %}
                     <div class="uploaded-audio-status"></div>
                   </label>
@@ -2378,6 +2387,7 @@
                           data-account-id="{{ account.id }}"
                           data-part-ordinal="{{ part.ordinal }}"
                           data-part-text="{{ part.value }}"
+                          data-has-uploaded-audio="{% if part.has_uploaded_audio %}true{% else %}false{% endif %}"
                           onclick="window.__adminPreviewSmppTemplatePart(this)"
                         >▶</button>
                         {% endif %}
@@ -2745,12 +2755,13 @@
       const accountId = button.getAttribute("data-account-id") || "";
       const partOrdinal = button.getAttribute("data-part-ordinal") || "";
       const partText = button.getAttribute("data-part-text") || "";
+      const hasUploadedAudio = button.getAttribute("data-has-uploaded-audio") === "true";
       const statusTargets = [
         document.getElementById("smpp-template-part-status-" + accountId),
         document.getElementById("smpp-template-part-status-modal-" + accountId),
       ].filter(Boolean);
 
-      if (!partText.trim()) {
+      if (!partText.trim() && !hasUploadedAudio) {
         statusTargets.forEach(function (target) {
           target.innerHTML =
             '<span class="status-badge status-danger">Missing text</span>' +
@@ -2762,36 +2773,43 @@
       button.disabled = true;
       statusTargets.forEach(function (target) {
         target.innerHTML =
-          '<span class="status-badge status-pending">Generating…</span>' +
-          '<div class="inline-test-status__summary">Creating audio for static template part ' +
+          '<span class="status-badge status-pending">' + (hasUploadedAudio ? 'Playing…' : 'Generating…') + '</span>' +
+          '<div class="inline-test-status__summary">' + (hasUploadedAudio ? 'Playing uploaded audio' : 'Creating audio') + ' for static template part ' +
           escapeHtml(partOrdinal || "?") +
           ".</div>";
       });
 
       try {
-        const formData = new FormData();
-        formData.set("account_id", accountId);
-        formData.set("part_ordinal", partOrdinal);
-        formData.set("part_text", partText);
+        let audioUrl = null;
 
-        const response = await fetch("/admin/config/smpp-template-part-preview", {
-          method: "POST",
-          body: formData,
-          credentials: "same-origin",
-        });
+        if (hasUploadedAudio) {
+          audioUrl = "/admin/config/smpp-part-audio/" + encodeURIComponent(accountId) + "/" + encodeURIComponent(partOrdinal);
+        } else {
+          const formData = new FormData();
+          formData.set("account_id", accountId);
+          formData.set("part_ordinal", partOrdinal);
+          formData.set("part_text", partText);
 
-        const result = await response.json();
-        if (!response.ok || !result.success || !result.audio_url) {
-          throw new Error((result && (result.message || result.error)) || "Static template part preview failed");
+          const response = await fetch("/admin/config/smpp-template-part-preview", {
+            method: "POST",
+            body: formData,
+            credentials: "same-origin",
+          });
+
+          const result = await response.json();
+          if (!response.ok || !result.success || !result.audio_url) {
+            throw new Error((result && (result.message || result.error)) || "Static template part preview failed");
+          }
+          audioUrl = result.audio_url;
         }
 
-        window.__adminPlayQueueAudio(result.audio_url, button);
+        window.__adminPlayQueueAudio(audioUrl, button);
 
         statusTargets.forEach(function (target) {
           target.innerHTML =
             '<span class="status-badge status-success">Ready</span>' +
             '<div class="inline-test-status__summary">' +
-            escapeHtml(result.message || "Static template part preview audio generated.") +
+            escapeHtml(hasUploadedAudio ? "Playing uploaded audio." : (result && result.message) || "Static template part preview audio generated.") +
             "</div>";
         });
       } catch (error) {
@@ -3789,6 +3807,12 @@
           digitDiv.classList.remove("has-audio");
         }
       }
+    };
+
+    window.playAccountAudio = function(accountId) {
+      const audioUrl = `/admin/config/smpp-account-audio/${accountId}`;
+      const audio = new Audio(audioUrl);
+      audio.play().catch(err => console.error("Failed to play account audio:", err));
     };
 
     window.playDigitAudio = function(accountId, digit) {

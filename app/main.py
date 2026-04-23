@@ -135,6 +135,39 @@ def _delete_managed_file(raw_path: str) -> None:
         log.warning("Failed deleting managed file: %s", candidate, exc_info=True)
 
 
+def _convert_audio_to_wav(input_path: Path) -> Path | None:
+    input_suffix = input_path.suffix.lower()
+    if input_suffix == ".wav":
+        return input_path
+    wav_path = input_path.with_suffix(".wav")
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-i", str(input_path),
+                "-acodec", "pcm_s16le",
+                "-ar", "16000",
+                "-ac", "1",
+                "-y",
+                str(wav_path),
+            ],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode == 0 and wav_path.exists():
+            input_path.unlink(missing_ok=True)
+            return wav_path
+        log.warning("ffmpeg conversion failed for %s: %s", input_path, result.stderr.decode("utf-8", errors="replace")[-200:])
+    except FileNotFoundError:
+        log.warning("ffmpeg not found, skipping audio conversion for %s", input_path)
+    except subprocess.TimeoutExpired:
+        log.warning("ffmpeg conversion timed out for %s", input_path)
+    except Exception as exc:
+        log.warning("ffmpeg conversion error for %s: %s", input_path, exc)
+    return None
+
+
 async def _store_smpp_account_uploaded_audio(*, account_id: str, upload: UploadFile) -> tuple[str, str]:
     original_name = str(getattr(upload, "filename", "") or "").strip()
     if not original_name:
@@ -150,6 +183,9 @@ async def _store_smpp_account_uploaded_audio(*, account_id: str, upload: UploadF
     stored_name = f"{_slugify_identifier(account_id, 'smpp-account')}-{digest}{suffix}"
     stored_path = SMPP_ACCOUNT_AUDIO_DIR / stored_name
     stored_path.write_bytes(payload)
+    converted_path = _convert_audio_to_wav(stored_path)
+    if converted_path and converted_path != stored_path:
+        stored_path = converted_path
     return stored_path.relative_to(BASE_DIR).as_posix(), original_name
 
 
@@ -176,6 +212,9 @@ async def _store_smpp_account_part_uploaded_audio(
     )
     stored_path = SMPP_ACCOUNT_AUDIO_DIR / stored_name
     stored_path.write_bytes(payload)
+    converted_path = _convert_audio_to_wav(stored_path)
+    if converted_path and converted_path != stored_path:
+        stored_path = converted_path
     return stored_path.relative_to(BASE_DIR).as_posix(), original_name
 
 
@@ -203,6 +242,9 @@ async def _store_smpp_account_digit_uploaded_audio(
     stored_name = f"{_slugify_identifier(account_id, 'smpp-account')}-digit-{digit_key}-{digest}{suffix}"
     stored_path = SMPP_ACCOUNT_AUDIO_DIR / stored_name
     stored_path.write_bytes(payload)
+    converted_path = _convert_audio_to_wav(stored_path)
+    if converted_path and converted_path != stored_path:
+        stored_path = converted_path
     return stored_path.relative_to(BASE_DIR).as_posix(), original_name
 
 
@@ -3225,6 +3267,28 @@ async def admin_delete_smpp_account(
     )
 
 
+@app.get("/admin/config/smpp-account-audio/{account_id}")
+async def admin_get_smpp_account_audio(
+    account_id: str,
+    _: None = Depends(dep_admin_credentials),
+):
+    settings = load_settings_from_store()
+    account = next((acc for acc in settings.smpp_accounts if acc.id == account_id), None)
+    if not account:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
+    audio_path_str = str(account.uploaded_audio_path or "").strip()
+    if not audio_path_str:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account audio not found")
+    audio_path = (BASE_DIR / audio_path_str).resolve()
+    allowed_root = SMPP_ACCOUNT_AUDIO_DIR.resolve()
+    if not audio_path.is_relative_to(allowed_root):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Audio path is outside the allowed directory")
+    if not audio_path.exists() or not audio_path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Audio file not found")
+    media_type = "audio/wav" if audio_path.suffix.lower() == ".wav" else "audio/mpeg"
+    return FileResponse(audio_path, media_type=media_type, filename=audio_path.name)
+
+
 @app.get("/admin/config/smpp-digit-audio/{account_id}/{digit}")
 async def admin_get_smpp_digit_audio(
     account_id: str,
@@ -3250,7 +3314,35 @@ async def admin_get_smpp_digit_audio(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Audio path is outside the allowed directory")
     if not audio_path.exists() or not audio_path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Audio file not found")
-    return FileResponse(audio_path, media_type="audio/wav", filename=audio_path.name)
+    media_type = "audio/wav" if audio_path.suffix.lower() == ".wav" else "audio/mpeg"
+    return FileResponse(audio_path, media_type=media_type, filename=audio_path.name)
+
+
+@app.get("/admin/config/smpp-part-audio/{account_id}/{ordinal}")
+async def admin_get_smpp_part_audio(
+    account_id: str,
+    ordinal: str,
+    _: None = Depends(dep_admin_credentials),
+):
+    settings = load_settings_from_store()
+    account = next((acc for acc in settings.smpp_accounts if acc.id == account_id), None)
+    if not account:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
+    part_audio = _normalize_static_message_part_audio(
+        getattr(account, "static_message_part_audio", {})
+    )
+    audio_entry = part_audio.get(ordinal, {})
+    audio_path_str = str(audio_entry.get("path", "") or "").strip()
+    if not audio_path_str:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Part audio not found")
+    audio_path = (BASE_DIR / audio_path_str).resolve()
+    allowed_root = SMPP_ACCOUNT_AUDIO_DIR.resolve()
+    if not audio_path.is_relative_to(allowed_root):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Audio path is outside the allowed directory")
+    if not audio_path.exists() or not audio_path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Audio file not found")
+    media_type = "audio/wav" if audio_path.suffix.lower() == ".wav" else "audio/mpeg"
+    return FileResponse(audio_path, media_type=media_type, filename=audio_path.name)
 
 
 @app.post("/admin/config/system-users")

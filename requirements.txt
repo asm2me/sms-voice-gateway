@@ -26,6 +26,15 @@ python-multipart>=0.0.9   # required for FastAPI Form() / file uploads
 jinja2>=3.1.0   # required for FastAPI Jinja2Templates
 openpyxl>=3.1.0   # XLSX export for admin reports
 
+# ── Audio Conversion ─────────────────────────────────────────────────────────
+# ffmpeg is required for audio format conversion (MP3 to WAV, etc.)
+# Install ffmpeg on your system:
+#   Ubuntu/Debian: sudo apt-get install ffmpeg
+#   CentOS/RHEL: sudo yum install ffmpeg
+#   macOS: brew install ffmpeg
+#   Windows: Download from https://ffmpeg.org/download.html
+# The application will work without ffmpeg but will skip audio conversion.
+
 # ── Direct SIP UA / PJSIP ─────────────────────────────────────────────────────
 # Install the PJSUA2 Python bindings provided by your deployment/runtime.
 # Package name and installation method vary by platform; this project loads
