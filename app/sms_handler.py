@@ -305,6 +305,8 @@ class SMSGateway:
                 if not isinstance(digit_audio_map, dict):
                     digit_audio_map = {}
 
+                log.info("Processing parameter value '%s' with digit_audio_map keys: %s", parameter_value, list(digit_audio_map.keys()))
+
                 parameter_audio_parts: list[bytes] = []
                 cursor = 0
                 while cursor < len(parameter_value):
@@ -313,14 +315,25 @@ class SMSGateway:
                         raw_entry = digit_audio_map.get(current_character, {})
                         digit_audio_path = ""
                         if isinstance(raw_entry, dict):
+                            raw_path = str(raw_entry.get("path", "") or "").strip()
+                            log.info("Digit '%s' raw_path: %s, raw_entry: %s", current_character, raw_path, raw_entry)
                             digit_audio_path = self._resolve_uploaded_audio_path(
-                                str(raw_entry.get("path", "") or "").strip(),
+                                raw_path,
                                 account_id=str(getattr(smpp_account, "id", "") or "").strip(),
                                 part_ordinal=int(current_character),
                             )
+                            log.info("Digit '%s' resolved path: %s", current_character, digit_audio_path)
                         if digit_audio_path:
-                            parameter_audio_parts.append(Path(digit_audio_path).read_bytes())
+                            try:
+                                audio_bytes = Path(digit_audio_path).read_bytes()
+                                log.info("Successfully read digit '%s' audio: %d bytes", current_character, len(audio_bytes))
+                                parameter_audio_parts.append(audio_bytes)
+                            except Exception as exc:
+                                log.warning("Failed to read digit audio for '%s': %s", current_character, exc)
+                                digit_segment_audio_path, _segment_cached = self.tts.get_or_create_audio(current_character)
+                                parameter_audio_parts.append(Path(digit_segment_audio_path).read_bytes())
                         else:
+                            log.warning("Digit '%s' audio not found, falling back to TTS", current_character)
                             digit_segment_audio_path, _segment_cached = self.tts.get_or_create_audio(current_character)
                             parameter_audio_parts.append(Path(digit_segment_audio_path).read_bytes())
                         cursor += 1
@@ -336,6 +349,7 @@ class SMSGateway:
                         parameter_audio_parts.append(Path(segment_audio_path).read_bytes())
 
                 if parameter_audio_parts:
+                    log.info("Adding %d audio parts for parameter '%s'", len(parameter_audio_parts), parameter_value)
                     wav_parts.extend(parameter_audio_parts)
                 continue
 
@@ -359,6 +373,7 @@ class SMSGateway:
     ) -> str:
         normalized_path = str(raw_path or "").strip()
         if not normalized_path:
+            log.warning("_resolve_uploaded_audio_path: empty raw_path")
             return ""
 
         audio_path = Path(normalized_path)
@@ -366,6 +381,9 @@ class SMSGateway:
             audio_path = (Path(__file__).resolve().parent.parent / audio_path).resolve()
         else:
             audio_path = audio_path.resolve()
+
+        log.debug("_resolve_uploaded_audio_path: account_id=%s, part_ordinal=%s, raw_path=%s, resolved=%s, exists=%s",
+                   account_id, part_ordinal, raw_path, audio_path, audio_path.exists())
 
         if not audio_path.exists() or not audio_path.is_file():
             if part_ordinal is None:
