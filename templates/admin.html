@@ -2179,6 +2179,12 @@
                     <textarea id="smpp-add-static-default-message-template" name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 Ø±Ù…Ø² Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„ØØ§Øµ Ø¨Ùƒ Ù‡Ùˆ %2"></textarea>
                     <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
                   </label>
+                  <label class="field-group field-span-2 uploaded-audio-group">
+                    <span class="field-label">Account Audio</span>
+                    <input type="file" name="uploaded_audio_file" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
+                    <small class="muted">Optional. Upload a single audio file for this SMPP user. This audio overrides generated speech for the account when present.</small>
+                    <div class="uploaded-audio-status"></div>
+                  </label>
                   <div class="field-group field-span-2">
                     <span class="field-label">Split Static Message Parts</span>
                     <small class="muted">Upload audio files for each spoken part. Parameter placeholders like <span class="mono">%1</span> remain unspoken and cannot receive audio.</small>
@@ -2309,6 +2315,27 @@
                     <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 Ø±Ù…Ø² Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„Ø®Ø§Øµ Ø¨Ùƒ Ù‡Ùˆ %2">{{ account.static_default_message_template or '' }}</textarea>
                     <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
                   </label>
+                  <label class="field-group field-span-2 uploaded-audio-group">
+                    <span class="field-label">Account Audio</span>
+                    {% if account.uploaded_audio_path %}
+                    <div class="notice notice-success" style="margin:0; padding:0.6rem 0.8rem; font-size:0.85rem;">
+                      Audio uploaded: {{ account.uploaded_audio_original_name or account.uploaded_audio_path }}
+                    </div>
+                    {% endif %}
+                    <input type="file" name="uploaded_audio_file" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
+                    <small class="muted">Optional. Upload a single audio file for this SMPP user. This audio overrides generated speech for the account when present.</small>
+                    {% if account.uploaded_audio_path %}
+                    <input type="checkbox" name="remove_uploaded_audio" class="uploaded-audio-cancel-hidden-input" style="display:none;" />
+                    <button
+                      type="button"
+                      class="button button-secondary button-small button-danger"
+                      title="Remove uploaded audio for this SMPP user"
+                      aria-label="Remove uploaded audio for this SMPP user"
+                      onclick="window.cancelUploadedAudio(this)"
+                    >✕ Cancel Audio</button>
+                    {% endif %}
+                    <div class="uploaded-audio-status"></div>
+                  </label>
                   <div class="field-group field-span-2">
                     <span class="field-label">Split Static Message Parts</span>
                     <small class="muted">Upload audio files per spoken part. Parameter placeholders like <span class="mono">%1</span> remain unspoken and cannot receive audio.</small>
@@ -2369,7 +2396,7 @@
                     <small class="muted">Upload audio files for individual digits. These are spoken when a parameter contains that digit.</small>
                     <div class="dialpad-container" style="margin-top:0.75rem;">
                       {% for digit in range(10) %}
-                      <div class="dialpad-digit" data-digit="{{ digit }}" data-has-existing-audio="{% if account.static_message_digit_audio and account.static_message_digit_audio.get(str(digit)) %}true{% else %}false{% endif %}">
+                      <div class="dialpad-digit" data-digit="{{ digit }}" data-has-existing-audio="{% if account.static_message_digit_audio and account.static_message_digit_audio.get(digit|string) %}true{% else %}false{% endif %}">
                         <button
                           type="button"
                           class="dialpad-digit-label dialpad-digit-label-button"
@@ -2386,7 +2413,7 @@
                             aria-label="Choose audio for digit {{ digit }}"
                             onclick="window.openDialpadDigitAudioPicker(this)"
                           >📁</button>
-                          {% if account.static_message_digit_audio and account.static_message_digit_audio.get(str(digit)) %}
+                          {% if account.static_message_digit_audio and account.static_message_digit_audio.get(digit|string) %}
                           <button
                             type="button"
                             class="dialpad-play-btn"
@@ -3792,6 +3819,25 @@
       digitDiv.classList.remove("has-audio");
       digitDiv.style.opacity = hasExistingAudio ? "0.65" : "";
       digitDiv.style.pointerEvents = "";
+    };
+
+    window.cancelUploadedAudio = function(button) {
+      const audioGroup = button && typeof button.closest === "function" ? button.closest(".uploaded-audio-group") : null;
+      if (!audioGroup) return;
+
+      const hiddenInput = audioGroup.querySelector(".uploaded-audio-cancel-hidden-input");
+      const fileInput = audioGroup.querySelector('input[type="file"][name="uploaded_audio_file"]');
+      const statusDiv = audioGroup.querySelector(".uploaded-audio-status");
+
+      if (fileInput) {
+        fileInput.value = "";
+      }
+      if (hiddenInput) {
+        hiddenInput.checked = true;
+      }
+      if (statusDiv) {
+        statusDiv.textContent = hiddenInput ? "Audio will be removed on save" : "";
+      }
     };
   })();
 </script>
