@@ -196,6 +196,7 @@ _PJSUA_GLOBAL_ENDPOINT = None
 _PJSUA_GLOBAL_TRANSPORT = None
 _PJSUA_GLOBAL_SESSIONS: dict[str, "PJSipUASession"] = {}
 _PJSUA_REGISTERED_THREADS: set[int] = set()
+_PJSUA_THREAD_DESCS: dict[int, Any] = {}
 _PJSUA_PLAYER_LOCK = threading.RLock()
 _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
 _PJSUA_RETIRED_PLAYERS: list[dict[str, Any]] = []
@@ -307,30 +308,43 @@ class PJSipUASession:
     def _register_current_thread(self) -> None:
         if self._pj is None:
             return
+
         thread_id = threading.get_ident()
         if thread_id in _PJSUA_REGISTERED_THREADS:
             return
-        with suppress(Exception):
-            self._pj.threadDesc = getattr(self._pj, "threadDesc", lambda: [0] * 64)
-        try:
-            desc = self._pj.threadDesc() if callable(getattr(self._pj, "threadDesc", None)) else [0] * 64
-        except Exception:
-            desc = [0] * 64
+
         name = f"py-{thread_id}"[:31]
+        desc = _PJSUA_THREAD_DESCS.get(thread_id)
+        if desc is None:
+            try:
+                thread_desc_factory = getattr(self._pj, "threadDesc", None)
+                desc = thread_desc_factory() if callable(thread_desc_factory) else [0] * 64
+            except Exception:
+                desc = [0] * 64
+            _PJSUA_THREAD_DESCS[thread_id] = desc
+
+        register_candidates: list[tuple[Any, tuple[Any, ...]]] = []
 
         if self._endpoint is not None:
-            with suppress(Exception):
-                self._endpoint.libRegisterThread(name)
+            register_fn = getattr(self._endpoint, "libRegisterThread", None)
+            if callable(register_fn):
+                register_candidates.append((register_fn, (name, desc)))
+                register_candidates.append((register_fn, (name,)))
+
+        module_register = getattr(self._pj, "libRegisterThread", None)
+        if callable(module_register):
+            register_candidates.append((module_register, (name, desc)))
+            register_candidates.append((module_register, (name,)))
+
+        for register_fn, args in register_candidates:
+            try:
+                register_fn(*args)
                 _PJSUA_REGISTERED_THREADS.add(thread_id)
                 return
-
-        with suppress(Exception):
-            if hasattr(self._pj, "threadRegister"):
-                self._pj.threadRegister(name, desc)
-            elif hasattr(self._pj, "libRegisterThread"):
-                self._pj.libRegisterThread(name)
-            _PJSUA_REGISTERED_THREADS.add(thread_id)
-            return
+            except TypeError:
+                continue
+            except Exception:
+                continue
 
     def initialize(self) -> PJSUA2RegistrationResult:
         global _PJSUA_GLOBAL_ENDPOINT, _PJSUA_GLOBAL_TRANSPORT
@@ -1194,6 +1208,7 @@ class _GatewayAccount:
         if self._account is None:
             raise RuntimeError("SIP account is not initialised")
 
+        self._session._register_current_thread()
         pj = self._session._pj
         if pj is None:
             raise PJSUA2UnavailableError("PJSUA2 bindings are unavailable")
