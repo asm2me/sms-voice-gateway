@@ -2027,7 +2027,6 @@
                   <th>Default</th>
                   <th>Default SIP</th>
                   <th>Static Message Parts</th>
-                  <th>Uploaded Audio</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -2081,18 +2080,6 @@
                     </div>
                     {% else %}
                     <span class="muted">No static template</span>
-                    {% endif %}
-                  </td>
-                  <td>
-                    {% if account.uploaded_audio_path %}
-                    <div class="permission-summary">
-                      <div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">
-                        <strong>Uploaded file</strong>
-                        <span class="mono">{{ account.uploaded_audio_original_name or account.uploaded_audio_path }}</span>
-                      </div>
-                    </div>
-                    {% else %}
-                    <span class="muted">No uploaded audio</span>
                     {% endif %}
                   </td>
                   <td>
@@ -2189,14 +2176,16 @@
                   </label>
                   <label class="field-group field-span-2">
                     <span class="field-label">Static Default Message Template</span>
-                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 Ø±Ù…Ø² Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„Ø®Ø§Øµ Ø¨Ùƒ Ù‡Ùˆ %2"></textarea>
+                    <textarea id="smpp-add-static-default-message-template" name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 Ø±Ù…Ø² Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„ØØ§Øµ Ø¨Ùƒ Ù‡Ùˆ %2"></textarea>
                     <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
                   </label>
-                  <label class="field-group field-span-2">
-                    <span class="field-label">Uploaded Audio File</span>
-                    <input type="file" name="uploaded_audio_file" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
-                    <small class="muted">Optional. When provided, this file is played for this SMPP user instead of generating TTS audio.</small>
-                  </label>
+                  <div class="field-group field-span-2">
+                    <span class="field-label">Split Static Message Parts</span>
+                    <small class="muted">Upload audio files for each spoken part. Parameter placeholders like <span class="mono">%1</span> remain unspoken and cannot receive audio.</small>
+                    <div class="permission-summary" id="smpp-add-template-parts">
+                      <div class="muted">Enter a template above to see split parts and upload slots here.</div>
+                    </div>
+                  </div>
                   <div class="notice">
                     <strong>Template caching behavior.</strong>
                     Static text is split into separate cached spoken parts around parameter placeholders. Parameters such as <span class="mono">%1</span> and <span class="mono">%2</span> are shown in configuration as unspoken placeholders and are inserted at runtime.
@@ -2415,6 +2404,127 @@
     const element = document.createElement("div");
     element.textContent = String(value || "");
     return element.innerHTML;
+  }
+
+  function splitStaticMessageTemplate(template) {
+    const rawTemplate = String(template || "");
+    const parts = [];
+    const templatePattern = /(?:\{\%\s*(\d+)\s*\}|%(\d+))/g;
+    let cursor = 0;
+    let ordinal = 1;
+    let match = null;
+
+    while ((match = templatePattern.exec(rawTemplate)) !== null) {
+      const start = match.index;
+      const end = templatePattern.lastIndex;
+
+      if (start > cursor) {
+        const textValue = rawTemplate.slice(cursor, start);
+        if (textValue) {
+          parts.push({
+            ordinal: ordinal,
+            kind: "text",
+            value: textValue,
+            display_value: textValue,
+            spoken: Boolean(textValue.trim()),
+            parameter_index: null,
+          });
+          ordinal += 1;
+        }
+      }
+
+      const parameterToken = match[1] || match[2] || "";
+      const parameterIndex = parameterToken ? parseInt(parameterToken, 10) : null;
+      parts.push({
+        ordinal: ordinal,
+        kind: "parameter",
+        value: match[0],
+        display_value: parameterIndex ? "%" + parameterIndex : match[0],
+        spoken: false,
+        parameter_index: parameterIndex,
+      });
+      ordinal += 1;
+      cursor = end;
+    }
+
+    if (cursor < rawTemplate.length) {
+      const textValue = rawTemplate.slice(cursor);
+      if (textValue) {
+        parts.push({
+          ordinal: ordinal,
+          kind: "text",
+          value: textValue,
+          display_value: textValue,
+          spoken: Boolean(textValue.trim()),
+          parameter_index: null,
+        });
+      }
+    }
+
+    if (!parts.length && rawTemplate) {
+      parts.push({
+        ordinal: 1,
+        kind: "text",
+        value: rawTemplate,
+        display_value: rawTemplate,
+        spoken: Boolean(rawTemplate.trim()),
+        parameter_index: null,
+      });
+    }
+
+    return parts;
+  }
+
+  function renderSmppAddTemplateParts() {
+    const textarea = document.getElementById("smpp-add-static-default-message-template");
+    const container = document.getElementById("smpp-add-template-parts");
+    if (!textarea || !container) return;
+
+    const parts = splitStaticMessageTemplate(textarea.value || "");
+    if (!parts.length) {
+      container.innerHTML =
+        '<div class="muted">Enter a template above to see split parts and upload slots here.</div>';
+      return;
+    }
+
+    container.innerHTML = parts
+      .map(function (part) {
+        const ordinal = escapeHtml(part && part.ordinal != null ? part.ordinal : "");
+        const displayValue = escapeHtml((part && (part.display_value || part.value)) || "—");
+        const partName = part && part.ordinal != null ? String(part.ordinal) : "";
+        if (part && part.kind === "parameter") {
+          return (
+            '<div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">' +
+            "<strong>Part " +
+            ordinal +
+            "</strong>" +
+            '<span class="mono">' +
+            displayValue +
+            '</span>' +
+            '<span class="muted">unspoken parameter</span>' +
+            "</div>"
+          );
+        }
+
+        const spoken = Boolean(part && part.spoken);
+        return (
+          '<div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">' +
+          "<strong>Part " +
+          ordinal +
+          "</strong>" +
+          '<span class="mono">' +
+          displayValue +
+          "</span>" +
+          (spoken
+            ? '<input type="file" name="static_message_part_audio_file_' +
+              escapeHtml(partName) +
+              '" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />' +
+              '<small class="muted">Optional. Uploading a new file stores audio for this spoken part.</small>'
+            : '<span class="muted">unspoken</span>') +
+          "</div>"
+        );
+      })
+      .join("");
   }
 
   function ensureTopNotice(message, level) {
@@ -3064,6 +3174,13 @@
     const modalAsyncForms = document.querySelectorAll(".js-modal-async-form");
     const toolsForm = document.querySelector('form[action="/admin/tools/test-send"]');
     const bulkSendForm = document.getElementById("bulk-send-form");
+    const smppAddTemplateTextarea = document.getElementById("smpp-add-static-default-message-template");
+
+    if (smppAddTemplateTextarea) {
+      smppAddTemplateTextarea.addEventListener("input", renderSmppAddTemplateParts);
+      smppAddTemplateTextarea.addEventListener("change", renderSmppAddTemplateParts);
+      renderSmppAddTemplateParts();
+    }
 
     function syncSelectAllState(tableId) {
       const table = document.getElementById(tableId);
