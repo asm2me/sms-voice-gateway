@@ -2186,6 +2186,43 @@
                       <div class="muted">Enter a template above to see split parts and upload slots here.</div>
                     </div>
                   </div>
+
+                  <div class="field-group field-span-2">
+                    <span class="field-label">Digit Audio (0-9)</span>
+                    <small class="muted">Upload audio files for individual digits. These are spoken when a parameter contains that digit.</small>
+                    <div class="dialpad-container" style="margin-top:0.75rem;">
+                      {% for digit in range(10) %}
+                      <div class="dialpad-digit" data-digit="{{ digit }}" data-has-existing-audio="false">
+                        <button
+                          type="button"
+                          class="dialpad-digit-label dialpad-digit-label-button"
+                          title="Choose audio for digit {{ digit }}"
+                          aria-label="Choose audio for digit {{ digit }}"
+                          onclick="window.openDialpadDigitAudioPicker(this)"
+                        >{{ digit }}</button>
+                        <div class="dialpad-digit-actions">
+                          <input type="file" name="static_message_digit_audio_file_{{ digit }}" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" style="display:none;" onchange="window.handleDialpadDigitUpload(this)" />
+                          <button
+                            type="button"
+                            class="dialpad-play-btn"
+                            title="Choose audio for digit {{ digit }}"
+                            aria-label="Choose audio for digit {{ digit }}"
+                            onclick="window.openDialpadDigitAudioPicker(this)"
+                          >📁</button>
+                          <button
+                            type="button"
+                            class="dialpad-cancel-btn"
+                            title="Clear selected audio for digit {{ digit }}"
+                            aria-label="Clear selected audio for digit {{ digit }}"
+                            onclick="window.cancelDigitAudio(this, '{{ digit }}')"
+                          >✕</button>
+                        </div>
+                        <div class="dialpad-digit-status" data-digit="{{ digit }}"></div>
+                      </div>
+                      {% endfor %}
+                    </div>
+                  </div>
+
                   <div class="notice">
                     <strong>Template caching behavior.</strong>
                     Static text is split into separate cached spoken parts around parameter placeholders. Parameters such as <span class="mono">%1</span> and <span class="mono">%2</span> are shown in configuration as unspoken placeholders and are inserted at runtime.
@@ -2279,14 +2316,32 @@
                     <div class="smpp-part-list" style="display:grid; gap:0.75rem;">
                       {% for part in account.static_message_parts %}
                       <div class="smpp-part-card" style="display:grid; gap:0.55rem; padding:0.95rem; border:1px solid #dbe4f0; border-radius:16px; background:#fff; margin-bottom:0.35rem;">
-                        <strong>Part {{ part.ordinal }}</strong>
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                          <strong>Part {{ part.ordinal }}</strong>
+                          {% if part.kind != 'parameter' and part.has_uploaded_audio %}
+                          <button
+                            type="button"
+                            class="button button-secondary button-small button-danger"
+                            title="Remove uploaded audio for part {{ part.ordinal }}"
+                            aria-label="Remove uploaded audio for part {{ part.ordinal }}"
+                            data-part-ordinal="{{ part.ordinal }}"
+                            onclick="this.closest('.smpp-part-card').querySelector('.audio-cancel-hidden-input').checked = true; this.closest('.smpp-part-card').style.display='none';"
+                          >✕ Cancel Audio</button>
+                          {% endif %}
+                        </div>
                         {% if part.kind == 'parameter' %}
                         <span class="mono">{{ part.display_value }}</span>
                         <span class="muted">unspoken parameter</span>
                         {% else %}
                         <span class="mono">{{ part.display_value or '—' }}</span>
+                        {% if part.has_uploaded_audio %}
+                        <div class="notice notice-success" style="margin:0; padding:0.6rem 0.8rem; font-size:0.85rem;">
+                          Audio uploaded: {{ part.uploaded_audio_original_name or part.uploaded_audio_path }}
+                        </div>
+                        {% endif %}
                         <input type="file" name="static_message_part_audio_file_{{ part.ordinal }}" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
                         <small class="muted">Optional. Uploading a new file replaces audio for this spoken part.</small>
+                        <input type="checkbox" name="remove_static_message_part_audio_{{ part.ordinal }}" class="audio-cancel-hidden-input" style="display:none;" />
                         {% if part.spoken %}
                         <button
                           type="button"
@@ -2307,6 +2362,51 @@
                     <div class="muted">No split parts yet. Save a template with text and placeholders like <span class="mono">%1</span>.</div>
                     {% endif %}
                     <div id="smpp-template-part-status-modal-{{ account.id }}" class="inline-test-status" aria-live="polite"></div>
+                  </div>
+
+                  <div class="field-group field-span-2">
+                    <span class="field-label">Digit Audio (0-9)</span>
+                    <small class="muted">Upload audio files for individual digits. These are spoken when a parameter contains that digit.</small>
+                    <div class="dialpad-container" style="margin-top:0.75rem;">
+                      {% for digit in range(10) %}
+                      <div class="dialpad-digit" data-digit="{{ digit }}" data-has-existing-audio="{% if account.static_message_digit_audio and account.static_message_digit_audio.get(str(digit)) %}true{% else %}false{% endif %}">
+                        <button
+                          type="button"
+                          class="dialpad-digit-label dialpad-digit-label-button"
+                          title="Choose audio for digit {{ digit }}"
+                          aria-label="Choose audio for digit {{ digit }}"
+                          onclick="window.openDialpadDigitAudioPicker(this)"
+                        >{{ digit }}</button>
+                        <div class="dialpad-digit-actions">
+                          <input type="file" name="static_message_digit_audio_file_{{ digit }}" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" style="display:none;" onchange="window.handleDialpadDigitUpload(this)" />
+                          <button
+                            type="button"
+                            class="dialpad-play-btn"
+                            title="Choose audio for digit {{ digit }}"
+                            aria-label="Choose audio for digit {{ digit }}"
+                            onclick="window.openDialpadDigitAudioPicker(this)"
+                          >📁</button>
+                          {% if account.static_message_digit_audio and account.static_message_digit_audio.get(str(digit)) %}
+                          <button
+                            type="button"
+                            class="dialpad-play-btn"
+                            title="Play digit {{ digit }}"
+                            onclick="window.playDigitAudio('{{ account.id }}', '{{ digit }}')"
+                          >▶</button>
+                          {% endif %}
+                          <button
+                            type="button"
+                            class="dialpad-cancel-btn"
+                            title="Clear digit {{ digit }} audio"
+                            aria-label="Clear digit {{ digit }} audio"
+                            onclick="window.cancelDigitAudio(this, '{{ digit }}')"
+                          >✕</button>
+                          <input type="checkbox" name="remove_static_message_digit_audio_{{ digit }}" class="digit-cancel-hidden-input" style="display:none;" />
+                        </div>
+                        <div class="dialpad-digit-status" data-digit="{{ digit }}"></div>
+                      </div>
+                      {% endfor %}
+                    </div>
                   </div>
                 </div>
                 <div class="form-actions">
@@ -3629,6 +3729,70 @@
         button.setAttribute("aria-expanded", isOpen ? "true" : "false");
       });
     });
+
+    window.openDialpadDigitAudioPicker = function(trigger) {
+      const digitDiv = trigger && typeof trigger.closest === "function" ? trigger.closest(".dialpad-digit") : null;
+      const fileInput = digitDiv ? digitDiv.querySelector('input[type="file"][name^="static_message_digit_audio_file_"]') : null;
+      if (fileInput) {
+        fileInput.click();
+      }
+    };
+
+    window.handleDialpadDigitUpload = function(input) {
+      const digitDiv = input && typeof input.closest === "function" ? input.closest(".dialpad-digit") : null;
+      if (!digitDiv) return;
+
+      const statusDiv = digitDiv.querySelector(".dialpad-digit-status");
+      const hiddenInput = digitDiv.querySelector(".digit-cancel-hidden-input");
+      const fileName = input.files[0] ? input.files[0].name : "";
+      const hasExistingAudio = String(digitDiv.getAttribute("data-has-existing-audio") || "") === "true";
+
+      if (hiddenInput) {
+        hiddenInput.checked = false;
+      }
+
+      if (fileName) {
+        statusDiv.textContent = fileName.substring(0, 15) + (fileName.length > 15 ? "..." : "");
+        digitDiv.classList.add("has-audio");
+        digitDiv.style.opacity = "";
+        digitDiv.style.pointerEvents = "";
+      } else {
+        statusDiv.textContent = hasExistingAudio ? "Audio ready to be replaced" : "";
+        if (!hasExistingAudio) {
+          digitDiv.classList.remove("has-audio");
+        }
+      }
+    };
+
+    window.playDigitAudio = function(accountId, digit) {
+      const audioUrl = `/admin/config/smpp-digit-audio/${accountId}/${digit}`;
+      const audio = new Audio(audioUrl);
+      audio.play().catch(err => console.error("Failed to play digit audio:", err));
+    };
+
+    window.cancelDigitAudio = function(button, digit) {
+      const digitDiv = button && typeof button.closest === "function" ? button.closest(".dialpad-digit") : null;
+      if (!digitDiv) return;
+
+      const hiddenInput = digitDiv.querySelector(".digit-cancel-hidden-input");
+      const fileInput = digitDiv.querySelector('input[type="file"][name^="static_message_digit_audio_file_"]');
+      const statusDiv = digitDiv.querySelector(".dialpad-digit-status");
+      const hasExistingAudio = String(digitDiv.getAttribute("data-has-existing-audio") || "") === "true";
+
+      if (fileInput) {
+        fileInput.value = "";
+      }
+      if (hiddenInput && hasExistingAudio) {
+        hiddenInput.checked = true;
+      }
+      if (statusDiv) {
+        statusDiv.textContent = hasExistingAudio ? "Audio will be removed on save" : "";
+      }
+
+      digitDiv.classList.remove("has-audio");
+      digitDiv.style.opacity = hasExistingAudio ? "0.65" : "";
+      digitDiv.style.pointerEvents = "";
+    };
   })();
 </script>
 

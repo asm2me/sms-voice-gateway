@@ -179,6 +179,33 @@ async def _store_smpp_account_part_uploaded_audio(
     return stored_path.relative_to(BASE_DIR).as_posix(), original_name
 
 
+async def _store_smpp_account_digit_uploaded_audio(
+    *,
+    account_id: str,
+    digit: str,
+    upload: UploadFile,
+) -> tuple[str, str]:
+    original_name = str(getattr(upload, "filename", "") or "").strip()
+    if not original_name:
+        return "", ""
+
+    payload = await upload.read()
+    if not payload:
+        return "", ""
+
+    digit_key = str(digit or "").strip()
+    if digit_key not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}:
+        return "", ""
+
+    suffix = Path(original_name).suffix.lower() or ".wav"
+    digest = hashlib.sha1(payload).hexdigest()[:12]
+    SMPP_ACCOUNT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{_slugify_identifier(account_id, 'smpp-account')}-digit-{digit_key}-{digest}{suffix}"
+    stored_path = SMPP_ACCOUNT_AUDIO_DIR / stored_name
+    stored_path.write_bytes(payload)
+    return stored_path.relative_to(BASE_DIR).as_posix(), original_name
+
+
 def _normalize_static_message_part_audio(
     raw_map: object,
 ) -> dict[str, dict[str, str]]:
@@ -197,6 +224,33 @@ def _normalize_static_message_part_audio(
             continue
 
         normalized[ordinal] = {
+            "path": path,
+            "original_name": original_name,
+        }
+
+    return normalized
+
+
+def _normalize_static_message_digit_audio(
+    raw_map: object,
+) -> dict[str, dict[str, str]]:
+    normalized: dict[str, dict[str, str]] = {}
+    if not isinstance(raw_map, dict):
+        return normalized
+
+    for raw_digit, raw_entry in raw_map.items():
+        digit = str(raw_digit or "").strip()
+        if digit not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}:
+            continue
+        if not isinstance(raw_entry, dict):
+            continue
+
+        path = str(raw_entry.get("path", "") or "").strip()
+        original_name = str(raw_entry.get("original_name", "") or "").strip()
+        if not path:
+            continue
+
+        normalized[digit] = {
             "path": path,
             "original_name": original_name,
         }
@@ -1277,6 +1331,7 @@ def _build_smpp_account_from_form(
     uploaded_audio_path: str = "",
     uploaded_audio_original_name: str = "",
     static_message_part_audio: dict[str, dict[str, str]] | None = None,
+    static_message_digit_audio: dict[str, dict[str, str]] | None = None,
 ) -> SMPPAccount:
     label = str(form.get("label", "")).strip()
     username = str(form.get("username", "")).strip()
@@ -1302,6 +1357,7 @@ def _build_smpp_account_from_form(
         uploaded_audio_path=str(uploaded_audio_path or "").strip(),
         uploaded_audio_original_name=str(uploaded_audio_original_name or "").strip(),
         static_message_part_audio=_normalize_static_message_part_audio(static_message_part_audio),
+        static_message_digit_audio=_normalize_static_message_digit_audio(static_message_digit_audio),
     )
 
 
@@ -2969,6 +3025,9 @@ async def admin_add_smpp_account(
     static_message_part_audio = _normalize_static_message_part_audio(
         getattr(existing_account, "static_message_part_audio", {}) if existing_account else {}
     )
+    static_message_digit_audio = _normalize_static_message_digit_audio(
+        getattr(existing_account, "static_message_digit_audio", {}) if existing_account else {}
+    )
     upload_account_id = requested_account_id or _slugify_identifier(
         str(form.get("label", "")).strip() or str(form.get("username", "")).strip(),
         "smpp-account",
@@ -2984,6 +3043,7 @@ async def admin_add_smpp_account(
         for part in described_static_parts
         if part.get("kind") == "text" and part.get("spoken")
     }
+    valid_digit_ordinals = {str(digit) for digit in range(10)}
 
     if _form_bool(form, "remove_uploaded_audio"):
         _delete_managed_file(uploaded_audio_path)
@@ -2999,6 +3059,16 @@ async def admin_add_smpp_account(
         if _form_bool(form, f"remove_static_message_part_audio_{ordinal}"):
             _delete_managed_file(audio_path)
             static_message_part_audio.pop(ordinal, None)
+
+    for digit, audio_entry in list(static_message_digit_audio.items()):
+        audio_path = str(audio_entry.get("path", "") or "").strip()
+        if digit not in valid_digit_ordinals:
+            _delete_managed_file(audio_path)
+            static_message_digit_audio.pop(digit, None)
+            continue
+        if _form_bool(form, f"remove_static_message_digit_audio_{digit}"):
+            _delete_managed_file(audio_path)
+            static_message_digit_audio.pop(digit, None)
 
     uploaded_audio = form.get("uploaded_audio_file")
     if getattr(uploaded_audio, "filename", None):
@@ -3032,11 +3102,32 @@ async def admin_add_smpp_account(
             "original_name": new_part_audio_original_name,
         }
 
+    for digit in sorted(valid_digit_ordinals):
+        uploaded_digit_audio = form.get(f"static_message_digit_audio_file_{digit}")
+        if not getattr(uploaded_digit_audio, "filename", None):
+            continue
+        new_digit_audio_path, new_digit_audio_original_name = await _store_smpp_account_digit_uploaded_audio(
+            account_id=upload_account_id,
+            digit=digit,
+            upload=uploaded_digit_audio,
+        )
+        if not new_digit_audio_path:
+            continue
+        previous_entry = static_message_digit_audio.get(digit, {})
+        previous_path = str(previous_entry.get("path", "") or "").strip()
+        if previous_path and previous_path != new_digit_audio_path:
+            _delete_managed_file(previous_path)
+        static_message_digit_audio[digit] = {
+            "path": new_digit_audio_path,
+            "original_name": new_digit_audio_original_name,
+        }
+
     new_account = _build_smpp_account_from_form(
         form,
         uploaded_audio_path=uploaded_audio_path,
         uploaded_audio_original_name=uploaded_audio_original_name,
         static_message_part_audio=static_message_part_audio,
+        static_message_digit_audio=static_message_digit_audio,
     )
     smpp_accounts = [account for account in current.smpp_accounts if account.id != new_account.id]
     if new_account.default_for_inbound:
@@ -3132,6 +3223,34 @@ async def admin_delete_smpp_account(
         "admin.html",
         _admin_context(request, settings, active_section="config", success_message=f"SMPP user '{account_id}' deleted."),
     )
+
+
+@app.get("/admin/config/smpp-digit-audio/{account_id}/{digit}")
+async def admin_get_smpp_digit_audio(
+    account_id: str,
+    digit: str,
+    _: None = Depends(dep_admin_credentials),
+):
+    if digit not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid digit")
+    settings = load_settings_from_store()
+    account = next((acc for acc in settings.smpp_accounts if acc.id == account_id), None)
+    if not account:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
+    digit_audio = _normalize_static_message_digit_audio(
+        getattr(account, "static_message_digit_audio", {})
+    )
+    audio_entry = digit_audio.get(digit, {})
+    audio_path_str = str(audio_entry.get("path", "") or "").strip()
+    if not audio_path_str:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Digit audio not found")
+    audio_path = (BASE_DIR / audio_path_str).resolve()
+    allowed_root = SMPP_ACCOUNT_AUDIO_DIR.resolve()
+    if not audio_path.is_relative_to(allowed_root):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Audio path is outside the allowed directory")
+    if not audio_path.exists() or not audio_path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Audio file not found")
+    return FileResponse(audio_path, media_type="audio/wav", filename=audio_path.name)
 
 
 @app.post("/admin/config/system-users")

@@ -237,12 +237,32 @@ class SMSGateway:
                     signature_parts.append(f"{str(raw_ordinal).strip()}:{raw_path}")
             part_audio_signature = "|".join(signature_parts)
 
+        digit_audio_signature = ""
+        raw_digit_audio_map = (
+            getattr(smpp_account, "static_message_digit_audio", {})
+            if smpp_account is not None
+            else {}
+        )
+        if isinstance(raw_digit_audio_map, dict):
+            signature_parts = []
+            for raw_digit, raw_entry in sorted(
+                raw_digit_audio_map.items(),
+                key=lambda item: int(str(item[0] or "0").strip() or "0"),
+            ):
+                if not isinstance(raw_entry, dict):
+                    continue
+                raw_path = str(raw_entry.get("path", "") or "").strip()
+                if raw_path:
+                    signature_parts.append(f"{str(raw_digit).strip()}:{raw_path}")
+            digit_audio_signature = "|".join(signature_parts)
+
         merged_hash = self.tts.hash_for(
             "static-template-v2\n"
             f"TEMPLATE:{template}\n"
             f"INBOUND:{inbound_text}\n"
             f"RENDERED:{rendered_text}\n"
-            f"PART_AUDIO:{part_audio_signature}"
+            f"PART_AUDIO:{part_audio_signature}\n"
+            f"DIGIT_AUDIO:{digit_audio_signature}"
         )
         cached_merged_audio = self.audio_cache.get_audio_path(merged_hash)
         if cached_merged_audio:
@@ -276,8 +296,48 @@ class SMSGateway:
                 parameter_value = str(part.get("resolved_value", "") or "")
                 if not parameter_value.strip():
                     continue
-                segment_audio_path, _segment_cached = self.tts.get_or_create_audio(parameter_value)
-                wav_parts.append(Path(segment_audio_path).read_bytes())
+
+                digit_audio_map = (
+                    getattr(smpp_account, "static_message_digit_audio", {})
+                    if smpp_account is not None
+                    else {}
+                )
+                if not isinstance(digit_audio_map, dict):
+                    digit_audio_map = {}
+
+                parameter_audio_parts: list[bytes] = []
+                cursor = 0
+                while cursor < len(parameter_value):
+                    current_character = parameter_value[cursor]
+                    if current_character.isdigit():
+                        raw_entry = digit_audio_map.get(current_character, {})
+                        digit_audio_path = ""
+                        if isinstance(raw_entry, dict):
+                            digit_audio_path = self._resolve_uploaded_audio_path(
+                                str(raw_entry.get("path", "") or "").strip(),
+                                account_id=str(getattr(smpp_account, "id", "") or "").strip(),
+                                part_ordinal=int(current_character),
+                            )
+                        if digit_audio_path:
+                            parameter_audio_parts.append(Path(digit_audio_path).read_bytes())
+                        else:
+                            digit_segment_audio_path, _segment_cached = self.tts.get_or_create_audio(current_character)
+                            parameter_audio_parts.append(Path(digit_segment_audio_path).read_bytes())
+                        cursor += 1
+                        continue
+
+                    start = cursor
+                    cursor += 1
+                    while cursor < len(parameter_value) and not parameter_value[cursor].isdigit():
+                        cursor += 1
+                    non_digit_segment = parameter_value[start:cursor]
+                    if non_digit_segment.strip():
+                        segment_audio_path, _segment_cached = self.tts.get_or_create_audio(non_digit_segment)
+                        parameter_audio_parts.append(Path(segment_audio_path).read_bytes())
+
+                if parameter_audio_parts:
+                    wav_parts.extend(parameter_audio_parts)
+                continue
 
         if not wav_parts:
             return self.tts.get_or_create_audio(rendered_text)
