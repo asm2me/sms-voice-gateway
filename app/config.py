@@ -44,6 +44,7 @@ class SMPPAccount(BaseModel):
     static_default_message_template: str = ""
     uploaded_audio_path: str = ""
     uploaded_audio_original_name: str = ""
+    static_message_part_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

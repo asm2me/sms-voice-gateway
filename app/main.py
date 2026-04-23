@@ -153,6 +153,57 @@ async def _store_smpp_account_uploaded_audio(*, account_id: str, upload: UploadF
     return stored_path.relative_to(BASE_DIR).as_posix(), original_name
 
 
+async def _store_smpp_account_part_uploaded_audio(
+    *,
+    account_id: str,
+    part_ordinal: int,
+    upload: UploadFile,
+) -> tuple[str, str]:
+    original_name = str(getattr(upload, "filename", "") or "").strip()
+    if not original_name:
+        return "", ""
+
+    payload = await upload.read()
+    if not payload:
+        return "", ""
+
+    suffix = Path(original_name).suffix.lower() or ".wav"
+    digest = hashlib.sha1(payload).hexdigest()[:12]
+    SMPP_ACCOUNT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    stored_name = (
+        f"{_slugify_identifier(account_id, 'smpp-account')}"
+        f"-part-{max(1, int(part_ordinal or 0))}-{digest}{suffix}"
+    )
+    stored_path = SMPP_ACCOUNT_AUDIO_DIR / stored_name
+    stored_path.write_bytes(payload)
+    return stored_path.relative_to(BASE_DIR).as_posix(), original_name
+
+
+def _normalize_static_message_part_audio(
+    raw_map: object,
+) -> dict[str, dict[str, str]]:
+    normalized: dict[str, dict[str, str]] = {}
+    if not isinstance(raw_map, dict):
+        return normalized
+
+    for raw_ordinal, raw_entry in raw_map.items():
+        ordinal = str(raw_ordinal or "").strip()
+        if not ordinal or not isinstance(raw_entry, dict):
+            continue
+
+        path = str(raw_entry.get("path", "") or "").strip()
+        original_name = str(raw_entry.get("original_name", "") or "").strip()
+        if not path:
+            continue
+
+        normalized[ordinal] = {
+            "path": path,
+            "original_name": original_name,
+        }
+
+    return normalized
+
+
 def _get_account_inflight_count(account_id: str) -> int:
     with _account_inflight_lock:
         return _account_inflight_count.get(account_id, 0)
@@ -1225,6 +1276,7 @@ def _build_smpp_account_from_form(
     *,
     uploaded_audio_path: str = "",
     uploaded_audio_original_name: str = "",
+    static_message_part_audio: dict[str, dict[str, str]] | None = None,
 ) -> SMPPAccount:
     label = str(form.get("label", "")).strip()
     username = str(form.get("username", "")).strip()
@@ -1249,6 +1301,7 @@ def _build_smpp_account_from_form(
         static_default_message_template=static_default_message_template,
         uploaded_audio_path=str(uploaded_audio_path or "").strip(),
         uploaded_audio_original_name=str(uploaded_audio_original_name or "").strip(),
+        static_message_part_audio=_normalize_static_message_part_audio(static_message_part_audio),
     )
 
 
@@ -1395,6 +1448,10 @@ def _delete_smpp_account(settings: Settings, account_id: str) -> Settings:
     removed_usernames = {account.username for account in removed_accounts if account.username}
     for account in removed_accounts:
         _delete_managed_file(account.uploaded_audio_path)
+        for audio_entry in _normalize_static_message_part_audio(
+            getattr(account, "static_message_part_audio", {})
+        ).values():
+            _delete_managed_file(audio_entry.get("path", ""))
 
     filtered_accounts = [account for account in settings.smpp_accounts if account.id != account_id]
     filtered_assignments = {
@@ -1406,6 +1463,32 @@ def _delete_smpp_account(settings: Settings, account_id: str) -> Settings:
         smpp_accounts=filtered_accounts,
         smpp_sip_assignments=filtered_assignments,
     )
+
+
+def _serialize_smpp_account_for_admin(account: SMPPAccount) -> dict:
+    template_description = describe_static_message_template(
+        account.static_default_message_template
+    )
+    part_audio_map = _normalize_static_message_part_audio(
+        getattr(account, "static_message_part_audio", {})
+    )
+    static_message_parts: list[dict] = []
+    for part in template_description.get("parts", []):
+        enriched_part = dict(part)
+        ordinal = str(part.get("ordinal", "") or "").strip()
+        audio_entry = part_audio_map.get(ordinal, {})
+        enriched_part["uploaded_audio_path"] = str(audio_entry.get("path", "") or "").strip()
+        enriched_part["uploaded_audio_original_name"] = str(
+            audio_entry.get("original_name", "") or ""
+        ).strip()
+        enriched_part["has_uploaded_audio"] = bool(enriched_part["uploaded_audio_path"])
+        static_message_parts.append(enriched_part)
+
+    return {
+        **account.model_dump(),
+        "static_message_template_description": template_description,
+        "static_message_parts": static_message_parts,
+    }
 
 
 def _build_sip_trunk_health_context(settings: Settings) -> dict:
@@ -1677,15 +1760,7 @@ def _admin_context(
         "health": health_payload,
         "sip_accounts": [account.model_dump(by_alias=True) for account in settings.sip_accounts],
         "smpp_accounts": [
-            {
-                **account.model_dump(),
-                "static_message_template_description": describe_static_message_template(
-                    account.static_default_message_template
-                ),
-                "static_message_parts": describe_static_message_template(
-                    account.static_default_message_template
-                )["parts"],
-            }
+            _serialize_smpp_account_for_admin(account)
             for account in settings.smpp_accounts
         ],
         "system_users": [user.model_dump() for user in settings.system_users],
@@ -2891,18 +2966,42 @@ async def admin_add_smpp_account(
 
     uploaded_audio_path = existing_account.uploaded_audio_path if existing_account else ""
     uploaded_audio_original_name = existing_account.uploaded_audio_original_name if existing_account else ""
+    static_message_part_audio = _normalize_static_message_part_audio(
+        getattr(existing_account, "static_message_part_audio", {}) if existing_account else {}
+    )
+    upload_account_id = requested_account_id or _slugify_identifier(
+        str(form.get("label", "")).strip() or str(form.get("username", "")).strip(),
+        "smpp-account",
+    )
+    static_default_message_template = str(
+        form.get("static_default_message_template", "")
+    ).strip()
+    described_static_parts = describe_static_message_template(
+        static_default_message_template
+    ).get("parts", [])
+    valid_spoken_ordinals = {
+        str(part.get("ordinal", "")).strip()
+        for part in described_static_parts
+        if part.get("kind") == "text" and part.get("spoken")
+    }
 
     if _form_bool(form, "remove_uploaded_audio"):
         _delete_managed_file(uploaded_audio_path)
         uploaded_audio_path = ""
         uploaded_audio_original_name = ""
 
+    for ordinal, audio_entry in list(static_message_part_audio.items()):
+        audio_path = str(audio_entry.get("path", "") or "").strip()
+        if ordinal not in valid_spoken_ordinals:
+            _delete_managed_file(audio_path)
+            static_message_part_audio.pop(ordinal, None)
+            continue
+        if _form_bool(form, f"remove_static_message_part_audio_{ordinal}"):
+            _delete_managed_file(audio_path)
+            static_message_part_audio.pop(ordinal, None)
+
     uploaded_audio = form.get("uploaded_audio_file")
     if getattr(uploaded_audio, "filename", None):
-        upload_account_id = requested_account_id or _slugify_identifier(
-            str(form.get("label", "")).strip() or str(form.get("username", "")).strip(),
-            "smpp-account",
-        )
         new_uploaded_audio_path, new_uploaded_audio_original_name = await _store_smpp_account_uploaded_audio(
             account_id=upload_account_id,
             upload=uploaded_audio,
@@ -2913,10 +3012,31 @@ async def admin_add_smpp_account(
             uploaded_audio_path = new_uploaded_audio_path
             uploaded_audio_original_name = new_uploaded_audio_original_name
 
+    for ordinal in sorted(valid_spoken_ordinals, key=lambda value: int(value)):
+        uploaded_part_audio = form.get(f"static_message_part_audio_file_{ordinal}")
+        if not getattr(uploaded_part_audio, "filename", None):
+            continue
+        new_part_audio_path, new_part_audio_original_name = await _store_smpp_account_part_uploaded_audio(
+            account_id=upload_account_id,
+            part_ordinal=int(ordinal),
+            upload=uploaded_part_audio,
+        )
+        if not new_part_audio_path:
+            continue
+        previous_entry = static_message_part_audio.get(ordinal, {})
+        previous_path = str(previous_entry.get("path", "") or "").strip()
+        if previous_path and previous_path != new_part_audio_path:
+            _delete_managed_file(previous_path)
+        static_message_part_audio[ordinal] = {
+            "path": new_part_audio_path,
+            "original_name": new_part_audio_original_name,
+        }
+
     new_account = _build_smpp_account_from_form(
         form,
         uploaded_audio_path=uploaded_audio_path,
         uploaded_audio_original_name=uploaded_audio_original_name,
+        static_message_part_audio=static_message_part_audio,
     )
     smpp_accounts = [account for account in current.smpp_accounts if account.id != new_account.id]
     if new_account.default_for_inbound:
