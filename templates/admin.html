@@ -2285,9 +2285,6 @@
                         <span class="muted">unspoken parameter</span>
                         {% else %}
                         <span class="mono">{{ part.display_value or '—' }}</span>
-                        {% if part.has_uploaded_audio %}
-                        <div class="muted">Current audio: <span class="mono">{{ part.uploaded_audio_original_name or part.uploaded_audio_path }}</span></div>
-                        {% endif %}
                         <input type="file" name="static_message_part_audio_file_{{ part.ordinal }}" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
                         <small class="muted">Optional. Uploading a new file replaces audio for this spoken part.</small>
                         {% if part.spoken %}
