@@ -2182,7 +2182,7 @@
                   <div class="field-group field-span-2">
                     <span class="field-label">Split Static Message Parts</span>
                     <small class="muted">Upload audio files for each spoken part. Parameter placeholders like <span class="mono">%1</span> remain unspoken and cannot receive audio.</small>
-                    <div class="permission-summary" id="smpp-add-template-parts">
+                    <div class="smpp-part-list" id="smpp-add-template-parts" style="display:grid; gap:0.75rem;">
                       <div class="muted">Enter a template above to see split parts and upload slots here.</div>
                     </div>
                   </div>
@@ -2276,9 +2276,9 @@
                     <span class="field-label">Split Static Message Parts</span>
                     <small class="muted">Upload audio files per spoken part. Parameter placeholders like <span class="mono">%1</span> remain unspoken and cannot receive audio.</small>
                     {% if account.static_message_parts %}
-                    <div class="permission-summary">
+                    <div class="smpp-part-list" style="display:grid; gap:0.75rem;">
                       {% for part in account.static_message_parts %}
-                      <div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">
+                      <div class="smpp-part-card" style="display:grid; gap:0.55rem; padding:0.95rem; border:1px solid #dbe4f0; border-radius:16px; background:#fff; margin-bottom:0.35rem;">
                         <strong>Part {{ part.ordinal }}</strong>
                         {% if part.kind == 'parameter' %}
                         <span class="mono">{{ part.display_value }}</span>
@@ -2298,8 +2298,6 @@
                           data-part-text="{{ part.value }}"
                           onclick="window.__adminPreviewSmppTemplatePart(this)"
                         >▶</button>
-                        {% else %}
-                        <span class="muted">unspoken</span>
                         {% endif %}
                         {% endif %}
                       </div>
@@ -2555,13 +2553,13 @@
         const partName = part && part.ordinal != null ? String(part.ordinal) : "";
         if (part && part.kind === "parameter") {
           return (
-            '<div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">' +
+            '<div class="smpp-part-card" style="display:grid; gap:0.55rem; padding:0.95rem; border:1px solid #dbe4f0; border-radius:16px; background:#fff;">' +
             "<strong>Part " +
             ordinal +
             "</strong>" +
             '<span class="mono">' +
             displayValue +
-            '</span>' +
+            "</span>" +
             '<span class="muted">unspoken parameter</span>' +
             "</div>"
           );
@@ -2569,7 +2567,7 @@
 
         const spoken = Boolean(part && part.spoken);
         return (
-          '<div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">' +
+          '<div class="smpp-part-card" style="display:grid; gap:0.55rem; padding:0.95rem; border:1px solid #dbe4f0; border-radius:16px; background:#fff;">' +
           "<strong>Part " +
           ordinal +
           "</strong>" +
