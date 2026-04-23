@@ -27,13 +27,17 @@ jinja2>=3.1.0   # required for FastAPI Jinja2Templates
 openpyxl>=3.1.0   # XLSX export for admin reports
 
 # ── Audio Conversion ─────────────────────────────────────────────────────────
-# ffmpeg is required for audio format conversion (MP3 to WAV, etc.)
+# Python-based audio processing (fallback if ffmpeg is not available)
+soundfile>=0.12.0   # for reading/writing audio files and sample rate detection
+numpy>=1.24.0   # required by soundfile and resampling
+scipy>=1.10.0   # for audio resampling
+
+# ffmpeg is still recommended for better performance and format support
 # Install ffmpeg on your system:
 #   Ubuntu/Debian: sudo apt-get install ffmpeg
 #   CentOS/RHEL: sudo yum install ffmpeg
 #   macOS: brew install ffmpeg
 #   Windows: Download from https://ffmpeg.org/download.html
-# The application will work without ffmpeg but will skip audio conversion.
 
 # ── Direct SIP UA / PJSIP ─────────────────────────────────────────────────────
 # Install the PJSUA2 Python bindings provided by your deployment/runtime.

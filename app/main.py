@@ -140,13 +140,15 @@ def _convert_audio_to_wav(input_path: Path) -> Path | None:
     if input_suffix == ".wav":
         return input_path
     wav_path = input_path.with_suffix(".wav")
+    target_sample_rate = 16000
+
     try:
         result = subprocess.run(
             [
                 "ffmpeg",
                 "-i", str(input_path),
                 "-acodec", "pcm_s16le",
-                "-ar", "16000",
+                "-ar", str(target_sample_rate),
                 "-ac", "1",
                 "-y",
                 str(wav_path),
@@ -160,11 +162,40 @@ def _convert_audio_to_wav(input_path: Path) -> Path | None:
             return wav_path
         log.warning("ffmpeg conversion failed for %s: %s", input_path, result.stderr.decode("utf-8", errors="replace")[-200:])
     except FileNotFoundError:
-        log.warning("ffmpeg not found, skipping audio conversion for %s", input_path)
+        pass
     except subprocess.TimeoutExpired:
         log.warning("ffmpeg conversion timed out for %s", input_path)
     except Exception as exc:
         log.warning("ffmpeg conversion error for %s: %s", input_path, exc)
+
+    try:
+        import soundfile as sf
+        import numpy as np
+        from scipy import signal
+
+        audio_data, original_sample_rate = sf.read(input_path)
+        log.info("Detected audio: %s, sample_rate=%dHz, duration=%.2fs, shape=%s",
+                 input_path.suffix, original_sample_rate, len(audio_data) / original_sample_rate, audio_data.shape)
+
+        if len(audio_data.shape) > 1:
+            audio_data = np.mean(audio_data, axis=1)
+
+        if original_sample_rate != target_sample_rate:
+            log.info("Resampling audio from %dHz to %dHz", original_sample_rate, target_sample_rate)
+            num_samples = int(len(audio_data) * target_sample_rate / original_sample_rate)
+            resampled_data = signal.resample(audio_data, num_samples)
+        else:
+            resampled_data = audio_data
+
+        resampled_data = np.int16(resampled_data / np.max(np.abs(resampled_data)) * 32767)
+        sf.write(wav_path, resampled_data, target_sample_rate, format='WAV', subtype='PCM_16')
+        input_path.unlink(missing_ok=True)
+        log.info("Successfully converted %s to WAV (%dHz) using Python", input_path.name, target_sample_rate)
+        return wav_path
+    except ImportError:
+        log.warning("soundfile/numpy/scipy not available, skipping audio conversion for %s", input_path)
+    except Exception as exc:
+        log.warning("Python-based audio conversion failed for %s: %s", input_path, exc)
     return None
 
 
