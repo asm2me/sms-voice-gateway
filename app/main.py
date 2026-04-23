@@ -140,7 +140,7 @@ def _convert_audio_to_wav(input_path: Path) -> Path | None:
     if input_suffix == ".wav":
         return input_path
     wav_path = input_path.with_suffix(".wav")
-    target_sample_rate = 16000
+    target_sample_rate = 8000
 
     try:
         result = subprocess.run(
