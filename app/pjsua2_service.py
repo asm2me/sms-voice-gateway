@@ -199,11 +199,14 @@ _PJSUA_REGISTERED_THREADS: set[int] = set()
 _PJSUA_PLAYER_LOCK = threading.RLock()
 _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
 _PJSUA_RETIRED_PLAYERS: list[dict[str, Any]] = []
+_PJSUA_AUDIO_SETUP_LOCKS: dict[str, threading.RLock] = {}
 
 
 def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
     with _PJSUA_PLAYER_LOCK:
         player_state = _PJSUA_ACTIVE_PLAYERS.pop(call_id, None)
+        # Clean up the per-call audio setup lock
+        setup_lock = _PJSUA_AUDIO_SETUP_LOCKS.pop(call_id, None)
     if not player_state:
         return
 
@@ -1564,6 +1567,10 @@ class _CallCallbackHolder:
         self._playback_ready = False
         self._hangup_requested_at = None
 
+        # Clean up the per-call audio setup lock if it exists
+        with _PJSUA_PLAYER_LOCK:
+            _PJSUA_AUDIO_SETUP_LOCKS.pop(self._call_id, None)
+
         with _TRUNK_CONCURRENCY_LOCK:
             current = _TRUNK_ACTIVE_CALLS.get(self._account_id, 0)
             if current <= 1:
@@ -1658,181 +1665,195 @@ class _CallCallbackHolder:
             )
             return False
 
-        try:
-            self._session._register_current_thread()
-            pj = self._session._pj
-            if pj is None:
-                self._playback_error = "PJSUA2 bindings are unavailable during playback"
-                return False
+        # Get or create per-call audio setup lock to prevent race conditions
+        with _PJSUA_PLAYER_LOCK:
+            setup_lock = _PJSUA_AUDIO_SETUP_LOCKS.get(self._call_id)
+            if setup_lock is None:
+                setup_lock = threading.RLock()
+                _PJSUA_AUDIO_SETUP_LOCKS[self._call_id] = setup_lock
 
-            call_audio_media = None
-            with suppress(Exception):
-                call_info = call_obj.getInfo()
-                media_list = getattr(call_info, "media", None)
-                if media_list is not None:
-                    for idx, media in enumerate(list(media_list)):
-                        media_type = getattr(media, "type", None)
-                        media_status = getattr(media, "status", None)
+        try:
+            # Use per-call lock to serialize audio setup for simultaneous calls
+            with setup_lock:
+                # Double-check playback_started after acquiring lock
+                if self._playback_started:
+                    log.info("Outbound SIP playback already started after lock acquire account=%s call_id=%s", self._account_id, self._call_id)
+                    return True
+
+                self._session._register_current_thread()
+                pj = self._session._pj
+                if pj is None:
+                    self._playback_error = "PJSUA2 bindings are unavailable during playback"
+                    return False
+
+                call_audio_media = None
+                with suppress(Exception):
+                    call_info = call_obj.getInfo()
+                    media_list = getattr(call_info, "media", None)
+                    if media_list is not None:
+                        for idx, media in enumerate(list(media_list)):
+                            media_type = getattr(media, "type", None)
+                            media_status = getattr(media, "status", None)
+                            log.info(
+                                "Outbound SIP media candidate account=%s call_id=%s index=%s type=%s status=%s",
+                                self._account_id,
+                                self._call_id,
+                                idx,
+                                media_type,
+                                media_status,
+                            )
+                            with suppress(Exception):
+                                call_audio_media = call_obj.getAudioMedia(idx)
+                                if call_audio_media is not None:
+                                    break
+
+                if call_audio_media is None:
+                    with suppress(Exception):
+                        call_audio_media = call_obj.getAudioMedia(-1)
+
+                if call_audio_media is None:
+                    self._playback_error = "Call audio media is unavailable"
+                    log.warning(
+                        "Outbound SIP playback failed account=%s call_id=%s reason=%s",
+                        self._account_id,
+                        self._call_id,
+                        self._playback_error,
+                    )
+                    return False
+
+                log.info(
+                    "Outbound SIP creating audio player account=%s call_id=%s wav_path=%s wav_exists=%s wav_size=%s",
+                    self._account_id,
+                    self._call_id,
+                    str(wav_path),
+                    wav_path.exists(),
+                    wav_path.stat().st_size if wav_path.exists() else 0,
+                )
+                player = pj.AudioMediaPlayer()
+                player_create_options = int(getattr(pj, "PJMEDIA_FILE_NO_LOOP", 1) or 1)
+                try:
+                    player.createPlayer(str(wav_path), player_create_options)
+                except TypeError:
+                    self._playback_error = "createPlayer() rejected PJMEDIA_FILE_NO_LOOP; refusing unsafe looping fallback"
+                    log.error(
+                        "Outbound SIP player.createPlayer() rejected no-loop option account=%s call_id=%s error=%s",
+                        self._account_id,
+                        self._call_id,
+                        self._playback_error,
+                    )
+                    with suppress(Exception):
+                        player = None
+                    return False
+
+                recorder = None
+                recording_path = ""
+                if self._recording_enabled:
+                    try:
+                        recording_output_path = _build_recording_output_path(
+                            self._session.settings,
+                            account_id=self._account_id,
+                            destination_number=self._destination_number,
+                            call_id=self._call_id,
+                        )
+                        recorder = pj.AudioMediaRecorder()
+                        recorder.createRecorder(str(recording_output_path))
+                        recording_path = str(recording_output_path)
+                        self._recording_path = recording_path
+                        self._recording_error = ""
                         log.info(
-                            "Outbound SIP media candidate account=%s call_id=%s index=%s type=%s status=%s",
+                            "Outbound SIP recording prepared account=%s call_id=%s path=%s",
                             self._account_id,
                             self._call_id,
-                            idx,
-                            media_type,
-                            media_status,
+                            recording_path,
                         )
-                        with suppress(Exception):
-                            call_audio_media = call_obj.getAudioMedia(idx)
-                            if call_audio_media is not None:
-                                break
+                    except Exception as exc:
+                        recorder = None
+                        self._recording_path = ""
+                        self._recording_error = f"{type(exc).__name__}: {exc}"
+                        log.warning(
+                            "Outbound SIP recording setup failed account=%s call_id=%s error=%s",
+                            self._account_id,
+                            self._call_id,
+                            self._recording_error,
+                        )
 
-            if call_audio_media is None:
-                with suppress(Exception):
-                    call_audio_media = call_obj.getAudioMedia(-1)
-
-            if call_audio_media is None:
-                self._playback_error = "Call audio media is unavailable"
-                log.warning(
-                    "Outbound SIP playback failed account=%s call_id=%s reason=%s",
-                    self._account_id,
-                    self._call_id,
-                    self._playback_error,
-                )
-                return False
-
-            log.info(
-                "Outbound SIP creating audio player account=%s call_id=%s wav_path=%s wav_exists=%s wav_size=%s",
-                self._account_id,
-                self._call_id,
-                str(wav_path),
-                wav_path.exists(),
-                wav_path.stat().st_size if wav_path.exists() else 0,
-            )
-            player = pj.AudioMediaPlayer()
-            player_create_options = int(getattr(pj, "PJMEDIA_FILE_NO_LOOP", 1) or 1)
-            try:
-                player.createPlayer(str(wav_path), player_create_options)
-            except TypeError:
-                self._playback_error = "createPlayer() rejected PJMEDIA_FILE_NO_LOOP; refusing unsafe looping fallback"
-                log.error(
-                    "Outbound SIP player.createPlayer() rejected no-loop option account=%s call_id=%s error=%s",
-                    self._account_id,
-                    self._call_id,
-                    self._playback_error,
-                )
-                with suppress(Exception):
-                    player = None
-                return False
-
-            recorder = None
-            recording_path = ""
-            if self._recording_enabled:
-                try:
-                    recording_output_path = _build_recording_output_path(
-                        self._session.settings,
-                        account_id=self._account_id,
-                        destination_number=self._destination_number,
-                        call_id=self._call_id,
-                    )
-                    recorder = pj.AudioMediaRecorder()
-                    recorder.createRecorder(str(recording_output_path))
-                    recording_path = str(recording_output_path)
-                    self._recording_path = recording_path
-                    self._recording_error = ""
-                    log.info(
-                        "Outbound SIP recording prepared account=%s call_id=%s path=%s",
-                        self._account_id,
-                        self._call_id,
-                        recording_path,
-                    )
-                except Exception as exc:
-                    recorder = None
-                    self._recording_path = ""
-                    self._recording_error = f"{type(exc).__name__}: {exc}"
-                    log.warning(
-                        "Outbound SIP recording setup failed account=%s call_id=%s error=%s",
-                        self._account_id,
-                        self._call_id,
-                        self._recording_error,
-                    )
-
-            log.info(
-                "Outbound SIP player created account=%s call_id=%s player=%s call_audio_media=%s",
-                self._account_id,
-                self._call_id,
-                str(player),
-                str(call_audio_media),
-            )
-
-            log.info(
-                "Outbound SIP starting audio transmission account=%s call_id=%s wav_path=%s audio_duration=%.3f",
-                self._account_id,
-                self._call_id,
-                str(wav_path),
-                self._playback_audio_duration_seconds,
-            )
-
-            try:
-                player.startTransmit(call_audio_media)
-                if recorder is not None:
-                    with suppress(Exception):
-                        player.startTransmit(recorder)
-                    with suppress(Exception):
-                        call_audio_media.startTransmit(recorder)
                 log.info(
-                    "Outbound SIP startTransmit called successfully account=%s call_id=%s player=%s call_audio_media=%s recorder=%s",
+                    "Outbound SIP player created account=%s call_id=%s player=%s call_audio_media=%s",
                     self._account_id,
                     self._call_id,
                     str(player),
                     str(call_audio_media),
-                    str(recorder),
                 )
-            except Exception as exc:
-                self._playback_error = f"startTransmit failed: {type(exc).__name__}: {exc}"
-                log.error(
-                    "Outbound SIP startTransmit failed account=%s call_id=%s error=%s",
+
+                log.info(
+                    "Outbound SIP starting audio transmission account=%s call_id=%s wav_path=%s audio_duration=%.3f",
                     self._account_id,
                     self._call_id,
-                    self._playback_error,
+                    str(wav_path),
+                    self._playback_audio_duration_seconds,
                 )
-                with suppress(Exception):
-                    player = None
-                with suppress(Exception):
-                    recorder = None
-                return False
 
-            with _PJSUA_PLAYER_LOCK:
-                _PJSUA_ACTIVE_PLAYERS[self._call_id] = {
-                    "player": player,
-                    "player_media": player,
-                    "call_audio_media": call_audio_media,
-                    "recorder": recorder,
-                    "recording_path": recording_path,
-                    "cleanup_wav": self._playback_cleanup_wav,
-                    "wav_path": str(wav_path),
-                }
+                try:
+                    player.startTransmit(call_audio_media)
+                    if recorder is not None:
+                        with suppress(Exception):
+                            player.startTransmit(recorder)
+                        with suppress(Exception):
+                            call_audio_media.startTransmit(recorder)
+                    log.info(
+                        "Outbound SIP startTransmit called successfully account=%s call_id=%s player=%s call_audio_media=%s recorder=%s",
+                        self._account_id,
+                        self._call_id,
+                        str(player),
+                        str(call_audio_media),
+                        str(recorder),
+                    )
+                except Exception as exc:
+                    self._playback_error = f"startTransmit failed: {type(exc).__name__}: {exc}"
+                    log.error(
+                        "Outbound SIP startTransmit failed account=%s call_id=%s error=%s",
+                        self._account_id,
+                        self._call_id,
+                        self._playback_error,
+                    )
+                    with suppress(Exception):
+                        player = None
+                    with suppress(Exception):
+                        recorder = None
+                    return False
 
-            self._player = player
-            self._player_media = player
-            self._recorder = recorder
-            self._call_obj = call_obj
-            self._playback_started = True
-            self._playback_started_at = time.time()
-            self._playback_finished_at = None
-            self._playback_pending = False
-            self._scheduled_hangup_at = None
-            self._playback_bridge_released = False
+                with _PJSUA_PLAYER_LOCK:
+                    _PJSUA_ACTIVE_PLAYERS[self._call_id] = {
+                        "player": player,
+                        "player_media": player,
+                        "call_audio_media": call_audio_media,
+                        "recorder": recorder,
+                        "recording_path": recording_path,
+                        "cleanup_wav": self._playback_cleanup_wav,
+                        "wav_path": str(wav_path),
+                    }
 
-            log.info(
-                "Outbound SIP playback started account=%s call_id=%s path=%s duration=%.3f repeats=%s pause_ms=%s",
-                self._account_id,
-                self._call_id,
-                str(wav_path),
-                self._playback_audio_duration_seconds,
-                self._playback_repeat_count,
-                self._playback_pause_ms,
-            )
-            return True
+                self._player = player
+                self._player_media = player
+                self._recorder = recorder
+                self._call_obj = call_obj
+                self._playback_started = True
+                self._playback_started_at = time.time()
+                self._playback_finished_at = None
+                self._playback_pending = False
+                self._scheduled_hangup_at = None
+                self._playback_bridge_released = False
+
+                log.info(
+                    "Outbound SIP playback started account=%s call_id=%s path=%s duration=%.3f repeats=%s pause_ms=%s",
+                    self._account_id,
+                    self._call_id,
+                    str(wav_path),
+                    self._playback_audio_duration_seconds,
+                    self._playback_repeat_count,
+                    self._playback_pause_ms,
+                )
+                return True
         except Exception as exc:
             self._playback_error = f"{type(exc).__name__}: {exc}"
             log.exception(

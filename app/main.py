@@ -395,7 +395,10 @@ def _create_bulk_job(numbers: list[str], simultaneous: bool) -> str:
         _bulk_jobs[bulk_job_id] = {
             "numbers": numbers.copy(),
             "current_index": 0,
+            "total_count": len(numbers),
             "simultaneous": simultaneous,
+            "completed_count": 0,
+            "completed_ids": set(),
         }
     return bulk_job_id
 
@@ -422,6 +425,35 @@ def _mark_bulk_job_complete(bulk_job_id: str) -> bool:
             _bulk_jobs.pop(bulk_job_id, None)
             return True
         return False
+
+
+def _mark_bulk_job_call_complete(bulk_job_id: str, queue_item_id: str) -> bool:
+    """Mark a call as complete in a bulk job and return True if the job is done."""
+    with _bulk_jobs_lock:
+        job = _bulk_jobs.get(bulk_job_id)
+        if job is None:
+            return True
+
+        if job["simultaneous"]:
+            # For simultaneous mode, track completion by queue item ID
+            completed_ids = job.get("completed_ids", set())
+            if queue_item_id not in completed_ids:
+                completed_ids.add(queue_item_id)
+                job["completed_ids"] = completed_ids
+                job["completed_count"] = len(completed_ids)
+
+            # Check if all calls in the job have completed
+            if job["completed_count"] >= job.get("total_count", len(job["numbers"])):
+                _bulk_jobs.pop(bulk_job_id, None)
+                return True
+            return False
+        else:
+            # For sequential mode, increment index and check completion
+            job["current_index"] += 1
+            if job["current_index"] >= len(job["numbers"]):
+                _bulk_jobs.pop(bulk_job_id, None)
+                return True
+            return False
 
 
 def _coerce_page_size(value: str | None, *, default: int = 20, max_value: int = 200) -> int:
@@ -500,6 +532,7 @@ def _finish_retry_item(item_id: str) -> None:
 
 def _retry_queue_item_task(item_id: str, account_id: str, concurrency_limit: int) -> None:
     bulk_job_id = None
+    is_simultaneous = False
     try:
         settings = load_settings_from_store()
         queue_store = get_queue_store(settings)
@@ -520,7 +553,19 @@ def _retry_queue_item_task(item_id: str, account_id: str, concurrency_limit: int
             _decrement_account_inflight(account_id)
 
         if bulk_job_id:
-            _process_next_sequential_call(bulk_job_id)
+            with _bulk_jobs_lock:
+                job = _bulk_jobs.get(bulk_job_id)
+                if job:
+                    is_simultaneous = job.get("simultaneous", False)
+
+            if is_simultaneous:
+                # For simultaneous mode, mark the call as complete
+                job_done = _mark_bulk_job_call_complete(bulk_job_id, item_id)
+                if job_done:
+                    log.info("Simultaneous bulk job %s completed", bulk_job_id)
+            else:
+                # For sequential mode, process the next call
+                _process_next_sequential_call(bulk_job_id)
 
 
 def _process_next_sequential_call(bulk_job_id: str) -> None:
