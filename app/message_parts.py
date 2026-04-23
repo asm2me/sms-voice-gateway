@@ -1,9 +1,24 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 _STATIC_TEMPLATE_PARAMETER_RE = re.compile(r"(?:\{\%\s*(\d+)\s*\}|%(\d+))")
+
+
+def _is_text_character(character: str) -> bool:
+    if not character:
+        return False
+    category = unicodedata.category(character)
+    return category[0] in {"L", "M"} or character == "_"
+
+
+def _is_symbol_character(character: str) -> bool:
+    if not character:
+        return False
+    category = unicodedata.category(character)
+    return category[0] in {"P", "S"}
 
 
 def split_inbound_message_parameters(inbound_message: str) -> list[str]:
@@ -16,61 +31,112 @@ def split_static_message_template(template: str) -> list[dict[str, Any]]:
     cursor = 0
     ordinal = 1
 
-    for match in _STATIC_TEMPLATE_PARAMETER_RE.finditer(raw_template):
-        start, end = match.span()
-        if start > cursor:
-            text_value = raw_template[cursor:start]
-            if text_value:
+    while cursor < len(raw_template):
+        match = _STATIC_TEMPLATE_PARAMETER_RE.match(raw_template, cursor)
+        if match:
+            token = match.group(0)
+            parameter_token = match.group(1) or match.group(2) or ""
+            parameter_index = int(parameter_token) if parameter_token.isdigit() else None
+            parts.append(
+                {
+                    "ordinal": ordinal,
+                    "kind": "parameter",
+                    "value": token,
+                    "display_value": f"%{parameter_index}" if parameter_index else token,
+                    "spoken": False,
+                    "parameter_index": parameter_index,
+                }
+            )
+            ordinal += 1
+            cursor = match.end()
+            continue
+
+        current_character = raw_template[cursor]
+
+        if current_character.isdigit():
+            start = cursor
+            cursor += 1
+            while cursor < len(raw_template) and raw_template[cursor].isdigit():
+                cursor += 1
+
+            value = raw_template[start:cursor]
+            parts.append(
+                {
+                    "ordinal": ordinal,
+                    "kind": "number",
+                    "value": value,
+                    "display_value": value,
+                    "spoken": bool(value.strip()),
+                    "parameter_index": None,
+                }
+            )
+            ordinal += 1
+            continue
+
+        if _is_symbol_character(current_character):
+            start = cursor
+            cursor += 1
+            while cursor < len(raw_template):
+                next_character = raw_template[cursor]
+                if next_character.isdigit():
+                    break
+                if _STATIC_TEMPLATE_PARAMETER_RE.match(raw_template, cursor):
+                    break
+                if _is_text_character(next_character):
+                    break
+                if not _is_symbol_character(next_character):
+                    break
+                cursor += 1
+
+            value = raw_template[start:cursor]
+            if value.strip():
                 parts.append(
                     {
                         "ordinal": ordinal,
-                        "kind": "text",
-                        "value": text_value,
-                        "display_value": text_value,
-                        "spoken": bool(text_value.strip()),
+                        "kind": "symbol",
+                        "value": value,
+                        "display_value": value,
+                        "spoken": True,
                         "parameter_index": None,
                     }
                 )
                 ordinal += 1
+            continue
 
-        token = match.group(0)
-        parameter_token = match.group(1) or match.group(2) or ""
-        parameter_index = int(parameter_token) if parameter_token.isdigit() else None
-        parts.append(
-            {
-                "ordinal": ordinal,
-                "kind": "parameter",
-                "value": token,
-                "display_value": f"%{parameter_index}" if parameter_index else token,
-                "spoken": False,
-                "parameter_index": parameter_index,
-            }
-        )
-        ordinal += 1
-        cursor = end
+        start = cursor
+        cursor += 1
+        while cursor < len(raw_template):
+            next_character = raw_template[cursor]
+            if next_character.isdigit():
+                break
+            if _STATIC_TEMPLATE_PARAMETER_RE.match(raw_template, cursor):
+                break
+            if _is_symbol_character(next_character):
+                break
+            cursor += 1
 
-    if cursor < len(raw_template):
-        text_value = raw_template[cursor:]
-        if text_value:
+        value = raw_template[start:cursor]
+        if value.strip():
             parts.append(
                 {
                     "ordinal": ordinal,
                     "kind": "text",
-                    "value": text_value,
-                    "display_value": text_value,
-                    "spoken": bool(text_value.strip()),
+                    "value": value,
+                    "display_value": value,
+                    "spoken": True,
                     "parameter_index": None,
                 }
             )
+            ordinal += 1
 
-    if not parts and raw_template:
+    if not parts and raw_template.strip():
         parts.append(
             {
                 "ordinal": 1,
                 "kind": "text",
-                "value": raw_template,
-                "display_value": raw_template,
-                "spoken": bool(raw_template.strip()),
+                "value": raw_template.strip(),
+                "display_value": raw_template.strip(),
+                "spoken": True,
                 "parameter_index": None,
             }
         )

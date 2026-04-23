@@ -2406,68 +2406,132 @@
     return element.innerHTML;
   }
 
+  function isTextCharacter(character) {
+    if (!character) return false;
+    return /[\p{L}\p{M}_]/u.test(character);
+  }
+
+  function isSymbolCharacter(character) {
+    if (!character) return false;
+    return /[\p{P}\p{S}]/u.test(character);
+  }
+
   function splitStaticMessageTemplate(template) {
     const rawTemplate = String(template || "");
     const parts = [];
-    const templatePattern = /(?:\{\%\s*(\d+)\s*\}|%(\d+))/g;
+    const parameterPattern = /(?:\{\%\s*(\d+)\s*\}|%(\d+))/g;
     let cursor = 0;
     let ordinal = 1;
-    let match = null;
 
-    while ((match = templatePattern.exec(rawTemplate)) !== null) {
-      const start = match.index;
-      const end = templatePattern.lastIndex;
+    while (cursor < rawTemplate.length) {
+      parameterPattern.lastIndex = cursor;
+      const parameterMatch = parameterPattern.exec(rawTemplate);
+      if (parameterMatch && parameterMatch.index === cursor) {
+        const parameterToken = parameterMatch[1] || parameterMatch[2] || "";
+        const parameterIndex = parameterToken ? parseInt(parameterToken, 10) : null;
+        parts.push({
+          ordinal: ordinal,
+          kind: "parameter",
+          value: parameterMatch[0],
+          display_value: parameterIndex ? "%" + parameterIndex : parameterMatch[0],
+          spoken: false,
+          parameter_index: parameterIndex,
+        });
+        ordinal += 1;
+        cursor = parameterPattern.lastIndex;
+        continue;
+      }
 
-      if (start > cursor) {
-        const textValue = rawTemplate.slice(cursor, start);
-        if (textValue) {
+      const currentCharacter = rawTemplate[cursor];
+
+      if (/\d/.test(currentCharacter)) {
+        const start = cursor;
+        cursor += 1;
+        while (cursor < rawTemplate.length && /\d/.test(rawTemplate[cursor])) {
+          cursor += 1;
+        }
+
+        const value = rawTemplate.slice(start, cursor);
+        if (value.trim()) {
           parts.push({
             ordinal: ordinal,
-            kind: "text",
-            value: textValue,
-            display_value: textValue,
-            spoken: Boolean(textValue.trim()),
+            kind: "number",
+            value: value,
+            display_value: value,
+            spoken: true,
             parameter_index: null,
           });
           ordinal += 1;
         }
+        continue;
       }
 
-      const parameterToken = match[1] || match[2] || "";
-      const parameterIndex = parameterToken ? parseInt(parameterToken, 10) : null;
-      parts.push({
-        ordinal: ordinal,
-        kind: "parameter",
-        value: match[0],
-        display_value: parameterIndex ? "%" + parameterIndex : match[0],
-        spoken: false,
-        parameter_index: parameterIndex,
-      });
-      ordinal += 1;
-      cursor = end;
-    }
+      if (isSymbolCharacter(currentCharacter)) {
+        const start = cursor;
+        cursor += 1;
+        while (cursor < rawTemplate.length) {
+          const nextCharacter = rawTemplate[cursor];
+          parameterPattern.lastIndex = cursor;
+          if (/\d/.test(nextCharacter) || (parameterPattern.exec(rawTemplate) && parameterPattern.lastIndex === cursor)) {
+            break;
+          }
+          if (isTextCharacter(nextCharacter) || /\s/.test(nextCharacter) || !isSymbolCharacter(nextCharacter)) {
+            break;
+          }
+          cursor += 1;
+        }
 
-    if (cursor < rawTemplate.length) {
-      const textValue = rawTemplate.slice(cursor);
-      if (textValue) {
+        const value = rawTemplate.slice(start, cursor);
+        if (value.trim()) {
+          parts.push({
+            ordinal: ordinal,
+            kind: "symbol",
+            value: value,
+            display_value: value,
+            spoken: true,
+            parameter_index: null,
+          });
+          ordinal += 1;
+        }
+        continue;
+      }
+
+      const start = cursor;
+      cursor += 1;
+      while (cursor < rawTemplate.length) {
+        const nextCharacter = rawTemplate[cursor];
+        parameterPattern.lastIndex = cursor;
+        if (/\d/.test(nextCharacter) || (parameterPattern.exec(rawTemplate) && parameterPattern.lastIndex === cursor)) {
+          break;
+        }
+        if (isSymbolCharacter(nextCharacter)) {
+          break;
+        }
+        cursor += 1;
+      }
+
+      const value = rawTemplate.slice(start, cursor);
+      if (value.trim()) {
         parts.push({
           ordinal: ordinal,
           kind: "text",
-          value: textValue,
-          display_value: textValue,
-          spoken: Boolean(textValue.trim()),
+          value: value,
+          display_value: value,
+          spoken: true,
           parameter_index: null,
         });
+        ordinal += 1;
       }
     }
 
-    if (!parts.length && rawTemplate) {
+    if (!parts.length && rawTemplate.trim()) {
+      const value = rawTemplate.trim();
       parts.push({
         ordinal: 1,
         kind: "text",
-        value: rawTemplate,
-        display_value: rawTemplate,
-        spoken: Boolean(rawTemplate.trim()),
+        value: value,
+        display_value: value,
+        spoken: true,
         parameter_index: null,
       });
     }
