@@ -2284,33 +2284,8 @@
                     <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
                   </label>
                   <div class="field-group field-span-2">
-                    <span class="field-label">Current Uploaded Audio</span>
-                    {% if account.uploaded_audio_path %}
-                    <div class="permission-summary">
-                      <div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">
-                        <strong>Current file</strong>
-                        <span class="mono">{{ account.uploaded_audio_original_name or account.uploaded_audio_path }}</span>
-                      </div>
-                    </div>
-                    {% else %}
-                    <span class="muted">No uploaded audio file configured for this SMPP user.</span>
-                    {% endif %}
-                  </div>
-                  <label class="field-group field-span-2">
-                    <span class="field-label">Replace Uploaded Audio File</span>
-                    <input type="file" name="uploaded_audio_file" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
-                    <small class="muted">Optional. Uploading a new file replaces the existing one and overrides TTS playback for this SMPP user.</small>
-                  </label>
-                  <label class="field-group field-span-2">
-                    <span class="field-label">Remove Uploaded Audio</span>
-                    <select name="remove_uploaded_audio">
-                      <option value="false" selected>False</option>
-                      <option value="true">True</option>
-                    </select>
-                    <small class="muted">Set to True to remove the current uploaded audio file and fall back to template/TTS audio.</small>
-                  </label>
-                  <div class="field-group field-span-2">
                     <span class="field-label">Split Static Message Parts</span>
+                    <small class="muted">Upload audio files per spoken part. Parameter placeholders like <span class="mono">%1</span> remain unspoken and cannot receive audio.</small>
                     {% if account.static_message_parts %}
                     <div class="permission-summary">
                       {% for part in account.static_message_parts %}
@@ -2321,6 +2296,11 @@
                         <span class="muted">unspoken parameter</span>
                         {% else %}
                         <span class="mono">{{ part.display_value or '—' }}</span>
+                        {% if part.has_uploaded_audio %}
+                        <div class="muted">Current audio: <span class="mono">{{ part.uploaded_audio_original_name or part.uploaded_audio_path }}</span></div>
+                        {% endif %}
+                        <input type="file" name="static_message_part_audio_file_{{ part.ordinal }}" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
+                        <small class="muted">Optional. Uploading a new file replaces audio for this spoken part.</small>
                         {% if part.spoken %}
                         <button
                           type="button"
