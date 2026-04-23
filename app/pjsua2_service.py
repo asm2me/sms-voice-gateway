@@ -316,11 +316,7 @@ class PJSipUASession:
         name = f"py-{thread_id}"[:31]
         desc = _PJSUA_THREAD_DESCS.get(thread_id)
         if desc is None:
-            try:
-                thread_desc_factory = getattr(self._pj, "threadDesc", None)
-                desc = thread_desc_factory() if callable(thread_desc_factory) else [0] * 64
-            except Exception:
-                desc = [0] * 64
+            desc = [0] * 64
             _PJSUA_THREAD_DESCS[thread_id] = desc
 
         register_candidates: list[tuple[Any, tuple[Any, ...]]] = []
@@ -335,6 +331,11 @@ class PJSipUASession:
         if callable(module_register):
             register_candidates.append((module_register, (name, desc)))
             register_candidates.append((module_register, (name,)))
+
+        thread_register = getattr(self._pj, "threadRegister", None)
+        if callable(thread_register):
+            register_candidates.append((thread_register, (name, desc)))
+            register_candidates.append((thread_register, (name,)))
 
         for register_fn, args in register_candidates:
             try:
@@ -1451,12 +1452,18 @@ def _gateway_call_subclass_init(self: Any, pj: Any, account: Any, callback: "_Ca
 def _gateway_call_handle_state(call_obj: Any, prm: Any = None) -> None:
     callback = getattr(call_obj, "_callback", None)
     if callback is not None:
+        session = getattr(callback, "_session", None)
+        if session is not None:
+            session._register_current_thread()
         callback.onCallState(call_obj)
 
 
 def _gateway_call_handle_media(call_obj: Any, prm: Any = None) -> None:
     callback = getattr(call_obj, "_callback", None)
     if callback is not None:
+        session = getattr(callback, "_session", None)
+        if session is not None:
+            session._register_current_thread()
         callback.onCallMediaState(call_obj)
 
 
@@ -1568,6 +1575,7 @@ class _CallCallbackHolder:
         )
 
     def _release_slot(self) -> None:
+        self._session._register_current_thread()
         with self._lock:
             if self._released:
                 return
@@ -1880,6 +1888,7 @@ class _CallCallbackHolder:
             return False
 
     def onCallState(self, *args: Any, **kwargs: Any) -> None:
+        self._session._register_current_thread()
         call_obj = args[0] if args else None
         if call_obj is not None:
             self._call_obj = call_obj
@@ -2043,6 +2052,7 @@ class _CallCallbackHolder:
             self._release_slot()
 
     def onCallMediaState(self, *args: Any, **kwargs: Any) -> None:
+        self._session._register_current_thread()
         call_obj = args[0] if args else None
         if call_obj is not None:
             self._call_obj = call_obj
