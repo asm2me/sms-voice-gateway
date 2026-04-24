@@ -24,6 +24,7 @@ import re
 import tempfile
 import threading
 import time
+import uuid
 import wave
 import os
 from contextlib import suppress
@@ -740,7 +741,7 @@ class PJSipUASession:
                         )
                     _TRUNK_ACTIVE_CALLS[account_id] = active_calls + 1
 
-                call_id = f"pj_{int(time.time() * 1000)}"
+                call_id = f"pj_{uuid.uuid4().hex}"
                 invite_uri = self._build_sip_uri(destination)
                 callback = _CallCallbackHolder(self, account_id, call_id)
                 call = account.makeCall(
