@@ -635,10 +635,12 @@ def _retry_queue_item(settings: Settings, item) -> None:
     )
 
     result = None
+    # Retry/bulk dispatch can run multiple calls in parallel; each call needs
+    # its own isolated PJSUA2 runtime to avoid audio/media cross-talk.
     gateway = SMSGateway(
         settings,
         sip_scope=_SMS_GATEWAY_PJSUA_SCOPE,
-        isolated_sip=False,
+        isolated_sip=True,
     )
     try:
         result = gateway.process(sms, queue_retries=False)
@@ -851,7 +853,9 @@ def dep_settings() -> Settings:
 
 
 def dep_gateway(settings: Annotated[Settings, Depends(dep_settings)]) -> SMSGateway:
-    return SMSGateway(settings)
+    # Force an isolated SIP runtime per request so concurrent webhook deliveries
+    # do not reuse a shared PJSUA2 endpoint or media bridge.
+    return SMSGateway(settings, isolated_sip=True)
 
 
 def dep_admin_credentials(
@@ -1124,8 +1128,14 @@ def _build_live_call_context(settings: Settings) -> dict:
                 }
             )
 
+    computed_active_count = max(
+        total_active_calls,
+        len(active_calls),
+        len(active_call_items) if isinstance(active_call_items, list) else 0,
+    )
+
     return {
-        "active_count": total_active_calls,
+        "active_count": computed_active_count,
         "items": active_calls,
         "smpp_active_calls_by_user": smpp_active_calls_by_user,
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),

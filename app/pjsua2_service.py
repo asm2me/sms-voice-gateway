@@ -196,12 +196,16 @@ _PJSUA_GLOBAL_LOCK = threading.RLock()
 _PJSUA_GLOBAL_ENDPOINT = None
 _PJSUA_GLOBAL_TRANSPORT = None
 _PJSUA_GLOBAL_SESSIONS: dict[str, "PJSipUASession"] = {}
-_PJSUA_REGISTERED_THREADS: set[int] = set()
+_PJSUA_REGISTERED_THREADS: dict[int, set[int]] = {}
 _PJSUA_THREAD_DESCS: dict[int, Any] = {}
 _PJSUA_PLAYER_LOCK = threading.RLock()
 _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
 _PJSUA_RETIRED_PLAYERS: list[dict[str, Any]] = []
 _PJSUA_AUDIO_SETUP_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _pjsua_registration_key(endpoint: object | None) -> int:
+    return id(endpoint) if endpoint is not None else 0
 
 
 def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
@@ -311,8 +315,11 @@ class PJSipUASession:
             return
 
         thread_id = threading.get_ident()
-        if thread_id in _PJSUA_REGISTERED_THREADS:
-            return
+        registration_key = _pjsua_registration_key(self._endpoint)
+        with _PJSUA_GLOBAL_LOCK:
+            registered_threads = _PJSUA_REGISTERED_THREADS.setdefault(registration_key, set())
+            if thread_id in registered_threads:
+                return
 
         name = f"py-{thread_id}"[:31]
         desc = _PJSUA_THREAD_DESCS.get(thread_id)
@@ -341,7 +348,9 @@ class PJSipUASession:
         for register_fn, args in register_candidates:
             try:
                 register_fn(*args)
-                _PJSUA_REGISTERED_THREADS.add(thread_id)
+                with _PJSUA_GLOBAL_LOCK:
+                    registered_threads = _PJSUA_REGISTERED_THREADS.setdefault(registration_key, set())
+                    registered_threads.add(thread_id)
                 return
             except TypeError:
                 continue
@@ -489,6 +498,8 @@ class PJSipUASession:
             if self._isolated and endpoint is not None:
                 with suppress(Exception):
                     endpoint.libDestroy()
+                with _PJSUA_GLOBAL_LOCK:
+                    _PJSUA_REGISTERED_THREADS.pop(_pjsua_registration_key(endpoint), None)
 
     def select_profile(self, profile: SipAccountProfile | dict[str, Any]) -> SipAccountProfile:
         if isinstance(profile, SipAccountProfile):
