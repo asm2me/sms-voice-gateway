@@ -234,11 +234,18 @@ class SystemUser(BaseModel):
             raw_values = list(value)
 
         allowed = set(get_system_user_permissions())
+        legacy_aliases = {
+            "Health — Write": "Health — Restart",
+            "Health -- Write": "Health — Restart",
+        }
         seen: set[str] = set()
         permissions: list[str] = []
         for item in raw_values:
             permission = _strip_text(item)
-            if not permission or permission in seen:
+            if not permission:
+                continue
+            permission = legacy_aliases.get(permission, permission)
+            if permission in seen:
                 continue
             if allowed and permission not in allowed:
                 raise ValueError(f"Invalid permission: {permission}")
