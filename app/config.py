@@ -1,10 +1,92 @@
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _strip_text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _coerce_int(
+    value: Any,
+    field_name: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+    allow_none: bool = False,
+) -> int | None:
+    if value is None:
+        if allow_none:
+            return None
+        raise ValueError(f"{field_name} is required")
+
+    text = _strip_text(value)
+    if text == "":
+        if allow_none:
+            return None
+        raise ValueError(f"{field_name} is required")
+
+    try:
+        parsed = int(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be an integer") from exc
+
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{field_name} must be greater than or equal to {minimum}")
+    if maximum is not None and parsed > maximum:
+        raise ValueError(f"{field_name} must be less than or equal to {maximum}")
+    return parsed
+
+
+def _coerce_float(value: Any, field_name: str, *, minimum: float | None = None) -> float:
+    text = _strip_text(value)
+    if text == "":
+        raise ValueError(f"{field_name} is required")
+
+    try:
+        parsed = float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+
+    if minimum is not None and parsed < minimum:
+        raise ValueError(f"{field_name} must be greater than or equal to {minimum}")
+    return parsed
+
+
+def _normalize_codec_list(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+
+    alias_map = {
+        "g729": "G729",
+        "g.729": "G729",
+        "g723": "G723",
+        "g723.1": "G723",
+        "g.723": "G723",
+        "g.723.1": "G723",
+    }
+
+    if isinstance(value, str):
+        raw_parts = re.split(r"[,;\s]+", value)
+    else:
+        raw_parts = list(value)
+
+    seen: set[str] = set()
+    codecs: list[str] = []
+    for part in raw_parts:
+        normalized = alias_map.get(_strip_text(part).lower(), _strip_text(part).upper())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        codecs.append(normalized)
+    return codecs
 
 
 class SIPAccount(BaseModel):
@@ -16,7 +98,7 @@ class SIPAccount(BaseModel):
     username: str = ""
     password: str = ""
     transport: Literal["udp", "tcp", "tls"] = "udp"
-    port: int = 5060
+    port: int = Field(default=5060, ge=1, le=65535)
     domain: str = ""
     display_name: str = ""
     from_user: str = ""
@@ -25,9 +107,38 @@ class SIPAccount(BaseModel):
     default_for_outbound: bool = False
     register_enabled: bool = Field(default=True, alias="register", validation_alias="register", serialization_alias="register")
     outbound_proxy: str = ""
-    concurrency_limit: int = 0
+    concurrency_limit: int = Field(default=0, ge=0)
     preferred_codecs: list[str] = Field(default_factory=list)
     extra: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator(
+        "id",
+        "label",
+        "host",
+        "username",
+        "password",
+        "domain",
+        "display_name",
+        "from_user",
+        "from_domain",
+        "outbound_proxy",
+        mode="before",
+    )
+    @classmethod
+    def _strip_text_fields(cls, value: Any) -> str:
+        return _strip_text(value)
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        if not value:
+            raise ValueError("id is required")
+        return value
+
+    @field_validator("preferred_codecs", mode="before")
+    @classmethod
+    def _normalize_preferred_codecs(cls, value: Any) -> list[str]:
+        return _normalize_codec_list(value)
 
 
 class SMPPAccount(BaseModel):
@@ -48,6 +159,40 @@ class SMPPAccount(BaseModel):
     static_message_digit_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
     extra: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator(
+        "id",
+        "label",
+        "username",
+        "password",
+        "default_sip_account_id",
+        "static_default_message_template",
+        "uploaded_audio_path",
+        "uploaded_audio_original_name",
+        mode="before",
+    )
+    @classmethod
+    def _strip_text_fields(cls, value: Any) -> str:
+        return _strip_text(value)
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        if not value:
+            raise ValueError("id is required")
+        return value
+
+    @field_validator("username")
+    @classmethod
+    def _validate_username(cls, value: str) -> str:
+        if not value:
+            raise ValueError("username is required")
+        return value
+
+    @field_validator("delivery_retry_count", "delivery_retry_interval_seconds", mode="before")
+    @classmethod
+    def _validate_optional_retry_values(cls, value: Any, info) -> int | None:
+        return _coerce_int(value, info.field_name or "value", minimum=0, allow_none=True)
+
 
 class SystemUser(BaseModel):
     id: str
@@ -57,6 +202,49 @@ class SystemUser(BaseModel):
     enabled: bool = True
     auth_source: str = "Admin Portal"
     permissions: list[str] = Field(default_factory=list)
+
+    @field_validator("id", "username", "password", "role", "auth_source", mode="before")
+    @classmethod
+    def _strip_text_fields(cls, value: Any) -> str:
+        return _strip_text(value)
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        if not value:
+            raise ValueError("id is required")
+        return value
+
+    @field_validator("username")
+    @classmethod
+    def _validate_username(cls, value: str) -> str:
+        if not value:
+            raise ValueError("username is required")
+        return value
+
+    @field_validator("permissions", mode="before")
+    @classmethod
+    def _normalize_permissions(cls, value: Any) -> list[str]:
+        if value in (None, ""):
+            return []
+
+        if isinstance(value, str):
+            raw_values = re.split(r"[,;\n]+", value)
+        else:
+            raw_values = list(value)
+
+        allowed = set(get_system_user_permissions())
+        seen: set[str] = set()
+        permissions: list[str] = []
+        for item in raw_values:
+            permission = _strip_text(item)
+            if not permission or permission in seen:
+                continue
+            if allowed and permission not in allowed:
+                raise ValueError(f"Invalid permission: {permission}")
+            seen.add(permission)
+            permissions.append(permission)
+        return permissions
 
 
 SYSTEM_USER_PERMISSION_GROUPS: list[dict[str, object]] = [
@@ -223,6 +411,93 @@ class Settings(BaseSettings):
 
     # Reporting
     delivery_report_max_items: int = 1000
+
+    @field_validator(
+        "host",
+        "admin_username",
+        "admin_password",
+        "delivery_report_store_path",
+        "webhook_secret",
+        "tts_language",
+        "tts_voice",
+        "tts_audio_encoding",
+        "tts_secondary_language",
+        "tts_secondary_voice",
+        "google_credentials_json",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_region",
+        "aws_polly_voice_id",
+        "openai_api_key",
+        "openai_tts_model",
+        "openai_tts_voice",
+        "elevenlabs_api_key",
+        "elevenlabs_voice_id",
+        "audio_cache_dir",
+        "asterisk_sounds_dir",
+        "ami_host",
+        "ami_username",
+        "ami_secret",
+        "sip_channel_prefix",
+        "outbound_caller_id",
+        "asterisk_context",
+        "asterisk_exten",
+        "asterisk_priority",
+        "redis_url",
+        "redis_prefix",
+        "smpp_host",
+        "smpp_username",
+        "smpp_password",
+        "phone_regex",
+        mode="before",
+    )
+    @classmethod
+    def _strip_settings_text_fields(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip()
+
+    @field_validator("tts_speaking_rate", mode="before")
+    @classmethod
+    def _validate_tts_speaking_rate(cls, value: Any) -> float:
+        return _coerce_float(value, "tts_speaking_rate", minimum=0.01)
+
+    @field_validator(
+        "port",
+        "ami_port",
+        "smpp_port",
+        "audio_cache_ttl",
+        "ami_connection_timeout",
+        "ami_response_timeout",
+        "call_answer_timeout",
+        "playback_repeats",
+        "playback_pause_ms",
+        "delivery_retry_count",
+        "delivery_retry_interval_seconds",
+        "delivery_report_max_items",
+        mode="before",
+    )
+    @classmethod
+    def _validate_settings_int_fields(cls, value: Any, info) -> int:
+        field_name = info.field_name or "value"
+        bounds: dict[str, tuple[int | None, int | None]] = {
+            "port": (1, 65535),
+            "ami_port": (1, 65535),
+            "smpp_port": (1, 65535),
+            "audio_cache_ttl": (1, None),
+            "ami_connection_timeout": (1, None),
+            "ami_response_timeout": (1, None),
+            "call_answer_timeout": (1, None),
+            "playback_repeats": (1, None),
+            "playback_pause_ms": (0, None),
+            "delivery_retry_count": (0, None),
+            "delivery_retry_interval_seconds": (0, None),
+            "delivery_report_max_items": (1, None),
+        }
+        minimum, maximum = bounds.get(field_name, (None, None))
+        parsed = _coerce_int(value, field_name, minimum=minimum, maximum=maximum)
+        assert parsed is not None
+        return parsed
 
 
 @lru_cache(maxsize=1)
