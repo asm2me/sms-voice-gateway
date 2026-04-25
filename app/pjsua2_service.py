@@ -1255,6 +1255,15 @@ class _GatewayAccount:
                 call_prm.videoCount = 0
 
         call.makeCall(uri, prm)
+        with _TRUNK_CONCURRENCY_LOCK:
+            current_state = str(_TRUNK_CALL_STATES.get(callback._call_id, {}).get("state", "")).strip().upper()
+        if current_state not in {"EARLY", "RINGING", "ACTIVE", "ANSWERED", "CONFIRMED", "CONNECTED", "DISCONNECTED", "HUNGUP", "MISSED"}:
+            with suppress(Exception):
+                callback._set_runtime_state(
+                    state="CALLING",
+                    last_status_code=0,
+                    destination_number=_extract_display_destination(uri),
+                )
         return call
 
     def registration_info(self) -> dict[str, Any]:
