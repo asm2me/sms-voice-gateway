@@ -23,14 +23,12 @@ import re
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
 import threading
 from typing import Annotated, Optional
-
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
@@ -94,276 +92,8 @@ security = HTTPBasic()
 
 _retry_worker_stop = Event()
 _retry_worker_thread: Thread | None = None
-_retry_dispatch_lock = threading.Lock()
-_retry_inflight_items: set[str] = set()
-_retry_executor: ThreadPoolExecutor | None = None
-_retry_executor_workers = 0
 _admin_test_send_jobs: dict[str, dict[str, object]] = {}
 _admin_test_send_lock = threading.Lock()
-
-_account_inflight_count: dict[str, int] = {}
-_account_inflight_lock = threading.Lock()
-_slot_available_event = Event()
-_bulk_jobs: dict[str, dict] = {}
-_bulk_jobs_lock = threading.Lock()
-
-SMPP_ACCOUNT_AUDIO_DIR = BASE_DIR / "data" / "smpp_account_audio"
-
-
-def _resolve_managed_path(raw_path: str) -> Path | None:
-    normalized = str(raw_path or "").strip()
-    if not normalized:
-        return None
-    candidate = Path(normalized)
-    if not candidate.is_absolute():
-        candidate = BASE_DIR / candidate
-    return candidate
-
-
-def _delete_managed_file(raw_path: str) -> None:
-    candidate = _resolve_managed_path(raw_path)
-    if candidate is None:
-        return
-    try:
-        candidate.relative_to(BASE_DIR)
-    except ValueError:
-        log.warning("Refusing to delete path outside project directory: %s", candidate)
-        return
-    try:
-        if candidate.exists():
-            candidate.unlink()
-    except Exception:
-        log.warning("Failed deleting managed file: %s", candidate, exc_info=True)
-
-
-def _convert_audio_to_wav(input_path: Path) -> Path | None:
-    input_suffix = input_path.suffix.lower()
-    if input_suffix == ".wav":
-        return input_path
-    wav_path = input_path.with_suffix(".wav")
-    target_sample_rate = 8000
-
-    try:
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-i", str(input_path),
-                "-acodec", "pcm_s16le",
-                "-ar", str(target_sample_rate),
-                "-ac", "1",
-                "-y",
-                str(wav_path),
-            ],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-        if result.returncode == 0 and wav_path.exists():
-            input_path.unlink(missing_ok=True)
-            return wav_path
-        log.warning("ffmpeg conversion failed for %s: %s", input_path, result.stderr.decode("utf-8", errors="replace")[-200:])
-    except FileNotFoundError:
-        pass
-    except subprocess.TimeoutExpired:
-        log.warning("ffmpeg conversion timed out for %s", input_path)
-    except Exception as exc:
-        log.warning("ffmpeg conversion error for %s: %s", input_path, exc)
-
-    try:
-        import soundfile as sf
-        import numpy as np
-        from scipy import signal
-
-        audio_data, original_sample_rate = sf.read(input_path)
-        log.info("Detected audio: %s, sample_rate=%dHz, duration=%.2fs, shape=%s",
-                 input_path.suffix, original_sample_rate, len(audio_data) / original_sample_rate, audio_data.shape)
-
-        if len(audio_data.shape) > 1:
-            audio_data = np.mean(audio_data, axis=1)
-
-        if original_sample_rate != target_sample_rate:
-            log.info("Resampling audio from %dHz to %dHz", original_sample_rate, target_sample_rate)
-            num_samples = int(len(audio_data) * target_sample_rate / original_sample_rate)
-            resampled_data = signal.resample(audio_data, num_samples)
-        else:
-            resampled_data = audio_data
-
-        resampled_data = np.int16(resampled_data / np.max(np.abs(resampled_data)) * 32767)
-        sf.write(wav_path, resampled_data, target_sample_rate, format='WAV', subtype='PCM_16')
-        input_path.unlink(missing_ok=True)
-        log.info("Successfully converted %s to WAV (%dHz) using Python", input_path.name, target_sample_rate)
-        return wav_path
-    except ImportError:
-        log.warning("soundfile/numpy/scipy not available, skipping audio conversion for %s", input_path)
-    except Exception as exc:
-        log.warning("Python-based audio conversion failed for %s: %s", input_path, exc)
-    return None
-
-
-async def _store_smpp_account_uploaded_audio(*, account_id: str, upload: UploadFile) -> tuple[str, str]:
-    original_name = str(getattr(upload, "filename", "") or "").strip()
-    if not original_name:
-        return "", ""
-
-    payload = await upload.read()
-    if not payload:
-        return "", ""
-
-    suffix = Path(original_name).suffix.lower() or ".wav"
-    digest = hashlib.sha1(payload).hexdigest()[:12]
-    SMPP_ACCOUNT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-    stored_name = f"{_slugify_identifier(account_id, 'smpp-account')}-{digest}{suffix}"
-    stored_path = SMPP_ACCOUNT_AUDIO_DIR / stored_name
-    stored_path.write_bytes(payload)
-    converted_path = _convert_audio_to_wav(stored_path)
-    if converted_path and converted_path != stored_path:
-        stored_path = converted_path
-    return stored_path.relative_to(BASE_DIR).as_posix(), original_name
-
-
-async def _store_smpp_account_part_uploaded_audio(
-    *,
-    account_id: str,
-    part_ordinal: int,
-    upload: UploadFile,
-) -> tuple[str, str]:
-    original_name = str(getattr(upload, "filename", "") or "").strip()
-    if not original_name:
-        return "", ""
-
-    payload = await upload.read()
-    if not payload:
-        return "", ""
-
-    suffix = Path(original_name).suffix.lower() or ".wav"
-    digest = hashlib.sha1(payload).hexdigest()[:12]
-    SMPP_ACCOUNT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-    stored_name = (
-        f"{_slugify_identifier(account_id, 'smpp-account')}"
-        f"-part-{max(1, int(part_ordinal or 0))}-{digest}{suffix}"
-    )
-    stored_path = SMPP_ACCOUNT_AUDIO_DIR / stored_name
-    stored_path.write_bytes(payload)
-    converted_path = _convert_audio_to_wav(stored_path)
-    if converted_path and converted_path != stored_path:
-        stored_path = converted_path
-    return stored_path.relative_to(BASE_DIR).as_posix(), original_name
-
-
-async def _store_smpp_account_digit_uploaded_audio(
-    *,
-    account_id: str,
-    digit: str,
-    upload: UploadFile,
-) -> tuple[str, str]:
-    original_name = str(getattr(upload, "filename", "") or "").strip()
-    if not original_name:
-        return "", ""
-
-    payload = await upload.read()
-    if not payload:
-        return "", ""
-
-    digit_key = str(digit or "").strip()
-    if digit_key not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}:
-        return "", ""
-
-    suffix = Path(original_name).suffix.lower() or ".wav"
-    digest = hashlib.sha1(payload).hexdigest()[:12]
-    SMPP_ACCOUNT_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-    stored_name = f"{_slugify_identifier(account_id, 'smpp-account')}-digit-{digit_key}-{digest}{suffix}"
-    stored_path = SMPP_ACCOUNT_AUDIO_DIR / stored_name
-    stored_path.write_bytes(payload)
-    converted_path = _convert_audio_to_wav(stored_path)
-    if converted_path and converted_path != stored_path:
-        stored_path = converted_path
-    return stored_path.relative_to(BASE_DIR).as_posix(), original_name
-
-
-def _normalize_static_message_part_audio(
-    raw_map: object,
-) -> dict[str, dict[str, str]]:
-    normalized: dict[str, dict[str, str]] = {}
-    if not isinstance(raw_map, dict):
-        return normalized
-
-    for raw_ordinal, raw_entry in raw_map.items():
-        ordinal = str(raw_ordinal or "").strip()
-        if not ordinal or not isinstance(raw_entry, dict):
-            continue
-
-        path = str(raw_entry.get("path", "") or "").strip()
-        original_name = str(raw_entry.get("original_name", "") or "").strip()
-        if not path:
-            continue
-
-        normalized[ordinal] = {
-            "path": path,
-            "original_name": original_name,
-        }
-
-    return normalized
-
-
-def _normalize_static_message_digit_audio(
-    raw_map: object,
-) -> dict[str, dict[str, str]]:
-    normalized: dict[str, dict[str, str]] = {}
-    if not isinstance(raw_map, dict):
-        return normalized
-
-    for raw_digit, raw_entry in raw_map.items():
-        digit = str(raw_digit or "").strip()
-        if digit not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}:
-            continue
-        if not isinstance(raw_entry, dict):
-            continue
-
-        path = str(raw_entry.get("path", "") or "").strip()
-        original_name = str(raw_entry.get("original_name", "") or "").strip()
-        if not path:
-            continue
-
-        normalized[digit] = {
-            "path": path,
-            "original_name": original_name,
-        }
-
-    return normalized
-
-
-def _get_account_inflight_count(account_id: str) -> int:
-    with _account_inflight_lock:
-        return _account_inflight_count.get(account_id, 0)
-
-
-def _increment_account_inflight(account_id: str, limit: int) -> bool:
-    with _account_inflight_lock:
-        current = _account_inflight_count.get(account_id, 0)
-        if limit > 0 and current >= limit:
-            return False
-        _account_inflight_count[account_id] = current + 1
-        return True
-
-
-def _decrement_account_inflight(account_id: str) -> None:
-    with _account_inflight_lock:
-        current = _account_inflight_count.get(account_id, 0)
-        if current <= 1:
-            _account_inflight_count.pop(account_id, None)
-        else:
-            _account_inflight_count[account_id] = current - 1
-        _slot_available_event.set()
-        _slot_available_event.clear()
-
-
-def _find_sip_account_for_item(settings: Settings, item) -> SIPAccount | None:
-    if item.smpp_username:
-        from .config_store import get_sip_account_for_smpp_username
-        return get_sip_account_for_smpp_username(settings, item.smpp_username)
-    if item.sip_account_id:
-        return next((acc for acc in settings.sip_accounts if acc.id == item.sip_account_id), None)
-    return next((acc for acc in settings.sip_accounts if acc.enabled), None)
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -380,242 +110,12 @@ def _queue_item_ready_for_retry(item, *, now: datetime) -> bool:
     item_status = str(getattr(item, "status", "")).strip().lower()
     if item_status == "queued":
         return True
-    if item_status == "sequential_pending":
-        return True
     if item_status != "retry_scheduled":
         return False
     next_attempt_at = _parse_iso_datetime(getattr(item, "next_attempt_at", None))
     if next_attempt_at is None:
         return True
     return next_attempt_at <= now
-
-
-def _create_bulk_job(numbers: list[str], simultaneous: bool) -> str:
-    bulk_job_id = f"bulk_{int(time.time() * 1000)}"
-    with _bulk_jobs_lock:
-        _bulk_jobs[bulk_job_id] = {
-            "numbers": numbers.copy(),
-            "current_index": 0,
-            "total_count": len(numbers),
-            "simultaneous": simultaneous,
-            "completed_count": 0,
-            "completed_ids": set(),
-        }
-    return bulk_job_id
-
-
-def _get_next_sequential_number(bulk_job_id: str) -> str | None:
-    with _bulk_jobs_lock:
-        job = _bulk_jobs.get(bulk_job_id)
-        if job is None or job["simultaneous"]:
-            return None
-        if job["current_index"] >= len(job["numbers"]):
-            _bulk_jobs.pop(bulk_job_id, None)
-            return None
-        phone_number = job["numbers"][job["current_index"]]
-        job["current_index"] += 1
-        return phone_number
-
-
-def _mark_bulk_job_complete(bulk_job_id: str) -> bool:
-    with _bulk_jobs_lock:
-        job = _bulk_jobs.get(bulk_job_id)
-        if job is None:
-            return False
-        if job["current_index"] >= len(job["numbers"]):
-            _bulk_jobs.pop(bulk_job_id, None)
-            return True
-        return False
-
-
-def _mark_bulk_job_call_complete(bulk_job_id: str, queue_item_id: str) -> bool:
-    """Mark a call as complete in a bulk job and return True if the job is done."""
-    with _bulk_jobs_lock:
-        job = _bulk_jobs.get(bulk_job_id)
-        if job is None:
-            return True
-
-        if job["simultaneous"]:
-            # For simultaneous mode, track completion by queue item ID
-            completed_ids = job.get("completed_ids", set())
-            if queue_item_id not in completed_ids:
-                completed_ids.add(queue_item_id)
-                job["completed_ids"] = completed_ids
-                job["completed_count"] = len(completed_ids)
-
-            # Check if all calls in the job have completed
-            if job["completed_count"] >= job.get("total_count", len(job["numbers"])):
-                _bulk_jobs.pop(bulk_job_id, None)
-                return True
-            return False
-        else:
-            # For sequential mode, increment index and check completion
-            job["current_index"] += 1
-            if job["current_index"] >= len(job["numbers"]):
-                _bulk_jobs.pop(bulk_job_id, None)
-                return True
-            return False
-
-
-def _coerce_page_size(value: str | None, *, default: int = 20, max_value: int = 200) -> int:
-    try:
-        numeric = int(str(value or "").strip() or str(default))
-    except Exception:
-        numeric = default
-    return max(1, min(numeric, max_value))
-
-
-def _retry_worker_concurrency(settings: Settings) -> int:
-    enabled_accounts = [
-        account
-        for account in getattr(settings, "sip_accounts", [])
-        if bool(getattr(account, "enabled", False))
-    ]
-    if not enabled_accounts:
-        return 4
-
-    explicit_capacity = 0
-    unlimited_accounts = 0
-    for account in enabled_accounts:
-        limit = max(0, int(getattr(account, "concurrency_limit", 0) or 0))
-        if limit > 0:
-            explicit_capacity += limit
-        else:
-            unlimited_accounts += 1
-
-    if explicit_capacity > 0:
-        desired = explicit_capacity + unlimited_accounts
-    else:
-        desired = max(4, len(enabled_accounts))
-
-    return max(1, min(desired, 32))
-
-
-def _ensure_retry_executor(settings: Settings) -> ThreadPoolExecutor:
-    global _retry_executor, _retry_executor_workers
-
-    desired_workers = _retry_worker_concurrency(settings)
-    previous_executor = None
-
-    with _retry_dispatch_lock:
-        if _retry_executor is None or _retry_executor_workers != desired_workers:
-            previous_executor = _retry_executor
-            _retry_executor = ThreadPoolExecutor(
-                max_workers=desired_workers,
-                thread_name_prefix="retry-item",
-            )
-            _retry_executor_workers = desired_workers
-
-        executor = _retry_executor
-
-    if previous_executor is not None:
-        previous_executor.shutdown(wait=False)
-        log.info("Retry worker pool resized to max_workers=%d", desired_workers)
-    elif executor is not None and desired_workers:
-        log.info("Retry worker pool ready max_workers=%d", desired_workers)
-
-    assert executor is not None
-    return executor
-
-
-def _mark_retry_item_inflight(item_id: str) -> bool:
-    with _retry_dispatch_lock:
-        if item_id in _retry_inflight_items:
-            return False
-        _retry_inflight_items.add(item_id)
-        return True
-
-
-def _finish_retry_item(item_id: str) -> None:
-    with _retry_dispatch_lock:
-        _retry_inflight_items.discard(item_id)
-
-
-def _retry_queue_item_task(item_id: str, account_id: str, concurrency_limit: int) -> None:
-    bulk_job_id = None
-    is_simultaneous = False
-    try:
-        settings = load_settings_from_store()
-        queue_store = get_queue_store(settings)
-        item = queue_store.get(item_id)
-        if item is None:
-            return
-
-        bulk_job_id = getattr(item, "bulk_job_id", None)
-
-        if not _queue_item_ready_for_retry(item, now=datetime.now(timezone.utc)):
-            return
-        _retry_queue_item(settings, item)
-    except Exception:
-        log.exception("Retry queue task %s crashed", item_id)
-    finally:
-        _finish_retry_item(item_id)
-        if concurrency_limit > 0:
-            _decrement_account_inflight(account_id)
-
-        if bulk_job_id:
-            with _bulk_jobs_lock:
-                job = _bulk_jobs.get(bulk_job_id)
-                if job:
-                    is_simultaneous = job.get("simultaneous", False)
-
-            if is_simultaneous:
-                # For simultaneous mode, mark the call as complete
-                job_done = _mark_bulk_job_call_complete(bulk_job_id, item_id)
-                if job_done:
-                    log.info("Simultaneous bulk job %s completed", bulk_job_id)
-            else:
-                # For sequential mode, process the next call
-                _process_next_sequential_call(bulk_job_id)
-
-
-def _process_next_sequential_call(bulk_job_id: str) -> None:
-    settings = load_settings_from_store()
-    queue_store = get_queue_store(settings)
-    next_number = _get_next_sequential_number(bulk_job_id)
-    if next_number is None:
-        _mark_bulk_job_complete(bulk_job_id)
-        log.info("Sequential bulk job %s completed", bulk_job_id)
-        return
-
-    smpp_username = ""
-    body = ""
-    existing_items = queue_store.query_items(
-        status="sequential_pending",
-        limit=100,
-    )
-    for existing in existing_items:
-        if getattr(existing, "bulk_job_id", "") == bulk_job_id:
-            smpp_username = getattr(existing, "smpp_username", "")
-            body = getattr(existing, "body", "")
-            break
-
-    now = _utc_now_iso()
-    queue_item = QueueItem(
-        id=now,
-        created_at=now,
-        updated_at=now,
-        phone_number=next_number,
-        provider="bulk-send",
-        body=body,
-        body_preview=body[:160],
-        status="queued",
-        attempts=0,
-        max_attempts=0,
-        retry_interval_seconds=0,
-        next_attempt_at=None,
-        last_error="",
-        ami_action_id=None,
-        sip_call_id=None,
-        sip_account_id="",
-        smpp_username=smpp_username,
-        audio_path="",
-        recording_path="",
-        call_duration_seconds=0.0,
-        bulk_job_id=bulk_job_id,
-    )
-    queue_store.upsert(queue_item)
-    log.info("Sequential bulk job %s queued next call to %s", bulk_job_id, next_number)
 
 
 def _retry_queue_item(settings: Settings, item) -> None:
@@ -636,15 +136,8 @@ def _retry_queue_item(settings: Settings, item) -> None:
     )
 
     result = None
-    # Retry/bulk dispatch can run multiple calls in parallel; each call needs
-    # its own isolated PJSUA2 runtime to avoid audio/media cross-talk.
-    gateway = SMSGateway(
-        settings,
-        sip_scope=_SMS_GATEWAY_PJSUA_SCOPE,
-        isolated_sip=True,
-    )
     try:
-        result = gateway.process(sms, queue_retries=False)
+        result = SMSGateway(settings).process(sms, queue_retries=False)
 
         latest = queue_store.get(item.id)
         if latest is None:
@@ -697,7 +190,6 @@ def _retry_queue_item(settings: Settings, item) -> None:
     except Exception as exc:
         log.exception("Retry queue item %s failed: %s", current.id, exc)
     finally:
-        gateway.close()
         latest = queue_store.get(item.id)
         if latest is not None and latest.status == "processing":
             log.warning("Queue item %s still processing after retry — recovering", item.id)
@@ -721,57 +213,19 @@ def _retry_worker_loop() -> None:
         try:
             settings = load_settings_from_store()
             queue_store = get_queue_store(settings)
-            executor = _ensure_retry_executor(settings)
             now = datetime.now(timezone.utc)
             due_items = [
                 item
                 for item in queue_store.list_items(limit=getattr(settings, "delivery_report_max_items", 1000))
                 if _queue_item_ready_for_retry(item, now=now)
             ]
-
-            submitted = 0
             for item in due_items:
                 if _retry_worker_stop.is_set():
                     break
-                if not _mark_retry_item_inflight(item.id):
-                    continue
-
-                latest = queue_store.get(item.id)
-                if latest is None or not _queue_item_ready_for_retry(latest, now=now):
-                    _finish_retry_item(item.id)
-                    continue
-
-                sip_account = _find_sip_account_for_item(settings, latest)
-                if sip_account is None:
-                    log.warning("No SIP account found for queue item %s, skipping", latest.id)
-                    _finish_retry_item(latest.id)
-                    continue
-
-                concurrency_limit = max(0, int(sip_account.concurrency_limit or 0))
-                if concurrency_limit > 0:
-                    if not _increment_account_inflight(sip_account.id, concurrency_limit):
-                        _finish_retry_item(latest.id)
-                        continue
-
-                try:
-                    executor.submit(_retry_queue_item_task, item.id, sip_account.id, concurrency_limit)
-                    submitted += 1
-                except Exception:
-                    _finish_retry_item(latest.id)
-                    if concurrency_limit > 0:
-                        _decrement_account_inflight(sip_account.id)
-                    raise
-
-            if submitted:
-                log.info(
-                    "Retry worker dispatched %d queued voice item(s) with pool_size=%d",
-                    submitted,
-                    _retry_executor_workers,
-                )
+                _retry_queue_item(settings, item)
         except Exception as exc:
             log.debug("Retry worker loop issue: %s", exc)
-        _retry_worker_stop.wait(1)
-        _slot_available_event.wait(0.1)
+        _retry_worker_stop.wait(5)
 
 
 def _start_retry_worker() -> None:
@@ -779,35 +233,15 @@ def _start_retry_worker() -> None:
     if _retry_worker_thread and _retry_worker_thread.is_alive():
         return
     _retry_worker_stop.clear()
-    _slot_available_event.clear()
-    with _account_inflight_lock:
-        _account_inflight_count.clear()
     _retry_worker_thread = Thread(target=_retry_worker_loop, name="retry-worker", daemon=True)
     _retry_worker_thread.start()
     log.info("Retry worker started")
 
 
 def _stop_retry_worker() -> None:
-    global _retry_executor, _retry_executor_workers
-
     _retry_worker_stop.set()
-    _slot_available_event.set()
     if _retry_worker_thread and _retry_worker_thread.is_alive():
         _retry_worker_thread.join(timeout=2)
-
-    executor = None
-    with _retry_dispatch_lock:
-        executor = _retry_executor
-        _retry_executor = None
-        _retry_executor_workers = 0
-        _retry_inflight_items.clear()
-
-    if executor is not None:
-        executor.shutdown(wait=False)
-
-    with _account_inflight_lock:
-        _account_inflight_count.clear()
-
     log.info("Retry worker stopped")
 
 
@@ -854,7 +288,7 @@ def dep_settings() -> Settings:
 
 
 def dep_gateway(settings: Annotated[Settings, Depends(dep_settings)]) -> SMSGateway:
-    return SMSGateway(settings, isolated_sip=False)
+    return SMSGateway(settings)
 
 
 def dep_admin_credentials(
@@ -944,12 +378,11 @@ def _build_queue_context(
     status_filter: str = "",
     provider_filter: str = "",
     page: int = 1,
-    queue_page_size: int = 20,
     inbox_search: str = "",
     inbox_status: str = "",
     inbox_provider: str = "",
     inbox_page: int = 1,
-    inbox_page_size: int = 20,
+    page_size: int = 20,
 ) -> tuple[dict, dict, dict, dict, dict, dict]:
     from .admin_reports import summarize_inbox, summarize_queue
 
@@ -973,8 +406,8 @@ def _build_queue_context(
     )
     if not isinstance(inbox_summary, dict) or inbox_summary.get("total_items") in (None, ""):
         inbox_summary = {**(inbox_summary if isinstance(inbox_summary, dict) else {}), "total_items": len(all_inbox_messages)}
-    recent_queue_items = paginate_items(all_queue_items, page=page, page_size=queue_page_size)
-    recent_inbox_messages = paginate_items(all_inbox_messages, page=inbox_page, page_size=inbox_page_size)
+    recent_queue_items = paginate_items(all_queue_items, page=page, page_size=page_size)
+    recent_inbox_messages = paginate_items(all_inbox_messages, page=inbox_page, page_size=page_size)
     queue_filters = {
         "search": search,
         "status": status_filter,
@@ -1127,14 +560,8 @@ def _build_live_call_context(settings: Settings) -> dict:
                 }
             )
 
-    computed_active_count = max(
-        total_active_calls,
-        len(active_calls),
-        len(active_call_items) if isinstance(active_call_items, list) else 0,
-    )
-
     return {
-        "active_count": computed_active_count,
+        "active_count": total_active_calls,
         "items": active_calls,
         "smpp_active_calls_by_user": smpp_active_calls_by_user,
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
@@ -1452,14 +879,7 @@ def _build_sip_account_from_form(form) -> SIPAccount:
     )
 
 
-def _build_smpp_account_from_form(
-    form,
-    *,
-    uploaded_audio_path: str = "",
-    uploaded_audio_original_name: str = "",
-    static_message_part_audio: dict[str, dict[str, str]] | None = None,
-    static_message_digit_audio: dict[str, dict[str, str]] | None = None,
-) -> SMPPAccount:
+def _build_smpp_account_from_form(form) -> SMPPAccount:
     label = str(form.get("label", "")).strip()
     username = str(form.get("username", "")).strip()
     account_id = str(form.get("account_id", "")).strip() or _slugify_identifier(label or username, "smpp-account")
@@ -1481,10 +901,6 @@ def _build_smpp_account_from_form(
         delivery_retry_interval_seconds=int(delivery_retry_interval_raw) if delivery_retry_interval_raw != "" else None,
         static_default_message_enabled=static_default_message_enabled,
         static_default_message_template=static_default_message_template,
-        uploaded_audio_path=str(uploaded_audio_path or "").strip(),
-        uploaded_audio_original_name=str(uploaded_audio_original_name or "").strip(),
-        static_message_part_audio=_normalize_static_message_part_audio(static_message_part_audio),
-        static_message_digit_audio=_normalize_static_message_digit_audio(static_message_digit_audio),
     )
 
 
@@ -1580,7 +996,10 @@ def _simulate_smpp_test_send(
             result=result,
         )
     finally:
-        gateway.close()
+        try:
+            gateway.sip_ua.close()
+        except Exception:
+            pass
 
     return {
         "queue_item": (get_queue_item(settings, queue_item.id) or queue_item.to_dict()),
@@ -1627,15 +1046,7 @@ def _delete_sip_account(settings: Settings, account_id: str) -> Settings:
 
 
 def _delete_smpp_account(settings: Settings, account_id: str) -> Settings:
-    removed_accounts = [account for account in settings.smpp_accounts if account.id == account_id]
-    removed_usernames = {account.username for account in removed_accounts if account.username}
-    for account in removed_accounts:
-        _delete_managed_file(account.uploaded_audio_path)
-        for audio_entry in _normalize_static_message_part_audio(
-            getattr(account, "static_message_part_audio", {})
-        ).values():
-            _delete_managed_file(audio_entry.get("path", ""))
-
+    removed_usernames = {account.username for account in settings.smpp_accounts if account.id == account_id and account.username}
     filtered_accounts = [account for account in settings.smpp_accounts if account.id != account_id]
     filtered_assignments = {
         smpp_username: sip_id
@@ -1646,32 +1057,6 @@ def _delete_smpp_account(settings: Settings, account_id: str) -> Settings:
         smpp_accounts=filtered_accounts,
         smpp_sip_assignments=filtered_assignments,
     )
-
-
-def _serialize_smpp_account_for_admin(account: SMPPAccount) -> dict:
-    template_description = describe_static_message_template(
-        account.static_default_message_template
-    )
-    part_audio_map = _normalize_static_message_part_audio(
-        getattr(account, "static_message_part_audio", {})
-    )
-    static_message_parts: list[dict] = []
-    for part in template_description.get("parts", []):
-        enriched_part = dict(part)
-        ordinal = str(part.get("ordinal", "") or "").strip()
-        audio_entry = part_audio_map.get(ordinal, {})
-        enriched_part["uploaded_audio_path"] = str(audio_entry.get("path", "") or "").strip()
-        enriched_part["uploaded_audio_original_name"] = str(
-            audio_entry.get("original_name", "") or ""
-        ).strip()
-        enriched_part["has_uploaded_audio"] = bool(enriched_part["uploaded_audio_path"])
-        static_message_parts.append(enriched_part)
-
-    return {
-        **account.model_dump(),
-        "static_message_template_description": template_description,
-        "static_message_parts": static_message_parts,
-    }
 
 
 def _build_sip_trunk_health_context(settings: Settings) -> dict:
@@ -1821,24 +1206,20 @@ def _admin_context(
     queue_status = str(request.query_params.get("status", "")).strip()
     queue_provider = str(request.query_params.get("provider", "")).strip()
     queue_page = int(request.query_params.get("queue_page", "1") or "1")
-    queue_page_size = _coerce_page_size(request.query_params.get("queue_page_size"), default=20)
     inbox_search = str(request.query_params.get("inbox_search", "")).strip()
     inbox_status = str(request.query_params.get("inbox_status", "")).strip()
     inbox_provider = str(request.query_params.get("inbox_provider", "")).strip()
     inbox_page = int(request.query_params.get("inbox_page", "1") or "1")
-    inbox_page_size = _coerce_page_size(request.query_params.get("inbox_page_size"), default=20)
     sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(
         settings,
         search=queue_search,
         status_filter=queue_status,
         provider_filter=queue_provider,
         page=queue_page,
-        queue_page_size=queue_page_size,
         inbox_search=inbox_search,
         inbox_status=inbox_status,
         inbox_provider=inbox_provider,
         inbox_page=inbox_page,
-        inbox_page_size=inbox_page_size,
     )
     live_calls = _build_live_call_context(settings)
     sip_trunks_health = _build_sip_trunk_health_context(settings)
@@ -1943,7 +1324,15 @@ def _admin_context(
         "health": health_payload,
         "sip_accounts": [account.model_dump(by_alias=True) for account in settings.sip_accounts],
         "smpp_accounts": [
-            _serialize_smpp_account_for_admin(account)
+            {
+                **account.model_dump(),
+                "static_message_template_description": describe_static_message_template(
+                    account.static_default_message_template
+                ),
+                "static_message_parts": describe_static_message_template(
+                    account.static_default_message_template
+                )["parts"],
+            }
             for account in settings.smpp_accounts
         ],
         "system_users": [user.model_dump() for user in settings.system_users],
@@ -3144,118 +2533,7 @@ async def admin_add_smpp_account(
 ):
     form = await request.form()
     current = ensure_default_accounts(load_settings_from_store())
-    requested_account_id = str(form.get("account_id", "")).strip()
-    existing_account = next((account for account in current.smpp_accounts if account.id == requested_account_id), None)
-
-    uploaded_audio_path = existing_account.uploaded_audio_path if existing_account else ""
-    uploaded_audio_original_name = existing_account.uploaded_audio_original_name if existing_account else ""
-    static_message_part_audio = _normalize_static_message_part_audio(
-        getattr(existing_account, "static_message_part_audio", {}) if existing_account else {}
-    )
-    static_message_digit_audio = _normalize_static_message_digit_audio(
-        getattr(existing_account, "static_message_digit_audio", {}) if existing_account else {}
-    )
-    upload_account_id = requested_account_id or _slugify_identifier(
-        str(form.get("label", "")).strip() or str(form.get("username", "")).strip(),
-        "smpp-account",
-    )
-    static_default_message_template = str(
-        form.get("static_default_message_template", "")
-    ).strip()
-    described_static_parts = describe_static_message_template(
-        static_default_message_template
-    ).get("parts", [])
-    valid_spoken_ordinals = {
-        str(part.get("ordinal", "")).strip()
-        for part in described_static_parts
-        if part.get("kind") == "text" and part.get("spoken")
-    }
-    valid_digit_ordinals = {str(digit) for digit in range(10)}
-
-    if _form_bool(form, "remove_uploaded_audio"):
-        _delete_managed_file(uploaded_audio_path)
-        uploaded_audio_path = ""
-        uploaded_audio_original_name = ""
-
-    for ordinal, audio_entry in list(static_message_part_audio.items()):
-        audio_path = str(audio_entry.get("path", "") or "").strip()
-        if ordinal not in valid_spoken_ordinals:
-            _delete_managed_file(audio_path)
-            static_message_part_audio.pop(ordinal, None)
-            continue
-        if _form_bool(form, f"remove_static_message_part_audio_{ordinal}"):
-            _delete_managed_file(audio_path)
-            static_message_part_audio.pop(ordinal, None)
-
-    for digit, audio_entry in list(static_message_digit_audio.items()):
-        audio_path = str(audio_entry.get("path", "") or "").strip()
-        if digit not in valid_digit_ordinals:
-            _delete_managed_file(audio_path)
-            static_message_digit_audio.pop(digit, None)
-            continue
-        if _form_bool(form, f"remove_static_message_digit_audio_{digit}"):
-            _delete_managed_file(audio_path)
-            static_message_digit_audio.pop(digit, None)
-
-    uploaded_audio = form.get("uploaded_audio_file")
-    if getattr(uploaded_audio, "filename", None):
-        new_uploaded_audio_path, new_uploaded_audio_original_name = await _store_smpp_account_uploaded_audio(
-            account_id=upload_account_id,
-            upload=uploaded_audio,
-        )
-        if new_uploaded_audio_path:
-            if uploaded_audio_path and uploaded_audio_path != new_uploaded_audio_path:
-                _delete_managed_file(uploaded_audio_path)
-            uploaded_audio_path = new_uploaded_audio_path
-            uploaded_audio_original_name = new_uploaded_audio_original_name
-
-    for ordinal in sorted(valid_spoken_ordinals, key=lambda value: int(value)):
-        uploaded_part_audio = form.get(f"static_message_part_audio_file_{ordinal}")
-        if not getattr(uploaded_part_audio, "filename", None):
-            continue
-        new_part_audio_path, new_part_audio_original_name = await _store_smpp_account_part_uploaded_audio(
-            account_id=upload_account_id,
-            part_ordinal=int(ordinal),
-            upload=uploaded_part_audio,
-        )
-        if not new_part_audio_path:
-            continue
-        previous_entry = static_message_part_audio.get(ordinal, {})
-        previous_path = str(previous_entry.get("path", "") or "").strip()
-        if previous_path and previous_path != new_part_audio_path:
-            _delete_managed_file(previous_path)
-        static_message_part_audio[ordinal] = {
-            "path": new_part_audio_path,
-            "original_name": new_part_audio_original_name,
-        }
-
-    for digit in sorted(valid_digit_ordinals):
-        uploaded_digit_audio = form.get(f"static_message_digit_audio_file_{digit}")
-        if not getattr(uploaded_digit_audio, "filename", None):
-            continue
-        new_digit_audio_path, new_digit_audio_original_name = await _store_smpp_account_digit_uploaded_audio(
-            account_id=upload_account_id,
-            digit=digit,
-            upload=uploaded_digit_audio,
-        )
-        if not new_digit_audio_path:
-            continue
-        previous_entry = static_message_digit_audio.get(digit, {})
-        previous_path = str(previous_entry.get("path", "") or "").strip()
-        if previous_path and previous_path != new_digit_audio_path:
-            _delete_managed_file(previous_path)
-        static_message_digit_audio[digit] = {
-            "path": new_digit_audio_path,
-            "original_name": new_digit_audio_original_name,
-        }
-
-    new_account = _build_smpp_account_from_form(
-        form,
-        uploaded_audio_path=uploaded_audio_path,
-        uploaded_audio_original_name=uploaded_audio_original_name,
-        static_message_part_audio=static_message_part_audio,
-        static_message_digit_audio=static_message_digit_audio,
-    )
+    new_account = _build_smpp_account_from_form(form)
     smpp_accounts = [account for account in current.smpp_accounts if account.id != new_account.id]
     if new_account.default_for_inbound:
         smpp_accounts = [account.model_copy(update={"default_for_inbound": False}) for account in smpp_accounts]
@@ -3350,84 +2628,6 @@ async def admin_delete_smpp_account(
         "admin.html",
         _admin_context(request, settings, active_section="config", success_message=f"SMPP user '{account_id}' deleted."),
     )
-
-
-@app.get("/admin/config/smpp-account-audio/{account_id}")
-async def admin_get_smpp_account_audio(
-    account_id: str,
-    _: None = Depends(dep_admin_credentials),
-):
-    settings = load_settings_from_store()
-    account = next((acc for acc in settings.smpp_accounts if acc.id == account_id), None)
-    if not account:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
-    audio_path_str = str(account.uploaded_audio_path or "").strip()
-    if not audio_path_str:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account audio not found")
-    audio_path = (BASE_DIR / audio_path_str).resolve()
-    allowed_root = SMPP_ACCOUNT_AUDIO_DIR.resolve()
-    if not audio_path.is_relative_to(allowed_root):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Audio path is outside the allowed directory")
-    if not audio_path.exists() or not audio_path.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Audio file not found")
-    media_type = "audio/wav" if audio_path.suffix.lower() == ".wav" else "audio/mpeg"
-    return FileResponse(audio_path, media_type=media_type, filename=audio_path.name)
-
-
-@app.get("/admin/config/smpp-digit-audio/{account_id}/{digit}")
-async def admin_get_smpp_digit_audio(
-    account_id: str,
-    digit: str,
-    _: None = Depends(dep_admin_credentials),
-):
-    if digit not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid digit")
-    settings = load_settings_from_store()
-    account = next((acc for acc in settings.smpp_accounts if acc.id == account_id), None)
-    if not account:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
-    digit_audio = _normalize_static_message_digit_audio(
-        getattr(account, "static_message_digit_audio", {})
-    )
-    audio_entry = digit_audio.get(digit, {})
-    audio_path_str = str(audio_entry.get("path", "") or "").strip()
-    if not audio_path_str:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Digit audio not found")
-    audio_path = (BASE_DIR / audio_path_str).resolve()
-    allowed_root = SMPP_ACCOUNT_AUDIO_DIR.resolve()
-    if not audio_path.is_relative_to(allowed_root):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Audio path is outside the allowed directory")
-    if not audio_path.exists() or not audio_path.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Audio file not found")
-    media_type = "audio/wav" if audio_path.suffix.lower() == ".wav" else "audio/mpeg"
-    return FileResponse(audio_path, media_type=media_type, filename=audio_path.name)
-
-
-@app.get("/admin/config/smpp-part-audio/{account_id}/{ordinal}")
-async def admin_get_smpp_part_audio(
-    account_id: str,
-    ordinal: str,
-    _: None = Depends(dep_admin_credentials),
-):
-    settings = load_settings_from_store()
-    account = next((acc for acc in settings.smpp_accounts if acc.id == account_id), None)
-    if not account:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
-    part_audio = _normalize_static_message_part_audio(
-        getattr(account, "static_message_part_audio", {})
-    )
-    audio_entry = part_audio.get(ordinal, {})
-    audio_path_str = str(audio_entry.get("path", "") or "").strip()
-    if not audio_path_str:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Part audio not found")
-    audio_path = (BASE_DIR / audio_path_str).resolve()
-    allowed_root = SMPP_ACCOUNT_AUDIO_DIR.resolve()
-    if not audio_path.is_relative_to(allowed_root):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Audio path is outside the allowed directory")
-    if not audio_path.exists() or not audio_path.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Audio file not found")
-    media_type = "audio/wav" if audio_path.suffix.lower() == ".wav" else "audio/mpeg"
-    return FileResponse(audio_path, media_type=media_type, filename=audio_path.name)
 
 
 @app.post("/admin/config/system-users")
@@ -3742,160 +2942,6 @@ async def admin_tools_test_send(
     return JSONResponse(response_payload, status_code=status.HTTP_202_ACCEPTED)
 
 
-@app.post("/admin/tools/bulk-send")
-async def admin_tools_bulk_send(
-    request: Request,
-    _: None = Depends(dep_admin_credentials),
-    settings: Settings = Depends(dep_settings),
-):
-    try:
-        form = await request.form()
-    except ClientDisconnect:
-        log.warning("Admin bulk-send request client disconnected before form parsing completed")
-        return JSONResponse(
-            {
-                "success": False,
-                "error": "client_disconnected",
-                "message": "Client disconnected before the bulk-send request body was fully received.",
-            },
-            status_code=499,
-        )
-    smpp_username = str(form.get("smpp_username", "")).strip()
-    numbers_raw = str(form.get("phone_numbers", "")).strip()
-    body = str(form.get("body", "")).strip()
-    simultaneous = str(form.get("simultaneous", "true")).strip().lower() == "true"
-
-    if not smpp_username or not numbers_raw or not body:
-        return JSONResponse(
-            {
-                "success": False,
-                "status": "failed",
-                "message": "smpp_username, phone_numbers and body are required",
-                "error": "missing_required_fields",
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    smpp_account = next(
-        (account for account in settings.smpp_accounts if account.username == smpp_username),
-        None,
-    )
-    if smpp_account is None:
-        return JSONResponse(
-            {
-                "success": False,
-                "status": "failed",
-                "message": f"SMPP user '{smpp_username}' not found",
-                "error": "unknown_smpp_user",
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-    if not smpp_account.enabled:
-        return JSONResponse(
-            {
-                "success": False,
-                "status": "failed",
-                "message": f"SMPP user '{smpp_username}' is disabled",
-                "error": "smpp_user_disabled",
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    numbers = []
-    for line in numbers_raw.splitlines():
-        for num in line.split(","):
-            num = re.sub(r"[^\d+]", "", str(num).strip())
-            if num and len(num) >= 7:
-                numbers.append(num)
-
-    if not numbers:
-        return JSONResponse(
-            {
-                "success": False,
-                "status": "failed",
-                "message": "No valid phone numbers found. Provide numbers separated by commas or newlines.",
-                "error": "no_valid_numbers",
-            },
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-
-    bulk_job_id = _create_bulk_job(numbers, simultaneous)
-    queue_ids = []
-    now = _utc_now_iso()
-
-    if simultaneous:
-        for phone_number in numbers:
-            queue_item = record_queue_item(
-                settings,
-                phone_number=phone_number,
-                provider="bulk-send",
-                body=body,
-                status="queued",
-                smpp_username=smpp_username,
-                bulk_job_id=bulk_job_id,
-            )
-            queue_ids.append(queue_item.id)
-        processing_mode = "simultaneous"
-    else:
-        queue_item = record_queue_item(
-            settings,
-            phone_number=numbers[0],
-            provider="bulk-send",
-            body=body,
-            status="queued",
-            smpp_username=smpp_username,
-            bulk_job_id=bulk_job_id,
-        )
-        queue_ids.append(queue_item.id)
-
-        for phone_number in numbers[1:]:
-            queue_item = record_queue_item(
-                settings,
-                phone_number=phone_number,
-                provider="bulk-send",
-                body=body,
-                status="sequential_pending",
-                smpp_username=smpp_username,
-                bulk_job_id=bulk_job_id,
-            )
-            queue_ids.append(queue_item.id)
-        processing_mode = "sequential"
-
-    _append_admin_log(
-        f"Tools bulk-send queued {len(queue_ids)} messages smpp_username={smpp_username} numbers={len(numbers)} mode={processing_mode} body={body[:80]!r}"
-    )
-    _record_admin_audit(
-        action="tools.bulk_send",
-        section="tools",
-        detail=f"Queued {len(queue_ids)} voice messages for bulk send using SMPP user '{smpp_username}' in {processing_mode} mode",
-        status="success",
-        metadata={
-            "smpp_username": smpp_username,
-            "total_numbers": len(numbers),
-            "queued_count": len(queue_ids),
-            "processing_mode": processing_mode,
-            "simultaneous": simultaneous,
-            "sample_numbers": numbers[:3] if numbers else [],
-            "queue_ids": queue_ids,
-            "bulk_job_id": bulk_job_id,
-        },
-    )
-    return JSONResponse(
-        {
-            "success": True,
-            "status": "queued",
-            "total_queued": len(queue_ids),
-            "total_numbers": len(numbers),
-            "processing_mode": processing_mode,
-            "simultaneous": simultaneous,
-            "message": f"Queued {len(queue_ids)} voice message(s) for delivery to {len(numbers)} number(s) in {processing_mode} mode. Processing continues in the background.",
-            "queue_ids": queue_ids,
-            "bulk_job_id": bulk_job_id,
-        },
-        status_code=status.HTTP_202_ACCEPTED,
-    )
-
-
 @app.post("/admin/queue/delete")
 async def admin_delete_queue_item_route(
     request: Request,
@@ -4077,74 +3123,20 @@ async def admin_tools_test_send_status(
                 "status": "expired",
                 "error": "job_state_unavailable",
                 "message": "Live test-send status is no longer available in memory. Check Delivery Reports or the queue below for the persisted result.",
-            },
+                "result": None,
+                "queue_item": None,
+            }
         )
-
     return JSONResponse(job)
-
-@app.get("/admin/queue/poll")
-async def admin_queue_bulk_poll(
-    request: Request,
-    _: None = Depends(dep_admin_credentials),
-    settings: Settings = Depends(dep_settings),
-):
-    bulk_job_id = str(request.query_params.get("bulk_job_id", "")).strip()
-    if not bulk_job_id:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "bulk_job_id is required")
-
-    with _bulk_jobs_lock:
-        job = _bulk_jobs.get(bulk_job_id)
-        if job is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Bulk job not found")
-
-        queue_store = get_queue_store(settings)
-        items = queue_store.query_items(
-            status="queued",
-            limit=200,
-        )
-    bulk_items = [item for item in items if getattr(item, "bulk_job_id", "") == bulk_job_id]
-
-    return JSONResponse(
-        {
-            "success": True,
-            "bulk_job_id": bulk_job_id,
-            "simultaneous": job.get("simultaneous", True),
-            "total_numbers": job.get("total_numbers", 0),
-            "items": [item.to_dict() for item in bulk_items],
-        },
-    )
 
 
 @app.get("/admin/reports/live")
 async def admin_reports_live(
-    request: Request,
     _: None = Depends(dep_admin_credentials),
     settings: Settings = Depends(dep_settings),
 ):
     report_summary, recent_reports = _report_context(settings)
-    queue_search = str(request.query_params.get("search", "")).strip()
-    queue_status = str(request.query_params.get("status", "")).strip()
-    queue_provider = str(request.query_params.get("provider", "")).strip()
-    queue_page = int(request.query_params.get("queue_page", "1") or "1")
-    queue_page_size = _coerce_page_size(request.query_params.get("queue_page_size"), default=20)
-    inbox_search = str(request.query_params.get("inbox_search", "")).strip()
-    inbox_status = str(request.query_params.get("inbox_status", "")).strip()
-    inbox_provider = str(request.query_params.get("inbox_provider", "")).strip()
-    inbox_page = int(request.query_params.get("inbox_page", "1") or "1")
-    inbox_page_size = _coerce_page_size(request.query_params.get("inbox_page_size"), default=20)
-    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(
-        settings,
-        search=queue_search,
-        status_filter=queue_status,
-        provider_filter=queue_provider,
-        page=queue_page,
-        queue_page_size=queue_page_size,
-        inbox_search=inbox_search,
-        inbox_status=inbox_status,
-        inbox_provider=inbox_provider,
-        inbox_page=inbox_page,
-        inbox_page_size=inbox_page_size,
-    )
+    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(settings)
     live_calls = _build_live_call_context(settings)
     queue_items = []
     for item in recent_queue_items.get("items", []):
@@ -4292,10 +3284,8 @@ async def twilio_webhook(
             _log_result(result)
             _record_gateway_result("twilio", result, phone_number=phone_number, message=Body[:120])
             _update_queue_item_from_result(settings, queue_item.id, result)
-        except Exception:
+        except Exception as exc:
             log.exception("Twilio SMS processing error")
-        finally:
-            gateway.close()
 
     Thread(target=process_sms, name=f"twilio-sms-{queue_item.id}", daemon=True).start()
     return '<?xml version="1.0" encoding="UTF-8"?><Response/>'
@@ -4339,10 +3329,8 @@ async def vonage_webhook(
             _log_result(result)
             _record_gateway_result("vonage", result, phone_number=phone_number, message=payload.text[:120])
             _update_queue_item_from_result(settings, queue_item.id, result)
-        except Exception:
+        except Exception as exc:
             log.exception("Vonage SMS processing error")
-        finally:
-            gateway.close()
 
     Thread(target=process_sms, name=f"vonage-sms-{queue_item.id}", daemon=True).start()
     return {"status": "ok", "detail": "Processing in background"}
@@ -4385,10 +3373,8 @@ async def generic_webhook(
             _log_result(result)
             _record_gateway_result("generic", result, phone_number=phone_number, message=payload.body[:120])
             _update_queue_item_from_result(settings, queue_item.id, result)
-        except Exception:
+        except Exception as exc:
             log.exception("Generic SMS processing error")
-        finally:
-            gateway.close()
 
     Thread(target=process_sms, name=f"generic-sms-{queue_item.id}", daemon=True).start()
 
@@ -4475,22 +3461,19 @@ async def debug_call(
 
     sms = IncomingSMS(body=req.text, destination=req.phone, provider="debug")
     queue_item = record_queue_item(settings, phone_number=req.phone, provider="debug", body=req.text, status="processing")
-    try:
-        result = gateway.process(sms)
-        _record_gateway_result("debug", result, phone_number=req.phone, message=req.text[:120])
-        _update_queue_item_from_result(settings, queue_item.id, result)
-        return {
-            "success": result.success,
-            "phone_number": result.phone_number,
-            "text_spoken": result.text_spoken,
-            "audio_cached": result.was_cached,
-            "sip_call_id": result.sip_call_id,
-            "sip_account_id": result.sip_account_id,
-            "error": result.error,
-            "details": result.details,
-        }
-    finally:
-        gateway.close()
+    result = gateway.process(sms)
+    _record_gateway_result("debug", result, phone_number=req.phone, message=req.text[:120])
+    _update_queue_item_from_result(settings, queue_item.id, result)
+    return {
+        "success": result.success,
+        "phone_number": result.phone_number,
+        "text_spoken": result.text_spoken,
+        "audio_cached": result.was_cached,
+        "sip_call_id": result.sip_call_id,
+        "sip_account_id": result.sip_account_id,
+        "error": result.error,
+        "details": result.details,
+    }
 
 
 def _log_result(result) -> None:
