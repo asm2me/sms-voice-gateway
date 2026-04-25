@@ -756,6 +756,10 @@ class PJSipUASession:
                 account_id = current_profile.id
                 concurrency_limit = max(0, int(current_profile.concurrency_limit or 0))
 
+                call_id = f"pj_{uuid.uuid4().hex}"
+                invite_uri = self._build_sip_uri(destination)
+                callback = _CallCallbackHolder(self, account_id, call_id)
+
                 with _TRUNK_CONCURRENCY_LOCK:
                     active_calls = _TRUNK_ACTIVE_CALLS.get(account_id, 0)
                     if concurrency_limit > 0 and active_calls >= concurrency_limit:
@@ -772,10 +776,21 @@ class PJSipUASession:
                             },
                         )
                     _TRUNK_ACTIVE_CALLS[account_id] = active_calls + 1
+                    now = time.time()
+                    _TRUNK_CALL_STATES[call_id] = {
+                        "call_id": call_id,
+                        "account_id": account_id,
+                        "state": "dialing",
+                        "state_label": "dialing",
+                        "last_status_code": 0,
+                        "destination_number": destination,
+                        "answered": False,
+                        "updated_at": now,
+                        "connected_at": None,
+                        "hangup_at": None,
+                        "expires_at": now + _TRUNK_CALL_STATE_RETENTION_SECONDS,
+                    }
 
-                call_id = f"pj_{uuid.uuid4().hex}"
-                invite_uri = self._build_sip_uri(destination)
-                callback = _CallCallbackHolder(self, account_id, call_id)
                 call = account.makeCall(
                     invite_uri,
                     callback,
@@ -810,6 +825,7 @@ class PJSipUASession:
                         _TRUNK_ACTIVE_CALLS.pop(account_id, None)
                     else:
                         _TRUNK_ACTIVE_CALLS[account_id] = current - 1
+                    _TRUNK_CALL_STATES.pop(call_id, None)
                 raise
 
         try:

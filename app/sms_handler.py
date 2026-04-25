@@ -183,13 +183,16 @@ class SMSGateway:
         self.settings = settings
         self.audio_cache = AudioCache(settings)
         self.tts = TTSService(settings, self.audio_cache)
+        self._isolated_sip = bool(isolated_sip)
         self.sip_ua = build_pjsua2_service(
             settings,
             scope=sip_scope,
-            isolated=isolated_sip,
+            isolated=self._isolated_sip,
         )
 
     def close(self) -> None:
+        if not self._isolated_sip:
+            return
         try:
             self.sip_ua.close()
         except Exception:

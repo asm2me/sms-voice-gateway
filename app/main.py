@@ -640,7 +640,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
     gateway = SMSGateway(
         settings,
         sip_scope=_SMS_GATEWAY_PJSUA_SCOPE,
-        isolated_sip=False,
+        isolated_sip=True,
     )
     try:
         result = gateway.process(sms, queue_retries=False)
