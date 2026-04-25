@@ -853,7 +853,7 @@ def dep_settings() -> Settings:
 
 
 def dep_gateway(settings: Annotated[Settings, Depends(dep_settings)]) -> SMSGateway:
-    return SMSGateway(settings)
+    return SMSGateway(settings, isolated_sip=False)
 
 
 def dep_admin_credentials(
