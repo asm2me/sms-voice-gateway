@@ -1004,10 +1004,22 @@ class PJSipUASession:
         current_account_id = self._current_profile.id if self._current_profile else ""
         now = time.time()
         with _TRUNK_CONCURRENCY_LOCK:
+            active_state_names = {
+                "CALLING",
+                "DIALING",
+                "EARLY",
+                "RINGING",
+                "ACTIVE",
+                "ANSWERED",
+                "CONFIRMED",
+                "CONNECTED",
+            }
             expired_call_ids = [
                 call_id
                 for call_id, item in _TRUNK_CALL_STATES.items()
-                if float(item.get("expires_at") or 0.0) and float(item.get("expires_at") or 0.0) <= now
+                if float(item.get("expires_at") or 0.0)
+                and float(item.get("expires_at") or 0.0) <= now
+                and str(item.get("state") or item.get("state_label") or "").strip().upper() not in active_state_names
             ]
             for call_id in expired_call_ids:
                 _TRUNK_CALL_STATES.pop(call_id, None)
@@ -1606,7 +1618,7 @@ class _CallCallbackHolder:
                 "updated_at": now,
                 "connected_at": self._answered_at,
                 "hangup_at": current.get("hangup_at"),
-                "expires_at": current.get("expires_at", now + _TRUNK_CALL_STATE_RETENTION_SECONDS),
+                "expires_at": now + _TRUNK_CALL_STATE_RETENTION_SECONDS,
             }
 
     def _release_playback_bridge(self, *, stop_transmit: bool, reason: str) -> None:
