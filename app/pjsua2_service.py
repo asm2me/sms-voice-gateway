@@ -199,6 +199,7 @@ _PJSUA_GLOBAL_SESSIONS: dict[str, "PJSipUASession"] = {}
 _PJSUA_REGISTERED_THREADS: dict[int, set[int]] = {}
 _PJSUA_THREAD_DESCS: dict[int, Any] = {}
 _PJSUA_PLAYER_LOCK = threading.RLock()
+_PJSUA_EVENT_PUMP_LOCK = threading.RLock()
 _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
 _PJSUA_RETIRED_PLAYERS: list[dict[str, Any]] = []
 _PJSUA_AUDIO_SETUP_LOCKS: dict[str, threading.RLock] = {}
@@ -356,6 +357,14 @@ class PJSipUASession:
                 continue
             except Exception:
                 continue
+
+    def _pump_events(self, timeout_ms: int = 50) -> None:
+        endpoint = self._endpoint
+        if endpoint is None:
+            return
+        with _PJSUA_EVENT_PUMP_LOCK:
+            with suppress(Exception):
+                endpoint.libHandleEvents(int(timeout_ms or 0))
 
     def initialize(self) -> PJSUA2RegistrationResult:
         global _PJSUA_GLOBAL_ENDPOINT, _PJSUA_GLOBAL_TRANSPORT
@@ -1002,8 +1011,7 @@ class PJSipUASession:
         last_info: dict[str, Any] = {}
 
         while time.time() < deadline:
-            with suppress(Exception):
-                self._endpoint.libHandleEvents(50)
+            self._pump_events(50)
 
             info = account.registration_info()
             if info:
@@ -1126,9 +1134,7 @@ class PJSipUASession:
     def _send_options_probe(self, profile: SipAccountProfile) -> dict[str, Any]:
         target = profile.registrar_uri or self._build_registrar_uri(profile)
         try:
-            if self._endpoint is not None:
-                with suppress(Exception):
-                    self._endpoint.libHandleEvents(50)
+            self._pump_events(50)
             log.info(
                 "Prepared SIP OPTIONS reachability probe for account=%s target=%s transport=%s",
                 profile.id,
@@ -2144,10 +2150,7 @@ class _CallCallbackHolder:
         deadline = time.time() + max(1.0, timeout_seconds)
         media_check_counter = 0
         while time.time() < deadline:
-            with suppress(Exception):
-                endpoint = self._session._endpoint
-                if endpoint is not None:
-                    endpoint.libHandleEvents(50)
+            self._session._pump_events(50)
 
             media_check_counter += 1
 
