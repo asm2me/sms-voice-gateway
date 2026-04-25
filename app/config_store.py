@@ -267,6 +267,30 @@ def save_settings_to_store(settings: Settings, path: Path | str = CONFIG_STORE_P
     return save_persistent_config(build_settings_data(settings), path)
 
 
+def _get_enabled_sip_account_by_id(settings: Settings, sip_account_id: str) -> SIPAccount | None:
+    target_id = (sip_account_id or "").strip()
+    if not target_id:
+        return None
+
+    for account in settings.sip_accounts:
+        if account.enabled and account.id == target_id:
+            return account
+
+    return None
+
+
+def _get_enabled_smpp_account_by_username(settings: Settings, smpp_username: str) -> SMPPAccount | None:
+    username = (smpp_username or "").strip()
+    if not username:
+        return None
+
+    for account in settings.smpp_accounts:
+        if account.enabled and account.username == username:
+            return account
+
+    return None
+
+
 def get_sip_account_for_smpp_username(settings: Settings, smpp_username: str) -> SIPAccount | None:
     username = (smpp_username or "").strip()
     if not username:
@@ -274,9 +298,15 @@ def get_sip_account_for_smpp_username(settings: Settings, smpp_username: str) ->
 
     assigned_sip_id = (settings.smpp_sip_assignments or {}).get(username, "").strip()
     if assigned_sip_id:
-        for account in settings.sip_accounts:
-            if account.id == assigned_sip_id and account.enabled:
-                return account
+        assigned_account = _get_enabled_sip_account_by_id(settings, assigned_sip_id)
+        if assigned_account is not None:
+            return assigned_account
+
+    smpp_account = _get_enabled_smpp_account_by_username(settings, username)
+    if smpp_account is not None:
+        configured_sip_account = _get_enabled_sip_account_by_id(settings, smpp_account.default_sip_account_id)
+        if configured_sip_account is not None:
+            return configured_sip_account
 
     for account in settings.sip_accounts:
         if account.default_for_outbound and account.enabled:
