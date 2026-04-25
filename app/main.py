@@ -640,7 +640,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
     gateway = SMSGateway(
         settings,
         sip_scope=_SMS_GATEWAY_PJSUA_SCOPE,
-        isolated_sip=True,
+        isolated_sip=False,
     )
     try:
         result = gateway.process(sms, queue_retries=False)
@@ -853,9 +853,7 @@ def dep_settings() -> Settings:
 
 
 def dep_gateway(settings: Annotated[Settings, Depends(dep_settings)]) -> SMSGateway:
-    # Force an isolated SIP runtime per request so concurrent webhook deliveries
-    # do not reuse a shared PJSUA2 endpoint or media bridge.
-    return SMSGateway(settings, isolated_sip=True)
+    return SMSGateway(settings)
 
 
 def dep_admin_credentials(
