@@ -199,7 +199,7 @@ _PJSUA_GLOBAL_SESSIONS: dict[str, "PJSipUASession"] = {}
 _PJSUA_REGISTERED_THREADS: dict[int, set[int]] = {}
 _PJSUA_THREAD_DESCS: dict[int, Any] = {}
 _PJSUA_PLAYER_LOCK = threading.RLock()
-_PJSUA_EVENT_PUMP_LOCK = threading.RLock()
+_PJSUA_EVENT_PUMP_LOCKS: dict[int, threading.RLock] = {}
 _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
 _PJSUA_RETIRED_PLAYERS: list[dict[str, Any]] = []
 _PJSUA_AUDIO_SETUP_LOCKS: dict[str, threading.RLock] = {}
@@ -207,6 +207,16 @@ _PJSUA_AUDIO_SETUP_LOCKS: dict[str, threading.RLock] = {}
 
 def _pjsua_registration_key(endpoint: object | None) -> int:
     return id(endpoint) if endpoint is not None else 0
+
+
+def _pjsua_event_pump_lock(endpoint: object | None) -> threading.RLock:
+    key = _pjsua_registration_key(endpoint)
+    with _PJSUA_GLOBAL_LOCK:
+        lock = _PJSUA_EVENT_PUMP_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _PJSUA_EVENT_PUMP_LOCKS[key] = lock
+        return lock
 
 
 def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
@@ -362,7 +372,7 @@ class PJSipUASession:
         endpoint = self._endpoint
         if endpoint is None:
             return
-        with _PJSUA_EVENT_PUMP_LOCK:
+        with _pjsua_event_pump_lock(endpoint):
             with suppress(Exception):
                 endpoint.libHandleEvents(int(timeout_ms or 0))
 
@@ -508,7 +518,9 @@ class PJSipUASession:
                 with suppress(Exception):
                     endpoint.libDestroy()
                 with _PJSUA_GLOBAL_LOCK:
-                    _PJSUA_REGISTERED_THREADS.pop(_pjsua_registration_key(endpoint), None)
+                    endpoint_key = _pjsua_registration_key(endpoint)
+                    _PJSUA_REGISTERED_THREADS.pop(endpoint_key, None)
+                    _PJSUA_EVENT_PUMP_LOCKS.pop(endpoint_key, None)
 
     def select_profile(self, profile: SipAccountProfile | dict[str, Any]) -> SipAccountProfile:
         if isinstance(profile, SipAccountProfile):
@@ -2099,6 +2111,14 @@ class _CallCallbackHolder:
                 self._call_id,
                 answered,
             )
+            started = self._try_start_playback(call_obj)
+            if started:
+                self._playback_pending = False
+                log.info(
+                    "Outbound SIP playback started directly from media-state callback account=%s call_id=%s",
+                    self._account_id,
+                    self._call_id,
+                )
 
     def _hangup_call(self, *, reason: str, force: bool = False) -> None:
         if self._done.is_set():
