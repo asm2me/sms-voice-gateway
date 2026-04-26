@@ -2377,6 +2377,21 @@ class _CallCallbackHolder:
             if self._done.wait(0.1):
                 break
 
+        if not self._done.is_set():
+            log.warning(
+                "Outbound SIP wait timed out account=%s call_id=%s answered=%s playback_started=%s state=%s",
+                self._account_id,
+                self._call_id,
+                self._answered_at is not None,
+                self._playback_started,
+                self._state_text,
+            )
+            self._disconnect_reason = self._disconnect_reason or "timeout"
+            self._hangup_call(reason="wait_timeout", force=True)
+            if not self._done.wait(1.0) and not self._released:
+                self._disconnected_at = self._disconnected_at or time.time()
+                self._release_slot()
+
         answered = self._answered_at is not None
         if answered:
             end_time = self._disconnected_at or time.time()
