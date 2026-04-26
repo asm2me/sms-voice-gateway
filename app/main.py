@@ -163,7 +163,16 @@ def _retry_queue_item(settings: Settings, item) -> None:
             latest.last_error = (result.details or {}).get("pending_reason") or result.error or latest.last_error
             next_attempt = (latest.attempts or 0) + 1
             should_retry = latest.max_attempts <= 0 or next_attempt < latest.max_attempts
-            missed_state = str(getattr(result, "details", {}) or {}).get("state", "").strip().lower() == "missed" or "missed" in (result.error or "").lower() or "not answered" in (result.error or "").lower()
+            details = getattr(result, "details", {}) or {}
+            if not isinstance(details, dict):
+                details = {}
+            details_state = str(details.get("state", "") or "").strip().lower()
+            error_text = (result.error or "").lower()
+            missed_state = (
+                details_state == "missed"
+                or "missed" in error_text
+                or "not answered" in error_text
+            )
             if should_retry:
                 latest.status = "retry_scheduled"
                 latest.attempts = next_attempt
