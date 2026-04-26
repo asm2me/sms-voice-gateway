@@ -997,10 +997,13 @@ def _simulate_smpp_test_send(
             result=result,
         )
     finally:
-        try:
-            gateway.sip_ua.close()
-        except Exception:
-            pass
+        # Keep the shared SIP session alive so the outbound call remains visible
+        # in live call tracking. Only isolated sessions should be torn down here.
+        if getattr(gateway.sip_ua, "_isolated", False):
+            try:
+                gateway.sip_ua.close()
+            except Exception:
+                pass
 
     return {
         "queue_item": (get_queue_item(settings, queue_item.id) or queue_item.to_dict()),
@@ -1190,6 +1193,19 @@ def _normalize_message_level(message_level: str | None) -> str:
     if normalized in {"warn", "warning", "partial", "degraded"}:
         return "warning"
     return "success"
+
+
+def _coerce_page_size(value, *, default: int = 20, minimum: int = 1, maximum: int = 100) -> int:
+    try:
+        page_size = int(str(value).strip())
+    except Exception:
+        return default
+
+    if page_size < minimum:
+        return default
+    if page_size > maximum:
+        return maximum
+    return page_size
 
 
 def _admin_context(
