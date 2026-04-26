@@ -462,6 +462,23 @@ def _build_live_call_context(settings: Settings) -> dict:
     total_active_calls = int(status.get("total_active_calls", active_call_count) or 0)
     all_active_calls = status.get("all_active_calls", {}) or {}
     active_call_items = status.get("active_call_items", []) or []
+    log.info(
+        "Live calls snapshot: total_active=%s all_active=%s items=%s registered=%s current_account_id=%s",
+        total_active_calls,
+        all_active_calls,
+        [
+            {
+                "call_id": str(item.get("call_id", ""))[:16],
+                "account_id": item.get("account_id", ""),
+                "state": item.get("state", ""),
+                "destination": item.get("destination_number", ""),
+                "expires_at": item.get("expires_at", 0),
+            }
+            for item in active_call_items
+        ],
+        status.get("registered", False),
+        current_account_id,
+    )
     now = time.time()
 
     if active_call_items:
