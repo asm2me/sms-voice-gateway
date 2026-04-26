@@ -27,7 +27,7 @@ import time
 import uuid
 import wave
 import os
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -203,12 +203,6 @@ _PJSUA_EVENT_PUMP_LOCKS: dict[int, threading.RLock] = {}
 _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
 _PJSUA_RETIRED_PLAYERS: list[dict[str, Any]] = []
 _PJSUA_AUDIO_SETUP_LOCKS: dict[str, threading.RLock] = {}
-# Serializes all PJSUA2 media operations (createPlayer, startTransmit,
-# stopTransmit, recorder creation/destruction) across calls. PJSIP group
-# locks assert when one call's media object is touched while another call
-# holds the lock owner thread, so we keep all media bridge transitions on a
-# single thread at a time.
-_PJSUA_MEDIA_OP_LOCK = threading.RLock()
 
 
 def _pjsua_registration_key(endpoint: object | None) -> int:
@@ -245,7 +239,7 @@ def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
     # after detaching them so Python GC does not immediately run native cleanup on
     # an unsafe thread.
     if stop_transmit:
-        with _PJSUA_MEDIA_OP_LOCK:
+        with (setup_lock if setup_lock is not None else nullcontext()):
             try:
                 if player is not None and call_audio_media is not None and hasattr(player, "stopTransmit"):
                     player.stopTransmit(call_audio_media)
