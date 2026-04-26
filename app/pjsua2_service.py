@@ -1696,49 +1696,72 @@ class _CallCallbackHolder:
                 return
             self._released = True
 
-        self._release_playback_bridge(stop_transmit=False, reason="call_disconnected")
-        self._player = None
-        self._player_media = None
-        self._recorder = None
-        self._call_obj = None
-        self._playback_pending = False
-        self._playback_ready = False
-        self._hangup_requested_at = None
+        cleanup_error = ""
+        try:
+            try:
+                self._release_playback_bridge(stop_transmit=False, reason="call_disconnected")
+            except Exception as exc:
+                cleanup_error = f"{type(exc).__name__}: {exc}"
+                log.warning(
+                    "Outbound SIP playback bridge release failed account=%s call_id=%s error=%s",
+                    self._account_id,
+                    self._call_id,
+                    cleanup_error,
+                )
 
-        # Clean up the per-call audio setup lock if it exists
-        with _PJSUA_PLAYER_LOCK:
-            _PJSUA_AUDIO_SETUP_LOCKS.pop(self._call_id, None)
+            try:
+                self._player = None
+                self._player_media = None
+                self._recorder = None
+                self._call_obj = None
+                self._playback_pending = False
+                self._playback_ready = False
+                self._hangup_requested_at = None
 
-        with _TRUNK_CONCURRENCY_LOCK:
-            current = _TRUNK_ACTIVE_CALLS.get(self._account_id, 0)
-            if current <= 1:
-                _TRUNK_ACTIVE_CALLS.pop(self._account_id, None)
-            else:
-                _TRUNK_ACTIVE_CALLS[self._account_id] = current - 1
-            retained = dict(_TRUNK_CALL_STATES.get(self._call_id, {}))
-            now = time.time()
-            retained.update(
-                {
-                    "call_id": self._call_id,
-                    "account_id": self._account_id,
-                    "state": "HUNGUP" if self._answered_at is not None else "MISSED",
-                    "answered": self._answered_at is not None,
-                    "connected_at": self._answered_at,
-                    "hangup_at": self._disconnected_at or now,
-                    "updated_at": now,
-                    "expires_at": now + _TRUNK_CALL_STATE_RETENTION_SECONDS,
-                    "last_status_code": self._last_status_code,
-                }
+                # Clean up the per-call audio setup lock if it exists
+                with _PJSUA_PLAYER_LOCK:
+                    _PJSUA_AUDIO_SETUP_LOCKS.pop(self._call_id, None)
+            except Exception as exc:
+                cleanup_error = cleanup_error or f"{type(exc).__name__}: {exc}"
+                log.warning(
+                    "Outbound SIP release cleanup failed account=%s call_id=%s error=%s",
+                    self._account_id,
+                    self._call_id,
+                    cleanup_error,
+                )
+        finally:
+            with _TRUNK_CONCURRENCY_LOCK:
+                current = _TRUNK_ACTIVE_CALLS.get(self._account_id, 0)
+                if current <= 1:
+                    _TRUNK_ACTIVE_CALLS.pop(self._account_id, None)
+                else:
+                    _TRUNK_ACTIVE_CALLS[self._account_id] = current - 1
+                retained = dict(_TRUNK_CALL_STATES.get(self._call_id, {}))
+                now = time.time()
+                retained.update(
+                    {
+                        "call_id": self._call_id,
+                        "account_id": self._account_id,
+                        "state": "HUNGUP" if self._answered_at is not None else "MISSED",
+                        "answered": self._answered_at is not None,
+                        "connected_at": self._answered_at,
+                        "hangup_at": self._disconnected_at or now,
+                        "updated_at": now,
+                        "expires_at": now + _TRUNK_CALL_STATE_RETENTION_SECONDS,
+                        "last_status_code": self._last_status_code,
+                    }
+                )
+                if cleanup_error:
+                    retained["release_error"] = cleanup_error
+                _TRUNK_CALL_STATES[self._call_id] = retained
+
+            log.info(
+                "Released SIP trunk concurrency slot account=%s call_id=%s active_calls=%s",
+                self._account_id,
+                self._call_id,
+                _TRUNK_ACTIVE_CALLS.get(self._account_id, 0),
             )
-            _TRUNK_CALL_STATES[self._call_id] = retained
-
-        log.info(
-            "Released SIP trunk concurrency slot account=%s call_id=%s active_calls=%s",
-            self._account_id,
-            self._call_id,
-            _TRUNK_ACTIVE_CALLS.get(self._account_id, 0),
-        )
-        self._done.set()
+            self._done.set()
 
     def set_playback_context(
         self,
