@@ -137,7 +137,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
 
     result = None
     try:
-        result = SMSGateway(settings).process(sms, queue_retries=False)
+        result = SMSGateway(settings, isolated_sip=False).process(sms, queue_retries=False)
 
         latest = queue_store.get(item.id)
         if latest is None:
