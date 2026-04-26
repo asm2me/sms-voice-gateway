@@ -1242,7 +1242,11 @@ def _build_smpp_account_admin_context(account: SMPPAccount) -> dict[str, object]
 
 def _serve_smpp_audio_response(settings: Settings, raw_audio_path: str) -> FileResponse:
     audio_path = _resolve_queue_media_path(settings, raw_audio_path)
-    return FileResponse(audio_path, media_type=_guess_audio_media_type(audio_path), filename=audio_path.name)
+    media_type = "audio/wav" if audio_path.suffix.lower() == ".wav" else _guess_audio_media_type(audio_path)
+    log.info("[audio-upload] serving SMPP audio path=%s suffix=%s media_type=%s size=%s",
+             audio_path, audio_path.suffix.lower(), media_type,
+             audio_path.stat().st_size if audio_path.exists() else "missing")
+    return FileResponse(audio_path, media_type=media_type, filename=audio_path.name)
 
 
 async def _store_google_credentials_upload(upload: UploadFile | None) -> str:

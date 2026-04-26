@@ -3809,16 +3809,49 @@
       }
     };
 
+    function __debugPlayAudio(label, audioUrl) {
+      console.info("[audio-debug]", label, "loading", audioUrl);
+      const audio = new Audio();
+      audio.preload = "auto";
+      audio.addEventListener("loadedmetadata", function () {
+        console.info("[audio-debug]", label, "loadedmetadata duration=", audio.duration);
+      });
+      audio.addEventListener("canplay", function () {
+        console.info("[audio-debug]", label, "canplay");
+      });
+      audio.addEventListener("playing", function () {
+        console.info("[audio-debug]", label, "playing");
+      });
+      audio.addEventListener("error", function () {
+        const err = audio.error;
+        const code = err ? err.code : "unknown";
+        const msg = err && err.message ? err.message : "";
+        const detail = label + " failed: code=" + code + " (" + msg + ") src=" + audioUrl;
+        console.error("[audio-debug]", detail);
+        if (typeof window.ensureTopNotice === "function") {
+          window.ensureTopNotice(detail, "danger");
+        } else {
+          alert(detail);
+        }
+      });
+      audio.src = audioUrl;
+      audio.play().catch(function (err) {
+        const detail = label + " play() rejected: " + (err && err.message ? err.message : err);
+        console.error("[audio-debug]", detail);
+        if (typeof window.ensureTopNotice === "function") {
+          window.ensureTopNotice(detail, "danger");
+        } else {
+          alert(detail);
+        }
+      });
+    }
+
     window.playAccountAudio = function(accountId) {
-      const audioUrl = `/admin/config/smpp-account-audio/${accountId}`;
-      const audio = new Audio(audioUrl);
-      audio.play().catch(err => console.error("Failed to play account audio:", err));
+      __debugPlayAudio("account-audio", `/admin/config/smpp-account-audio/${accountId}`);
     };
 
     window.playDigitAudio = function(accountId, digit) {
-      const audioUrl = `/admin/config/smpp-digit-audio/${accountId}/${digit}`;
-      const audio = new Audio(audioUrl);
-      audio.play().catch(err => console.error("Failed to play digit audio:", err));
+      __debugPlayAudio("digit-audio[" + digit + "]", `/admin/config/smpp-digit-audio/${accountId}/${digit}`);
     };
 
     window.cancelDigitAudio = function(button, digit) {
