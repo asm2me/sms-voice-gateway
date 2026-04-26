@@ -766,6 +766,16 @@ class PJSipUASession:
                                 error=reg.error or reg.message or "SIP registration failed",
                                 details={"registration": reg.details},
                             )
+                    else:
+                        # Same SIP account id but settings such as
+                        # concurrency_limit, caller_id, preferred_codecs may
+                        # have been updated in admin UI. Refresh the cached
+                        # profile so subsequent calls see the new values
+                        # without forcing a re-register (registration-side
+                        # fields like host/port/credentials are unchanged on
+                        # this path because the id is unchanged and the
+                        # profile was just rebuilt from current settings).
+                        self._current_profile = selected_profile
 
                 self._register_current_thread()
                 if not self._account or not self._current_profile:
