@@ -795,6 +795,7 @@ class PJSipUASession:
                 call_id = f"pj_{uuid.uuid4().hex}"
                 invite_uri = self._build_sip_uri(destination)
                 callback = _CallCallbackHolder(self, account_id, call_id)
+                slot_allocated = False
 
                 with _TRUNK_CONCURRENCY_LOCK:
                     active_calls = _TRUNK_ACTIVE_CALLS.get(account_id, 0)
@@ -826,6 +827,7 @@ class PJSipUASession:
                         "hangup_at": None,
                         "expires_at": now + _TRUNK_CALL_STATE_RETENTION_SECONDS,
                     }
+                    slot_allocated = True
 
                 def _release_allocated_call_slot() -> None:
                     with _TRUNK_CONCURRENCY_LOCK:
@@ -960,6 +962,8 @@ class PJSipUASession:
                     },
                 )
             except Exception as exc:
+                if slot_allocated:
+                    _release_allocated_call_slot()
                 log.exception("Outbound SIP call failed")
                 return PJSUA2Result(
                     success=False,
@@ -971,6 +975,8 @@ class PJSipUASession:
                     details={"exception": f"{type(exc).__name__}: {exc}"},
                 )
         except Exception as exc:
+            if slot_allocated:
+                _release_allocated_call_slot()
             log.exception("Outbound SIP call failed")
             return PJSUA2Result(
                 success=False,
@@ -2010,6 +2016,7 @@ class _CallCallbackHolder:
 
         state_name = ""
         state_text = ""
+        state_value: Any = None
         last_status_code = 0
         remote_uri = ""
 
@@ -2048,6 +2055,7 @@ class _CallCallbackHolder:
                 with suppress(Exception):
                     value = getattr(info_obj, attr)
                     if value is not None:
+                        state_value = value
                         state_name = str(value)
                         break
 
@@ -2142,11 +2150,19 @@ class _CallCallbackHolder:
             last_status_code,
             self._answered_at,
         )
-        if (
-            state_name in self._TERMINAL_STATES
-            or state_text.upper() == "DISCONNECTED"
-            or (last_status_code >= 300 and self._answered_at is None)
-        ):
+        normalized_state_name = state_name.strip().upper()
+        normalized_state_text = state_text.strip().upper()
+        terminal_state_detected = (
+            "DISCONNECTED" in normalized_state_name
+            or "DISCONNECTED" in normalized_state_text
+        )
+        if not terminal_state_detected:
+            with suppress(Exception):
+                terminal_state_detected = int(state_value) == 6
+        if not terminal_state_detected and last_status_code >= 300 and self._answered_at is None:
+            terminal_state_detected = True
+
+        if terminal_state_detected:
             log.warning(
                 "Outbound SIP call disconnecting account=%s call_id=%s state_name=%s state_text=%s last_status_code=%s answered_at=%s reason=%s",
                 self._account_id,
