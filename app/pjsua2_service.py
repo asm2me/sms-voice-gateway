@@ -1792,11 +1792,9 @@ class _CallCallbackHolder:
                 _PJSUA_AUDIO_SETUP_LOCKS[self._call_id] = setup_lock
 
         try:
-            # Serialize ALL media bridge transitions across calls. PJSIP group
-            # locks assert if a different thread releases media that another
-            # thread is mid-setup on; the per-call setup_lock alone cannot
-            # prevent cross-call races.
-            with _PJSUA_MEDIA_OP_LOCK, setup_lock:
+            # Keep setup scoped to the call so unrelated calls can progress
+            # concurrently. Shared player registries remain protected separately.
+            with setup_lock:
                 # Double-check playback_started after acquiring lock
                 if self._playback_started:
                     log.info("Outbound SIP playback already started after lock acquire account=%s call_id=%s", self._account_id, self._call_id)
@@ -2195,7 +2193,7 @@ class _CallCallbackHolder:
         if self._playback_hangup_requested and not force:
             return
 
-        call_obj = self._call_obj or getattr(self._session, "_last_call", None)
+        call_obj = self._call_obj
         if call_obj is None:
             self._playback_error = "hangup failed: call object is unavailable"
             log.warning(
@@ -2286,7 +2284,7 @@ class _CallCallbackHolder:
                 )
 
             if self._playback_ready and self._playback_pending and not self._playback_started and self._answered_at is not None:
-                call_obj = self._call_obj or getattr(self._session, "_last_call", None)
+                call_obj = self._call_obj
                 if call_obj is not None:
                     log.info(
                         "Outbound SIP polling for media readiness (check %s) account=%s call_id=%s",
