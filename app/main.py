@@ -37,6 +37,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.requests import ClientDisconnect
 from pydantic import BaseModel
 
@@ -1104,7 +1105,7 @@ async def _apply_smpp_account_audio_updates(
         if value is None:
             log.info("[audio-upload] field %r is missing from form", fname)
             continue
-        if isinstance(value, UploadFile):
+        if isinstance(value, StarletteUploadFile):
             log.info("[audio-upload] field %r is UploadFile filename=%r content_type=%r",
                      fname, value.filename, getattr(value, "content_type", None))
         else:
@@ -1127,15 +1128,15 @@ async def _apply_smpp_account_audio_updates(
     uploaded_audio_file = form.get("uploaded_audio_file")
     log.info("[audio-upload] account-audio branch: remove_flag=%s upload_present=%s upload_filename=%r",
              _form_bool(form, "remove_uploaded_audio"),
-             isinstance(uploaded_audio_file, UploadFile),
-             getattr(uploaded_audio_file, "filename", None) if isinstance(uploaded_audio_file, UploadFile) else None)
+             isinstance(uploaded_audio_file, StarletteUploadFile),
+             getattr(uploaded_audio_file, "filename", None) if isinstance(uploaded_audio_file, StarletteUploadFile) else None)
     if _form_bool(form, "remove_uploaded_audio"):
         if current_uploaded_audio_path:
             _delete_file_if_exists(current_uploaded_audio_path)
         updates["uploaded_audio_path"] = ""
         updates["uploaded_audio_original_name"] = ""
         log.info("[audio-upload] account-audio cleared per remove_uploaded_audio flag")
-    elif isinstance(uploaded_audio_file, UploadFile) and uploaded_audio_file.filename:
+    elif isinstance(uploaded_audio_file, StarletteUploadFile) and uploaded_audio_file.filename:
         if current_uploaded_audio_path:
             _delete_file_if_exists(current_uploaded_audio_path)
         stored_path, original_name = await _store_smpp_audio_upload(account_id, uploaded_audio_file, stem="account")
@@ -1167,7 +1168,7 @@ async def _apply_smpp_account_audio_updates(
                     continue
 
                 part_upload = form.get(field_name)
-                if isinstance(part_upload, UploadFile) and part_upload.filename:
+                if isinstance(part_upload, StarletteUploadFile) and part_upload.filename:
                     if current_audio_path:
                         _delete_file_if_exists(current_audio_path)
                     stored_path, original_name = await _store_smpp_audio_upload(account_id, part_upload, stem=f"part-{ordinal}")
@@ -1192,7 +1193,7 @@ async def _apply_smpp_account_audio_updates(
                     continue
 
                 digit_upload = form.get(field_name)
-                if isinstance(digit_upload, UploadFile) and digit_upload.filename:
+                if isinstance(digit_upload, StarletteUploadFile) and digit_upload.filename:
                     if current_audio_path:
                         _delete_file_if_exists(current_audio_path)
                     stored_path, original_name = await _store_smpp_audio_upload(account_id, digit_upload, stem=f"digit-{digit}")
