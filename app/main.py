@@ -14,6 +14,7 @@ Health / debug endpoints:
 """
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import hmac
 import json
@@ -94,6 +95,16 @@ _retry_worker_stop = Event()
 _retry_worker_thread: Thread | None = None
 _admin_test_send_jobs: dict[str, dict[str, object]] = {}
 _admin_test_send_lock = threading.Lock()
+
+# Concurrent dispatch for queued / retry-scheduled items. Sized via
+# SMS_GATEWAY_QUEUE_WORKERS env var; defaults to 5. The actual outbound SIP
+# concurrency is independently capped per-trunk in pjsua2_service, so it is
+# safe to over-provision the queue worker pool — surplus tasks will fail
+# fast with "concurrency limit reached" and reschedule normally.
+_QUEUE_WORKER_POOL_SIZE = max(1, int(os.environ.get("SMS_GATEWAY_QUEUE_WORKERS", "5") or 5))
+_queue_worker_executor: "concurrent.futures.ThreadPoolExecutor | None" = None
+_queue_in_flight_lock = threading.Lock()
+_queue_in_flight_ids: set[str] = set()
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -217,7 +228,30 @@ def _retry_queue_item(settings: Settings, item) -> None:
             queue_store.upsert(latest)
 
 
+def _run_queue_item_in_executor(settings: Settings, item_id: str) -> None:
+    try:
+        item = get_queue_store(settings).get(item_id)
+        if item is None:
+            return
+        _retry_queue_item(settings, item)
+    except Exception:
+        log.exception("Queue worker failed processing item id=%s", item_id)
+    finally:
+        with _queue_in_flight_lock:
+            _queue_in_flight_ids.discard(item_id)
+
+
 def _retry_worker_loop() -> None:
+    global _queue_worker_executor
+    if _queue_worker_executor is None:
+        _queue_worker_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=_QUEUE_WORKER_POOL_SIZE,
+            thread_name_prefix="queue-worker",
+        )
+        log.info(
+            "Queue worker pool initialised max_workers=%s",
+            _QUEUE_WORKER_POOL_SIZE,
+        )
     while not _retry_worker_stop.is_set():
         try:
             settings = load_settings_from_store()
@@ -228,13 +262,28 @@ def _retry_worker_loop() -> None:
                 for item in queue_store.list_items(limit=getattr(settings, "delivery_report_max_items", 1000))
                 if _queue_item_ready_for_retry(item, now=now)
             ]
-            for item in due_items:
-                if _retry_worker_stop.is_set():
-                    break
-                _retry_queue_item(settings, item)
+            if due_items:
+                with _queue_in_flight_lock:
+                    pending_items = [item for item in due_items if item.id not in _queue_in_flight_ids]
+                    for item in pending_items:
+                        _queue_in_flight_ids.add(item.id)
+                for item in pending_items:
+                    if _retry_worker_stop.is_set():
+                        with _queue_in_flight_lock:
+                            _queue_in_flight_ids.discard(item.id)
+                        break
+                    try:
+                        _queue_worker_executor.submit(
+                            _run_queue_item_in_executor, settings, item.id
+                        )
+                    except RuntimeError:
+                        # Executor was shut down between checks; bail cleanly.
+                        with _queue_in_flight_lock:
+                            _queue_in_flight_ids.discard(item.id)
+                        break
         except Exception as exc:
             log.debug("Retry worker loop issue: %s", exc)
-        _retry_worker_stop.wait(5)
+        _retry_worker_stop.wait(2)
 
 
 def _start_retry_worker() -> None:
@@ -248,9 +297,19 @@ def _start_retry_worker() -> None:
 
 
 def _stop_retry_worker() -> None:
+    global _queue_worker_executor
     _retry_worker_stop.set()
     if _retry_worker_thread and _retry_worker_thread.is_alive():
         _retry_worker_thread.join(timeout=2)
+    if _queue_worker_executor is not None:
+        try:
+            _queue_worker_executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # cancel_futures is Python >= 3.9; fall back gracefully.
+            _queue_worker_executor.shutdown(wait=False)
+        _queue_worker_executor = None
+    with _queue_in_flight_lock:
+        _queue_in_flight_ids.clear()
     log.info("Retry worker stopped")
 
 
