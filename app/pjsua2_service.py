@@ -291,6 +291,32 @@ def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
             Path(str(wav_path)).unlink(missing_ok=True)
 
 
+def _pjsua_media_status_text(media_status: Any) -> str:
+    text = str(media_status or "").strip()
+    if not text:
+        return ""
+    normalized = text.upper()
+    for prefix in ("PJSUA_CALL_MEDIA_", "PJSUA2_CALL_MEDIA_", "PJMEDIA_", "PJ_"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix) :]
+            break
+    return normalized
+
+
+def _pjsua_media_status_is_ready(media_status: Any, pj: Any | None = None) -> bool:
+    status_text = _pjsua_media_status_text(media_status)
+    if status_text in {"ACTIVE", "READY"}:
+        return True
+    if pj is not None:
+        for attr in ("PJSUA_CALL_MEDIA_ACTIVE", "PJSUA_CALL_MEDIA_READY"):
+            status_value = getattr(pj, attr, None)
+            if status_value is not None and (
+                media_status == status_value or str(status_value).strip().upper() == status_text
+            ):
+                return True
+    return False
+
+
 class PJSipUASession:
     """
     Lightweight wrapper around a running PJSUA2 endpoint.
@@ -1864,38 +1890,43 @@ class _CallCallbackHolder:
                     return False
 
                 call_audio_media = None
+                media_list_seen = False
                 with suppress(Exception):
                     call_info = call_obj.getInfo()
                     media_list = getattr(call_info, "media", None)
                     if media_list is not None:
+                        media_list_seen = True
                         for idx, media in enumerate(list(media_list)):
                             media_type = getattr(media, "type", None)
                             media_status = getattr(media, "status", None)
+                            media_status_text = _pjsua_media_status_text(media_status)
                             log.info(
-                                "Outbound SIP media candidate account=%s call_id=%s index=%s type=%s status=%s",
+                                "Outbound SIP media candidate account=%s call_id=%s index=%s type=%s status=%s status_text=%s",
                                 self._account_id,
                                 self._call_id,
                                 idx,
                                 media_type,
                                 media_status,
+                                media_status_text,
                             )
+                            if not _pjsua_media_status_is_ready(media_status, pj):
+                                continue
                             with suppress(Exception):
                                 call_audio_media = call_obj.getAudioMedia(idx)
                                 if call_audio_media is not None:
                                     break
 
-                if call_audio_media is None:
+                if call_audio_media is None and not media_list_seen:
                     with suppress(Exception):
                         call_audio_media = call_obj.getAudioMedia(-1)
 
                 if call_audio_media is None:
-                    self._playback_error = "Call audio media is unavailable"
-                    log.warning(
-                        "Outbound SIP playback failed account=%s call_id=%s reason=%s",
+                    log.info(
+                        "Outbound SIP playback waiting for active call audio media account=%s call_id=%s",
                         self._account_id,
                         self._call_id,
-                        self._playback_error,
                     )
+                    self._playback_pending = True
                     return False
 
                 log.info(
