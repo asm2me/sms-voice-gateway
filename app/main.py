@@ -2905,12 +2905,30 @@ async def admin_tools_test_send(
     }
 
     if not smpp_username or not phone_number or not body:
+        missing = [
+            name
+            for name, value in (
+                ("smpp_username", smpp_username),
+                ("phone_number", phone_number),
+                ("body", body),
+            )
+            if not value
+        ]
+        received_keys = sorted(form.keys())
+        log.warning(
+            "Admin test-send rejected: missing=%s received_keys=%s content_type=%s",
+            missing,
+            received_keys,
+            request.headers.get("content-type", ""),
+        )
         return JSONResponse(
             {
                 "success": False,
                 "status": "failed",
-                "message": "smpp_username, phone_number and body are required",
+                "message": f"Missing required field(s): {', '.join(missing)}",
                 "error": "missing_required_fields",
+                "missing_fields": missing,
+                "received_keys": received_keys,
                 "tools_form_values": tools_form_values,
             },
             status_code=status.HTTP_400_BAD_REQUEST,
