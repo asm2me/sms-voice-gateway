@@ -1476,7 +1476,6 @@ def _simulate_smpp_test_send(
 
     # The optional provider field in the admin Tools form is only a reporting label.
     # Admin test-send should always execute with admin-test semantics so it keeps:
-    # - isolated SIP runtime
     # - no queued retries
     # - silence fallback when the configured TTS provider is rate-limited/unavailable
     # Use the shared SIP session so the outbound call appears in live call tracking.
