@@ -827,10 +827,23 @@ class PJSipUASession:
                         "expires_at": now + _TRUNK_CALL_STATE_RETENTION_SECONDS,
                     }
 
-                call = account.makeCall(
-                    invite_uri,
-                    callback,
-                )
+                def _release_allocated_call_slot() -> None:
+                    with _TRUNK_CONCURRENCY_LOCK:
+                        current = _TRUNK_ACTIVE_CALLS.get(account_id, 0)
+                        if current <= 1:
+                            _TRUNK_ACTIVE_CALLS.pop(account_id, None)
+                        else:
+                            _TRUNK_ACTIVE_CALLS[account_id] = current - 1
+                        _TRUNK_CALL_STATES.pop(call_id, None)
+
+                try:
+                    call = account.makeCall(
+                        invite_uri,
+                        callback,
+                    )
+                except Exception:
+                    _release_allocated_call_slot()
+                    raise
                 callback.attach_call(call)
                 log.info(
                     "Starting outbound SIP INVITE account=%s destination=%s uri=%s transport=%s trunk_host=%s trunk_port=%s",
