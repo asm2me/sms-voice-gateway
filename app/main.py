@@ -2995,6 +2995,166 @@ async def admin_tools_test_send(
     return JSONResponse(response_payload, status_code=status.HTTP_202_ACCEPTED)
 
 
+_BULK_PHONE_SEPARATORS = re.compile(r"[\s,;]+")
+
+
+def _parse_bulk_phone_numbers(raw: str) -> tuple[list[str], list[str]]:
+    seen: set[str] = set()
+    valid: list[str] = []
+    invalid: list[str] = []
+    for token in _BULK_PHONE_SEPARATORS.split(str(raw or "")):
+        candidate = token.strip()
+        if not candidate:
+            continue
+        digits = re.sub(r"[^\d+]", "", candidate)
+        if not digits or digits == "+" or len(re.sub(r"\D", "", digits)) < 4:
+            invalid.append(candidate)
+            continue
+        if digits in seen:
+            continue
+        seen.add(digits)
+        valid.append(digits)
+    return valid, invalid
+
+
+@app.post("/admin/tools/bulk-send")
+async def admin_tools_bulk_send(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    try:
+        form = await request.form()
+    except ClientDisconnect:
+        log.warning("Admin bulk-send request client disconnected before form parsing completed")
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "client_disconnected",
+                "message": "Client disconnected before the bulk-send request body was fully received.",
+            },
+            status_code=499,
+        )
+
+    smpp_username = str(form.get("smpp_username", "")).strip()
+    phone_numbers_raw = str(form.get("phone_numbers", ""))
+    body = str(form.get("body", "")).strip()
+    simultaneous_raw = str(form.get("simultaneous", "true")).strip().lower()
+    simultaneous = simultaneous_raw not in {"false", "0", "no", "off"}
+    processing_mode = "simultaneous" if simultaneous else "sequential"
+
+    missing = [
+        name
+        for name, value in (
+            ("smpp_username", smpp_username),
+            ("phone_numbers", phone_numbers_raw.strip()),
+            ("body", body),
+        )
+        if not value
+    ]
+    if missing:
+        return JSONResponse(
+            {
+                "success": False,
+                "message": f"Missing required field(s): {', '.join(missing)}",
+                "error": "missing_required_fields",
+                "missing_fields": missing,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    smpp_account = next(
+        (account for account in settings.smpp_accounts if account.username == smpp_username),
+        None,
+    )
+    if smpp_account is None:
+        return JSONResponse(
+            {"success": False, "message": f"Unknown SMPP user '{smpp_username}'.", "error": "unknown_smpp_user"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not smpp_account.enabled:
+        return JSONResponse(
+            {"success": False, "message": f"SMPP user '{smpp_username}' is disabled.", "error": "smpp_user_disabled"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    valid_numbers, invalid_numbers = _parse_bulk_phone_numbers(phone_numbers_raw)
+    if not valid_numbers:
+        return JSONResponse(
+            {
+                "success": False,
+                "message": "No valid phone numbers were provided.",
+                "error": "no_valid_numbers",
+                "invalid_numbers": invalid_numbers,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    bulk_job_id = f"bulk-{int(time.time() * 1000)}-{os.urandom(3).hex()}"
+    provider_label = f"bulk:{bulk_job_id}"
+
+    queued: list[str] = []
+    for phone_number in valid_numbers:
+        try:
+            record_queue_item(
+                settings,
+                phone_number=phone_number,
+                provider=provider_label,
+                body=body,
+                status="queued",
+                smpp_username=smpp_username,
+                bulk_job_id=bulk_job_id,
+            )
+            queued.append(phone_number)
+        except Exception as exc:
+            log.exception("Failed to enqueue bulk-send item phone=%s", phone_number)
+            _append_admin_log(
+                f"Tools bulk-send enqueue failed bulk_job_id={bulk_job_id} phone_number={phone_number} error={exc}"
+            )
+
+    message = (
+        f"Queued {len(queued)} voice message(s) for delivery via SMPP user '{smpp_username}' "
+        f"in {processing_mode} mode."
+    )
+    if invalid_numbers:
+        message += f" Skipped {len(invalid_numbers)} invalid entries."
+
+    _append_admin_log(
+        f"Tools bulk-send queued bulk_job_id={bulk_job_id} smpp_username={smpp_username} "
+        f"total_numbers={len(valid_numbers)} total_queued={len(queued)} mode={processing_mode} "
+        f"body={body[:80]!r}"
+    )
+    _record_admin_audit(
+        action="tools.bulk_send",
+        section="tools",
+        detail=message,
+        status="success" if queued else "warning",
+        target=smpp_username,
+        metadata={
+            "bulk_job_id": bulk_job_id,
+            "smpp_username": smpp_username,
+            "total_numbers": len(valid_numbers),
+            "total_queued": len(queued),
+            "processing_mode": processing_mode,
+            "invalid_count": len(invalid_numbers),
+        },
+    )
+
+    return JSONResponse(
+        {
+            "success": True,
+            "message": message,
+            "bulk_job_id": bulk_job_id,
+            "total_numbers": len(valid_numbers),
+            "total_queued": len(queued),
+            "invalid_numbers": invalid_numbers,
+            "processing_mode": processing_mode,
+            "smpp_username": smpp_username,
+        },
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+
+
 @app.post("/admin/queue/delete")
 async def admin_delete_queue_item_route(
     request: Request,
