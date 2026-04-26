@@ -1786,6 +1786,27 @@ class _CallCallbackHolder:
         if call_obj is not None:
             self._call_obj = call_obj
 
+    def _maybe_start_playback(self, call_obj: Any) -> bool:
+        if self._playback_started:
+            return True
+        if not self._playback_audio_path or self._answered_at is None:
+            return False
+
+        self._playback_ready = True
+        self._playback_pending = True
+        effective_call_obj = call_obj or self._call_obj
+        if effective_call_obj is None:
+            log.info(
+                "Outbound SIP playback waiting for call object account=%s call_id=%s",
+                self._account_id,
+                self._call_id,
+            )
+            return False
+
+        started = self._try_start_playback(effective_call_obj)
+        self._playback_pending = bool(not started and self._playback_audio_path)
+        return started
+
     def _try_start_playback(self, call_obj: Any) -> bool:
         log.info(
             "Outbound SIP _try_start_playback called account=%s call_id=%s playback_started=%s audio_path=%s audio_duration=%.3f",
@@ -2121,13 +2142,19 @@ class _CallCallbackHolder:
                 self._playback_audio_path[:80] if self._playback_audio_path else "",
             )
             if self._playback_audio_path and not self._playback_started:
-                self._playback_pending = True
-                self._playback_ready = True
-                log.info(
-                    "Outbound SIP set playback_pending=True account=%s call_id=%s",
-                    self._account_id,
-                    self._call_id,
-                )
+                started = self._maybe_start_playback(call_obj)
+                if started:
+                    log.info(
+                        "Outbound SIP playback started immediately after answer account=%s call_id=%s",
+                        self._account_id,
+                        self._call_id,
+                    )
+                else:
+                    log.info(
+                        "Outbound SIP set playback_pending=True account=%s call_id=%s",
+                        self._account_id,
+                        self._call_id,
+                    )
             elif self._playback_audio_path and self._playback_started and self._playback_error:
                 log.warning(
                     "Outbound SIP playback started but has error account=%s call_id=%s error=%s",
@@ -2155,8 +2182,9 @@ class _CallCallbackHolder:
                 last_status_code,
             )
             if call_obj is not None and not self._playback_started:
-                self._playback_pending = True
-                self._playback_ready = True
+                started = self._maybe_start_playback(call_obj)
+                if not started:
+                    self._playback_pending = bool(self._playback_audio_path)
 
         log.info(
             "Outbound SIP checking terminal state account=%s call_id=%s state_name=%s state_text=%s last_status_code=%s answered_at=%s",
@@ -2216,21 +2244,19 @@ class _CallCallbackHolder:
             return
 
         if self._playback_audio_path and not self._playback_started:
-            self._playback_ready = True
-            self._playback_pending = True
-            log.info(
-                "Outbound SIP onCallMediaState marked playback pending account=%s call_id=%s answered=%s",
-                self._account_id,
-                self._call_id,
-                answered,
-            )
-            started = self._try_start_playback(call_obj)
+            started = self._maybe_start_playback(call_obj)
             if started:
-                self._playback_pending = False
                 log.info(
                     "Outbound SIP playback started directly from media-state callback account=%s call_id=%s",
                     self._account_id,
                     self._call_id,
+                )
+            elif self._playback_pending:
+                log.info(
+                    "Outbound SIP onCallMediaState marked playback pending account=%s call_id=%s answered=%s",
+                    self._account_id,
+                    self._call_id,
+                    answered,
                 )
 
     def _hangup_call(self, *, reason: str, force: bool = False) -> None:
@@ -2331,21 +2357,25 @@ class _CallCallbackHolder:
 
             if self._playback_ready and self._playback_pending and not self._playback_started and self._answered_at is not None:
                 call_obj = self._call_obj
-                if call_obj is not None:
+                log.info(
+                    "Outbound SIP polling for media readiness (check %s) account=%s call_id=%s",
+                    media_check_counter,
+                    self._account_id,
+                    self._call_id,
+                )
+                started = self._maybe_start_playback(call_obj)
+                if started:
                     log.info(
-                        "Outbound SIP polling for media readiness (check %s) account=%s call_id=%s",
-                        media_check_counter,
+                        "Outbound SIP playback started via polling account=%s call_id=%s",
                         self._account_id,
                         self._call_id,
                     )
-                    started = self._try_start_playback(call_obj)
-                    self._playback_pending = bool(not started and self._playback_audio_path)
-                    if started:
-                        log.info(
-                            "Outbound SIP playback started via polling account=%s call_id=%s",
-                            self._account_id,
-                            self._call_id,
-                        )
+                elif call_obj is None:
+                    log.info(
+                        "Outbound SIP playback still pending waiting for call object account=%s call_id=%s",
+                        self._account_id,
+                        self._call_id,
+                    )
 
             if self._playback_started and self._playback_started_at is not None:
                 expected_end = self._playback_started_at + self._playback_audio_duration_seconds
