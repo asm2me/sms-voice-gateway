@@ -1019,38 +1019,61 @@ async def _store_smpp_audio_upload(
     *,
     stem: str,
 ) -> tuple[str, str]:
+    log.info("[audio-upload] _store_smpp_audio_upload start account_id=%r stem=%r upload_type=%s",
+             account_id, stem, type(upload).__name__ if upload is not None else "None")
     if upload is None:
+        log.info("[audio-upload] upload is None — skipping save")
         return "", ""
 
     original_name = str(upload.filename or "").strip()
+    log.info("[audio-upload] upload.filename=%r content_type=%r", original_name, getattr(upload, "content_type", None))
     if not original_name:
+        log.warning("[audio-upload] rejecting upload — empty filename")
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Uploaded audio file must have a filename")
 
     suffix = Path(original_name).suffix.lower()
+    log.info("[audio-upload] derived suffix=%r allowed=%s", suffix, sorted(_ALLOWED_SMPP_AUDIO_SUFFIXES))
     if suffix not in _ALLOWED_SMPP_AUDIO_SUFFIXES:
         allowed = ", ".join(sorted(_ALLOWED_SMPP_AUDIO_SUFFIXES))
+        log.warning("[audio-upload] rejecting upload — unsupported suffix %r for %r", suffix, original_name)
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"Unsupported audio file type for '{original_name}'. Allowed extensions: {allowed}",
         )
 
     raw = await upload.read()
+    log.info("[audio-upload] read %d raw bytes from upload %r", len(raw), original_name)
     if not raw:
+        log.warning("[audio-upload] rejecting upload — empty body for %r", original_name)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Uploaded audio file '{original_name}' is empty")
 
-    wav_bytes = _convert_uploaded_audio_to_wav(raw, suffix, original_name)
+    try:
+        wav_bytes = _convert_uploaded_audio_to_wav(raw, suffix, original_name)
+    except HTTPException:
+        log.exception("[audio-upload] conversion raised HTTPException for %r (%d bytes, suffix=%s)",
+                      original_name, len(raw), suffix)
+        raise
+    except Exception:
+        log.exception("[audio-upload] unexpected conversion failure for %r (%d bytes, suffix=%s)",
+                      original_name, len(raw), suffix)
+        raise
+    log.info("[audio-upload] converted to WAV: %d bytes (input %d bytes, suffix=%s)",
+             len(wav_bytes), len(raw), suffix)
 
     account_dir = _smpp_audio_account_dir(account_id)
     for existing in account_dir.glob(f"{stem}.*"):
         try:
             if existing.is_file():
                 existing.unlink()
+                log.info("[audio-upload] removed previous file %s", existing)
         except Exception:
-            log.debug("Unable to remove previous uploaded audio file %s", existing, exc_info=True)
+            log.warning("[audio-upload] unable to remove previous uploaded audio file %s", existing, exc_info=True)
 
     destination = account_dir / f"{stem}.wav"
     destination.write_bytes(wav_bytes)
-    return _relative_config_path(destination), original_name
+    rel = _relative_config_path(destination)
+    log.info("[audio-upload] saved upload to %s (relative=%s, original_name=%r)", destination, rel, original_name)
+    return rel, original_name
 
 
 async def _apply_smpp_account_audio_updates(
@@ -1059,12 +1082,42 @@ async def _apply_smpp_account_audio_updates(
     existing_account: SMPPAccount | None = None,
 ) -> dict[str, object]:
     account_id = str(account_id or form.get("account_id", "")).strip()
+    log.info("[audio-upload] _apply_smpp_account_audio_updates start account_id=%r", account_id)
     if not account_id:
+        log.warning("[audio-upload] no account_id resolved — aborting audio update")
         return {}
+
+    try:
+        form_keys = list(form.keys()) if hasattr(form, "keys") else []
+    except Exception:
+        form_keys = []
+    log.info("[audio-upload] form keys=%s", form_keys)
+
+    audio_field_names = {"uploaded_audio_file"} | {k for k in form_keys if isinstance(k, str) and (
+        k.startswith("static_message_part_audio_file_") or k.startswith("static_message_digit_audio_file_")
+    )}
+    for fname in audio_field_names:
+        try:
+            value = form.get(fname)
+        except Exception:
+            value = None
+        if value is None:
+            log.info("[audio-upload] field %r is missing from form", fname)
+            continue
+        if isinstance(value, UploadFile):
+            log.info("[audio-upload] field %r is UploadFile filename=%r content_type=%r",
+                     fname, value.filename, getattr(value, "content_type", None))
+        else:
+            preview = str(value)
+            if len(preview) > 80:
+                preview = preview[:80] + "…"
+            log.info("[audio-upload] field %r is non-file value type=%s value=%r",
+                     fname, type(value).__name__, preview)
 
     if existing_account is None:
         current = ensure_default_accounts(load_settings_from_store())
         existing_account = next((account for account in current.smpp_accounts if account.id == account_id), None)
+    log.info("[audio-upload] existing_account found=%s", existing_account is not None)
 
     updates: dict[str, object] = {}
     part_audio = dict(existing_account.static_message_part_audio or {}) if existing_account else {}
@@ -1072,17 +1125,25 @@ async def _apply_smpp_account_audio_updates(
 
     current_uploaded_audio_path = str(existing_account.uploaded_audio_path or "").strip() if existing_account else ""
     uploaded_audio_file = form.get("uploaded_audio_file")
+    log.info("[audio-upload] account-audio branch: remove_flag=%s upload_present=%s upload_filename=%r",
+             _form_bool(form, "remove_uploaded_audio"),
+             isinstance(uploaded_audio_file, UploadFile),
+             getattr(uploaded_audio_file, "filename", None) if isinstance(uploaded_audio_file, UploadFile) else None)
     if _form_bool(form, "remove_uploaded_audio"):
         if current_uploaded_audio_path:
             _delete_file_if_exists(current_uploaded_audio_path)
         updates["uploaded_audio_path"] = ""
         updates["uploaded_audio_original_name"] = ""
+        log.info("[audio-upload] account-audio cleared per remove_uploaded_audio flag")
     elif isinstance(uploaded_audio_file, UploadFile) and uploaded_audio_file.filename:
         if current_uploaded_audio_path:
             _delete_file_if_exists(current_uploaded_audio_path)
         stored_path, original_name = await _store_smpp_audio_upload(account_id, uploaded_audio_file, stem="account")
         updates["uploaded_audio_path"] = stored_path
         updates["uploaded_audio_original_name"] = original_name
+        log.info("[audio-upload] account-audio saved stored_path=%s original_name=%r", stored_path, original_name)
+    else:
+        log.info("[audio-upload] account-audio skipped: no remove flag and no UploadFile with filename")
 
     part_audio_changed = False
     digit_audio_changed = False
@@ -2968,7 +3029,13 @@ async def admin_add_smpp_account(
     request: Request,
     _: None = Depends(dep_admin_credentials),
 ):
+    log.info("[audio-upload] POST /admin/config/smpp-accounts content_type=%r content_length=%r",
+             request.headers.get("content-type"), request.headers.get("content-length"))
     form = await request.form()
+    try:
+        log.info("[audio-upload] parsed form keys=%s", list(form.keys()))
+    except Exception:
+        log.exception("[audio-upload] failed to enumerate form keys")
     current = ensure_default_accounts(load_settings_from_store())
     draft_account = _build_smpp_account_from_form(form)
     existing_account = next((account for account in current.smpp_accounts if account.id == draft_account.id), None)
