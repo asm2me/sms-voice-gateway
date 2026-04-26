@@ -17,6 +17,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import hmac
+import mimetypes
 import json
 import logging
 import os
@@ -841,6 +842,218 @@ def _provider_uploads_dir() -> Path:
     return path
 
 
+def _smpp_audio_root_dir() -> Path:
+    path = BASE_DIR / "data" / "smpp_audio"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _smpp_audio_account_dir(account_id: str) -> Path:
+    path = _smpp_audio_root_dir() / _slugify_identifier(account_id, "smpp-account")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _relative_config_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(BASE_DIR.resolve()))
+    except Exception:
+        return str(resolved)
+
+
+def _delete_file_if_exists(path: str | Path) -> None:
+    raw_path = str(path or "").strip()
+    if not raw_path:
+        return
+
+    file_path = Path(raw_path)
+    try:
+        if not file_path.is_absolute():
+            file_path = (BASE_DIR / file_path).resolve()
+        else:
+            file_path = file_path.resolve()
+    except Exception:
+        return
+
+    try:
+        if file_path.exists() and file_path.is_file():
+            file_path.unlink()
+    except Exception:
+        log.debug("Unable to delete uploaded audio file %s", file_path, exc_info=True)
+
+
+def _guess_audio_media_type(audio_path: Path) -> str:
+    media_type, _ = mimetypes.guess_type(audio_path.name)
+    return media_type or "application/octet-stream"
+
+
+_ALLOWED_SMPP_AUDIO_SUFFIXES = {".wav", ".mp3", ".ogg", ".m4a", ".aac", ".flac", ".opus"}
+
+
+async def _store_smpp_audio_upload(
+    account_id: str,
+    upload: UploadFile | None,
+    *,
+    stem: str,
+) -> tuple[str, str]:
+    if upload is None:
+        return "", ""
+
+    original_name = str(upload.filename or "").strip()
+    if not original_name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Uploaded audio file must have a filename")
+
+    suffix = Path(original_name).suffix.lower()
+    if suffix not in _ALLOWED_SMPP_AUDIO_SUFFIXES:
+        allowed = ", ".join(sorted(_ALLOWED_SMPP_AUDIO_SUFFIXES))
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Unsupported audio file type for '{original_name}'. Allowed extensions: {allowed}",
+        )
+
+    raw = await upload.read()
+    if not raw:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Uploaded audio file '{original_name}' is empty")
+
+    account_dir = _smpp_audio_account_dir(account_id)
+    for existing in account_dir.glob(f"{stem}.*"):
+        try:
+            if existing.is_file():
+                existing.unlink()
+        except Exception:
+            log.debug("Unable to remove previous uploaded audio file %s", existing, exc_info=True)
+
+    destination = account_dir / f"{stem}{suffix}"
+    destination.write_bytes(raw)
+    return _relative_config_path(destination), original_name
+
+
+async def _apply_smpp_account_audio_updates(form) -> dict[str, object]:
+    account_id = str(form.get("account_id", "")).strip()
+    if not account_id:
+        return {}
+
+    current = ensure_default_accounts(load_settings_from_store())
+    existing_account = next((account for account in current.smpp_accounts if account.id == account_id), None)
+
+    updates: dict[str, object] = {}
+    part_audio = dict(existing_account.static_message_part_audio or {}) if existing_account else {}
+    digit_audio = dict(existing_account.static_message_digit_audio or {}) if existing_account else {}
+
+    current_uploaded_audio_path = str(existing_account.uploaded_audio_path or "").strip() if existing_account else ""
+    uploaded_audio_file = form.get("uploaded_audio_file")
+    if _form_bool(form, "remove_uploaded_audio"):
+        if current_uploaded_audio_path:
+            _delete_file_if_exists(current_uploaded_audio_path)
+        updates["uploaded_audio_path"] = ""
+        updates["uploaded_audio_original_name"] = ""
+    elif isinstance(uploaded_audio_file, UploadFile) and uploaded_audio_file.filename:
+        if current_uploaded_audio_path:
+            _delete_file_if_exists(current_uploaded_audio_path)
+        stored_path, original_name = await _store_smpp_audio_upload(account_id, uploaded_audio_file, stem="account")
+        updates["uploaded_audio_path"] = stored_path
+        updates["uploaded_audio_original_name"] = original_name
+
+    part_audio_changed = False
+    digit_audio_changed = False
+
+    if hasattr(form, "keys"):
+        for field_name in list(form.keys()):
+            part_match = re.fullmatch(r"static_message_part_audio_file_(\d+)", str(field_name))
+            if part_match:
+                ordinal = part_match.group(1)
+                current_audio_info = part_audio.get(ordinal, {})
+                if not isinstance(current_audio_info, dict):
+                    current_audio_info = {}
+                current_audio_path = str(current_audio_info.get("path", "")).strip()
+
+                if _form_bool(form, f"remove_static_message_part_audio_{ordinal}"):
+                    if current_audio_path:
+                        _delete_file_if_exists(current_audio_path)
+                    if ordinal in part_audio:
+                        part_audio.pop(ordinal, None)
+                        part_audio_changed = True
+                    continue
+
+                part_upload = form.get(field_name)
+                if isinstance(part_upload, UploadFile) and part_upload.filename:
+                    if current_audio_path:
+                        _delete_file_if_exists(current_audio_path)
+                    stored_path, original_name = await _store_smpp_audio_upload(account_id, part_upload, stem=f"part-{ordinal}")
+                    part_audio[ordinal] = {"path": stored_path, "original_name": original_name}
+                    part_audio_changed = True
+                continue
+
+            digit_match = re.fullmatch(r"static_message_digit_audio_file_(\d+)", str(field_name))
+            if digit_match:
+                digit = digit_match.group(1)
+                current_audio_info = digit_audio.get(digit, {})
+                if not isinstance(current_audio_info, dict):
+                    current_audio_info = {}
+                current_audio_path = str(current_audio_info.get("path", "")).strip()
+
+                if _form_bool(form, f"remove_static_message_digit_audio_{digit}"):
+                    if current_audio_path:
+                        _delete_file_if_exists(current_audio_path)
+                    if digit in digit_audio:
+                        digit_audio.pop(digit, None)
+                        digit_audio_changed = True
+                    continue
+
+                digit_upload = form.get(field_name)
+                if isinstance(digit_upload, UploadFile) and digit_upload.filename:
+                    if current_audio_path:
+                        _delete_file_if_exists(current_audio_path)
+                    stored_path, original_name = await _store_smpp_audio_upload(account_id, digit_upload, stem=f"digit-{digit}")
+                    digit_audio[digit] = {"path": stored_path, "original_name": original_name}
+                    digit_audio_changed = True
+
+    if part_audio_changed:
+        updates["static_message_part_audio"] = part_audio
+    if digit_audio_changed:
+        updates["static_message_digit_audio"] = digit_audio
+
+    return updates
+
+
+def _build_smpp_account_admin_context(account: SMPPAccount) -> dict[str, object]:
+    description = describe_static_message_template(account.static_default_message_template)
+    part_audio_map = dict(account.static_message_part_audio or {})
+    enriched_parts: list[dict[str, object]] = []
+    for part in description.get("parts", []):
+        if not isinstance(part, dict):
+            continue
+        ordinal = str(part.get("ordinal", "")).strip()
+        audio_info = part_audio_map.get(ordinal, {})
+        if not isinstance(audio_info, dict):
+            audio_info = {}
+        uploaded_audio_path = str(audio_info.get("path", "")).strip()
+        enriched_parts.append(
+            {
+                **part,
+                "has_uploaded_audio": bool(uploaded_audio_path),
+                "uploaded_audio_path": uploaded_audio_path,
+                "uploaded_audio_original_name": str(audio_info.get("original_name", "")).strip(),
+            }
+        )
+
+    description["parts"] = enriched_parts
+    description["spoken_parts"] = [part for part in enriched_parts if part.get("spoken")]
+    description["parameter_parts"] = [part for part in enriched_parts if part.get("kind") == "parameter"]
+
+    return {
+        **account.model_dump(),
+        "static_message_template_description": description,
+        "static_message_parts": enriched_parts,
+    }
+
+
+def _serve_smpp_audio_response(settings: Settings, raw_audio_path: str) -> FileResponse:
+    audio_path = _resolve_queue_media_path(settings, raw_audio_path)
+    return FileResponse(audio_path, media_type=_guess_audio_media_type(audio_path), filename=audio_path.name)
+
+
 async def _store_google_credentials_upload(upload: UploadFile | None) -> str:
     if upload is None:
         return ""
@@ -1427,15 +1640,7 @@ def _admin_context(
         "health": health_payload,
         "sip_accounts": [account.model_dump(by_alias=True) for account in settings.sip_accounts],
         "smpp_accounts": [
-            {
-                **account.model_dump(),
-                "static_message_template_description": describe_static_message_template(
-                    account.static_default_message_template
-                ),
-                "static_message_parts": describe_static_message_template(
-                    account.static_default_message_template
-                )["parts"],
-            }
+            _build_smpp_account_admin_context(account)
             for account in settings.smpp_accounts
         ],
         "system_users": [user.model_dump() for user in settings.system_users],
@@ -2636,7 +2841,28 @@ async def admin_add_smpp_account(
 ):
     form = await request.form()
     current = ensure_default_accounts(load_settings_from_store())
-    new_account = _build_smpp_account_from_form(form)
+    draft_account = _build_smpp_account_from_form(form)
+    existing_account = next((account for account in current.smpp_accounts if account.id == draft_account.id), None)
+    preserved_fields = {
+        "uploaded_audio_path",
+        "uploaded_audio_original_name",
+        "static_message_part_audio",
+        "static_message_digit_audio",
+        "extra",
+    }
+    account_data = draft_account.model_dump(exclude=preserved_fields)
+    if existing_account is not None:
+        new_account = existing_account.model_copy(update=account_data)
+    else:
+        new_account = SMPPAccount(**account_data)
+
+    audio_updates = await _apply_smpp_account_audio_updates(
+        form,
+        account_id=new_account.id,
+        existing_account=existing_account,
+    )
+    new_account = new_account.model_copy(update=audio_updates)
+
     smpp_accounts = [account for account in current.smpp_accounts if account.id != new_account.id]
     if new_account.default_for_inbound:
         smpp_accounts = [account.model_copy(update={"default_for_inbound": False}) for account in smpp_accounts]
@@ -2958,6 +3184,67 @@ async def admin_config_smpp_template_part_preview(
             },
             status_code=status.HTTP_400_BAD_REQUEST,
         )
+
+
+@app.get("/admin/config/smpp-account-audio/{account_id}")
+async def admin_smpp_account_audio(
+    account_id: str,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    account = next((item for item in settings.smpp_accounts if item.id == account_id), None)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
+
+    raw_audio_path = str(account.uploaded_audio_path or "").strip()
+    if not raw_audio_path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account has no uploaded audio")
+
+    return _serve_smpp_audio_response(settings, raw_audio_path)
+
+
+@app.get("/admin/config/smpp-part-audio/{account_id}/{part_ordinal}")
+async def admin_smpp_part_audio(
+    account_id: str,
+    part_ordinal: str,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    account = next((item for item in settings.smpp_accounts if item.id == account_id), None)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
+
+    part_audio = dict(account.static_message_part_audio or {})
+    audio_info = part_audio.get(str(part_ordinal).strip(), {})
+    if not isinstance(audio_info, dict):
+        audio_info = {}
+    raw_audio_path = str(audio_info.get("path", "")).strip()
+    if not raw_audio_path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP template part has no uploaded audio")
+
+    return _serve_smpp_audio_response(settings, raw_audio_path)
+
+
+@app.get("/admin/config/smpp-digit-audio/{account_id}/{digit}")
+async def admin_smpp_digit_audio(
+    account_id: str,
+    digit: str,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    account = next((item for item in settings.smpp_accounts if item.id == account_id), None)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
+
+    digit_audio = dict(account.static_message_digit_audio or {})
+    audio_info = digit_audio.get(str(digit).strip(), {})
+    if not isinstance(audio_info, dict):
+        audio_info = {}
+    raw_audio_path = str(audio_info.get("path", "")).strip()
+    if not raw_audio_path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP digit has no uploaded audio")
+
+    return _serve_smpp_audio_response(settings, raw_audio_path)
 
 
 @app.post("/admin/tools/test-send")
