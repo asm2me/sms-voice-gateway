@@ -59,6 +59,50 @@ def _audio_fingerprint(path: Path) -> str:
     except Exception:
         return f"{path.name}:0:0"
 
+
+def _write_debug_snapshot(source_path: str, name: str) -> None:
+    try:
+        snapshot_dir = _REPO_ROOT / "data" / "debug_audio"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        target = snapshot_dir / f"{name}.wav"
+        target.write_bytes(Path(source_path).read_bytes())
+        log.info("[audio-resolve] debug snapshot written: %s", target)
+    except Exception as exc:
+        log.warning("[audio-resolve] failed to write debug snapshot %s: %s", name, exc)
+
+
+def _log_wav_amplitude(label: str, wav_bytes: bytes) -> None:
+    try:
+        import io as _io
+        import wave as _wave
+        with _wave.open(_io.BytesIO(wav_bytes), "rb") as w:
+            n_channels = w.getnchannels()
+            sampwidth = w.getsampwidth()
+            framerate = w.getframerate()
+            nframes = w.getnframes()
+            raw = w.readframes(nframes)
+        peak = mean_abs = -1
+        if sampwidth == 2 and raw:
+            count = len(raw) // 2
+            peak = 0
+            total = 0
+            step = max(1, count // 4096)
+            sampled = 0
+            for i in range(0, count, step):
+                sample = int.from_bytes(raw[i*2:i*2+2], "little", signed=True)
+                a = abs(sample)
+                if a > peak:
+                    peak = a
+                total += a
+                sampled += 1
+            mean_abs = total // max(1, sampled)
+        log.info(
+            "[audio-amp] %s: %d bytes, ch=%d sw=%d fr=%d nframes=%d peak_abs=%d mean_abs=%d",
+            label, len(wav_bytes), n_channels, sampwidth, framerate, nframes, peak, mean_abs,
+        )
+    except Exception as exc:
+        log.warning("[audio-amp] %s: failed to inspect WAV: %s", label, exc)
+
 log = logging.getLogger(__name__)
 
 _SMS_GATEWAY_PJSUA_SCOPE = "sms-gateway"
@@ -347,19 +391,35 @@ class SMSGateway:
         if not wav_parts:
             return self.tts.get_or_create_audio(rendered_text)
 
+        for idx, w in enumerate(wav_parts):
+            _log_wav_amplitude(f"input wav_parts[{idx}]", w)
+
         fingerprint = "|".join(_audio_fingerprint(p) for p in used_uploaded_files)
         cache_text = f"{rendered_text}␟{fingerprint}␟" + "␟".join(used_tts_segments)
         merged_hash = self.tts.hash_for(cache_text)
         cached = self.audio_cache.get_audio_path(merged_hash)
         if cached:
+            log.info("[audio-resolve] reusing cached merged audio: %s", cached)
+            _log_wav_amplitude("cached merged", Path(cached).read_bytes())
             return cached, True
 
         if len(wav_parts) == 1 and used_uploaded_files and not used_tts_segments:
             single = _ensure_wav_format(wav_parts[0])
-            return self.audio_cache.store_audio(merged_hash, single), False
+            _log_wav_amplitude("single (no merge needed)", single)
+            stored = self.audio_cache.store_audio(merged_hash, single)
+            log.info("[audio-resolve] stored single uploaded WAV at: %s", stored)
+            _write_debug_snapshot(stored, "smpp_audio_last")
+            return stored, False
 
-        merged = _ensure_wav_format(_concat_wavs([_ensure_wav_format(w) for w in wav_parts]))
-        return self.audio_cache.store_audio(merged_hash, merged), False
+        normalized = [_ensure_wav_format(w) for w in wav_parts]
+        for idx, w in enumerate(normalized):
+            _log_wav_amplitude(f"normalized wav_parts[{idx}]", w)
+        merged = _ensure_wav_format(_concat_wavs(normalized))
+        _log_wav_amplitude("merged final", merged)
+        stored = self.audio_cache.store_audio(merged_hash, merged)
+        log.info("[audio-resolve] stored merged WAV at: %s (size=%d)", stored, len(merged))
+        _write_debug_snapshot(stored, "smpp_audio_last")
+        return stored, False
 
     def process(self, sms: IncomingSMS, *, queue_retries: bool = True) -> GatewayResult:
         try:

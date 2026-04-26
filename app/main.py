@@ -3404,6 +3404,16 @@ async def admin_smpp_account_audio(
     return _serve_smpp_audio_response(settings, raw_audio_path)
 
 
+@app.get("/admin/debug/last-played-audio")
+async def admin_debug_last_played_audio(
+    _: None = Depends(dep_admin_credentials),
+):
+    snapshot = BASE_DIR / "data" / "debug_audio" / "smpp_audio_last.wav"
+    if not snapshot.exists() or not snapshot.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No debug snapshot has been written yet (place a test call first).")
+    return FileResponse(snapshot, media_type="audio/wav", filename=snapshot.name)
+
+
 @app.get("/admin/config/smpp-part-audio/{account_id}/{part_ordinal}")
 async def admin_smpp_part_audio(
     account_id: str,
