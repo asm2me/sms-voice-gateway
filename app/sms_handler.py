@@ -385,6 +385,20 @@ class SMSGateway:
             )
             rendered_from_static_template = True
 
+        log.info(
+            "[audio-resolve] smpp_username=%r smpp_account=%s template_enabled=%s "
+            "template_set=%s uploaded_audio_path=%r part_audio_keys=%s digit_audio_keys=%s "
+            "rendered_from_static_template=%s",
+            sms.smpp_username,
+            (smpp_account.username or smpp_account.id) if smpp_account else None,
+            bool(smpp_account and smpp_account.static_default_message_enabled),
+            bool(smpp_account and smpp_account.static_default_message_template),
+            (smpp_account.uploaded_audio_path if smpp_account else ""),
+            sorted((smpp_account.static_message_part_audio or {}).keys()) if smpp_account else [],
+            sorted((smpp_account.static_message_digit_audio or {}).keys()) if smpp_account else [],
+            rendered_from_static_template,
+        )
+
         if not spoken_text:
             return GatewayResult(
                 success=False,
@@ -394,14 +408,50 @@ class SMSGateway:
             )
 
         try:
-            if rendered_from_static_template and smpp_account is not None:
+            account_audio_path = (
+                _resolve_uploaded_audio_abs_path(str(smpp_account.uploaded_audio_path or ""))
+                if smpp_account is not None
+                else None
+            )
+            has_part_or_digit_audio = bool(
+                smpp_account
+                and (smpp_account.static_message_part_audio or smpp_account.static_message_digit_audio)
+            )
+
+            if account_audio_path is not None:
+                log.info("[audio-resolve] using account-wide uploaded audio: %s", account_audio_path)
+                audio_path, was_cached = str(account_audio_path), True
+            elif rendered_from_static_template and smpp_account is not None:
+                log.info("[audio-resolve] using static template resolver (template enabled)")
                 audio_path, was_cached = self._resolve_static_template_audio(
                     inbound_text=extract_destination(sms)[1],
                     rendered_text=spoken_text,
                     template=smpp_account.static_default_message_template,
                     smpp_account=smpp_account,
                 )
+            elif (
+                smpp_account is not None
+                and has_part_or_digit_audio
+                and smpp_account.static_default_message_template
+            ):
+                inbound_text_only = extract_destination(sms)[1]
+                rendered_for_audio = render_static_default_message(
+                    smpp_account.static_default_message_template,
+                    inbound_text_only,
+                )
+                log.info(
+                    "[audio-resolve] template flag is OFF but part/digit audio present "
+                    "and template is set — rendering via template anyway. rendered=%r",
+                    (rendered_for_audio or "")[:120],
+                )
+                audio_path, was_cached = self._resolve_static_template_audio(
+                    inbound_text=inbound_text_only,
+                    rendered_text=rendered_for_audio or spoken_text,
+                    template=smpp_account.static_default_message_template,
+                    smpp_account=smpp_account,
+                )
             else:
+                log.info("[audio-resolve] falling through to plain TTS for spoken_text=%r", spoken_text[:80])
                 audio_path, was_cached = self.tts.get_or_create_audio(spoken_text)
         except Exception as exc:
             log.exception("TTS failed for text=%r", spoken_text[:60])
