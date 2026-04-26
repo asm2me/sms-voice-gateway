@@ -382,7 +382,8 @@ def _build_queue_context(
     inbox_status: str = "",
     inbox_provider: str = "",
     inbox_page: int = 1,
-    page_size: int = 20,
+    queue_page_size: int = 20,
+    inbox_page_size: int = 20,
 ) -> tuple[dict, dict, dict, dict, dict, dict]:
     from .admin_reports import summarize_inbox, summarize_queue
 
@@ -406,8 +407,8 @@ def _build_queue_context(
     )
     if not isinstance(inbox_summary, dict) or inbox_summary.get("total_items") in (None, ""):
         inbox_summary = {**(inbox_summary if isinstance(inbox_summary, dict) else {}), "total_items": len(all_inbox_messages)}
-    recent_queue_items = paginate_items(all_queue_items, page=page, page_size=page_size)
-    recent_inbox_messages = paginate_items(all_inbox_messages, page=inbox_page, page_size=page_size)
+    recent_queue_items = paginate_items(all_queue_items, page=page, page_size=queue_page_size)
+    recent_inbox_messages = paginate_items(all_inbox_messages, page=inbox_page, page_size=inbox_page_size)
     queue_filters = {
         "search": search,
         "status": status_filter,
