@@ -339,6 +339,24 @@ class PJSipUASession:
             if thread_id in registered_threads:
                 return
 
+        # Critical: if pj already knows this thread (because it's one of pj's
+        # own internal worker threads invoking us via a callback), DO NOT call
+        # libRegisterThread on it. Re-registering a pj-native thread corrupts
+        # the thread descriptor table and causes later pj_thread_this()
+        # / grp_lock_unset_owner_thread assertions to fire (pj/lock.c:279).
+        if self._endpoint is not None:
+            is_registered_fn = getattr(self._endpoint, "libIsThreadRegistered", None)
+            if callable(is_registered_fn):
+                try:
+                    if bool(is_registered_fn()):
+                        with _PJSUA_GLOBAL_LOCK:
+                            _PJSUA_REGISTERED_THREADS.setdefault(registration_key, set()).add(thread_id)
+                        return
+                except Exception:
+                    # If the check itself fails, fall through to the
+                    # registration attempt below — it's no worse than before.
+                    pass
+
         name = f"py-{thread_id}"[:31]
         desc = _PJSUA_THREAD_DESCS.get(thread_id)
         if desc is None:
