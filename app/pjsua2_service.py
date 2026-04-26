@@ -1,6 +1,6 @@
 """
 Direct SIP User-Agent service using PJSUA2/PJSIP Python bindings.
-
+ 
 This module is intentionally defensive:
 - It imports PJSUA2 lazily so the app can still start when bindings are missing.
 - It returns structured results instead of raising on environment/binding errors.
