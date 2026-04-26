@@ -981,7 +981,8 @@ def _simulate_smpp_test_send(
     # - isolated SIP runtime
     # - no queued retries
     # - silence fallback when the configured TTS provider is rate-limited/unavailable
-    gateway = SMSGateway(settings, isolated_sip=True)
+    # Use the shared SIP session so the outbound call appears in live call tracking.
+    gateway = SMSGateway(settings, isolated_sip=False)
     sms = IncomingSMS(body=body, destination=phone_number, provider="admin-test", smpp_username=smpp_username)
     try:
         result = gateway.process(sms)
