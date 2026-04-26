@@ -827,20 +827,13 @@ class PJSipUASession:
                 self._last_call = call
 
             try:
-                with suppress(Exception):
-                    call_info = call.getInfo()
-                    media_list = getattr(call_info, "media", None)
-                    if media_list is not None:
-                        for media in list(media_list):
-                            media_status = getattr(media, "status", None)
-                            media_type = getattr(media, "type", None)
-                            log.info(
-                                "Outbound SIP media state account=%s destination=%s type=%s status=%s",
-                                account_id,
-                                destination,
-                                media_type,
-                                media_status,
-                            )
+                # NOTE: do not call call.getInfo() / iterate getInfo().media from
+                # this (request) thread. PJSUA2 fires onCallState/onCallMediaState
+                # on its own worker thread concurrently, and dropping the media
+                # object refs here triggers pj group-lock destructor races
+                # (pj/lock.c:279 grp_lock_unset_owner_thread assertion).
+                # The actual call-info/media inspection happens inside the
+                # callbacks, where it is thread-safe.
 
                 playback_result = self.prepare_playback(
                     request.audio_path,
