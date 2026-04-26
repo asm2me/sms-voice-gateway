@@ -203,6 +203,12 @@ _PJSUA_EVENT_PUMP_LOCKS: dict[int, threading.RLock] = {}
 _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
 _PJSUA_RETIRED_PLAYERS: list[dict[str, Any]] = []
 _PJSUA_AUDIO_SETUP_LOCKS: dict[str, threading.RLock] = {}
+# Serializes all PJSUA2 media operations (createPlayer, startTransmit,
+# stopTransmit, recorder creation/destruction) across calls. PJSIP group
+# locks assert when one call's media object is touched while another call
+# holds the lock owner thread, so we keep all media bridge transitions on a
+# single thread at a time.
+_PJSUA_MEDIA_OP_LOCK = threading.RLock()
 
 
 def _pjsua_registration_key(endpoint: object | None) -> int:
@@ -239,40 +245,41 @@ def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
     # after detaching them so Python GC does not immediately run native cleanup on
     # an unsafe thread.
     if stop_transmit:
-        try:
-            if player is not None and call_audio_media is not None and hasattr(player, "stopTransmit"):
-                player.stopTransmit(call_audio_media)
-        except Exception as exc:
-            stop_transmit_error = f"{type(exc).__name__}: {exc}"
-            log.warning(
-                "Outbound SIP player stopTransmit failed call_id=%s error=%s",
-                call_id,
-                stop_transmit_error,
-            )
+        with _PJSUA_MEDIA_OP_LOCK:
+            try:
+                if player is not None and call_audio_media is not None and hasattr(player, "stopTransmit"):
+                    player.stopTransmit(call_audio_media)
+            except Exception as exc:
+                stop_transmit_error = f"{type(exc).__name__}: {exc}"
+                log.warning(
+                    "Outbound SIP player stopTransmit failed call_id=%s error=%s",
+                    call_id,
+                    stop_transmit_error,
+                )
 
-        try:
-            if player is not None and recorder is not None and hasattr(player, "stopTransmit"):
-                player.stopTransmit(recorder)
-        except Exception as exc:
-            extra_error = f"{type(exc).__name__}: {exc}"
-            stop_transmit_error = f"{stop_transmit_error}; {extra_error}".strip("; ")
-            log.warning(
-                "Outbound SIP player->recorder stopTransmit failed call_id=%s error=%s",
-                call_id,
-                extra_error,
-            )
+            try:
+                if player is not None and recorder is not None and hasattr(player, "stopTransmit"):
+                    player.stopTransmit(recorder)
+            except Exception as exc:
+                extra_error = f"{type(exc).__name__}: {exc}"
+                stop_transmit_error = f"{stop_transmit_error}; {extra_error}".strip("; ")
+                log.warning(
+                    "Outbound SIP player->recorder stopTransmit failed call_id=%s error=%s",
+                    call_id,
+                    extra_error,
+                )
 
-        try:
-            if call_audio_media is not None and recorder is not None and hasattr(call_audio_media, "stopTransmit"):
-                call_audio_media.stopTransmit(recorder)
-        except Exception as exc:
-            extra_error = f"{type(exc).__name__}: {exc}"
-            stop_transmit_error = f"{stop_transmit_error}; {extra_error}".strip("; ")
-            log.warning(
-                "Outbound SIP call media->recorder stopTransmit failed call_id=%s error=%s",
-                call_id,
-                extra_error,
-            )
+            try:
+                if call_audio_media is not None and recorder is not None and hasattr(call_audio_media, "stopTransmit"):
+                    call_audio_media.stopTransmit(recorder)
+            except Exception as exc:
+                extra_error = f"{type(exc).__name__}: {exc}"
+                stop_transmit_error = f"{stop_transmit_error}; {extra_error}".strip("; ")
+                log.warning(
+                    "Outbound SIP call media->recorder stopTransmit failed call_id=%s error=%s",
+                    call_id,
+                    extra_error,
+                )
 
     retired_state = dict(player_state)
     retired_state["released_at"] = time.time()
@@ -1764,8 +1771,11 @@ class _CallCallbackHolder:
                 _PJSUA_AUDIO_SETUP_LOCKS[self._call_id] = setup_lock
 
         try:
-            # Use per-call lock to serialize audio setup for simultaneous calls
-            with setup_lock:
+            # Serialize ALL media bridge transitions across calls. PJSIP group
+            # locks assert if a different thread releases media that another
+            # thread is mid-setup on; the per-call setup_lock alone cannot
+            # prevent cross-call races.
+            with _PJSUA_MEDIA_OP_LOCK, setup_lock:
                 # Double-check playback_started after acquiring lock
                 if self._playback_started:
                     log.info("Outbound SIP playback already started after lock acquire account=%s call_id=%s", self._account_id, self._call_id)
