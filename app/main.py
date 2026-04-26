@@ -982,10 +982,6 @@ def _convert_audio_to_wav_with_soundfile(raw: bytes) -> bytes | None:
     target_peak = 0.794  # ~-2 dBFS, leaves headroom but is loud enough for G.729 trunks
     if peak > 1e-6:
         mono = mono * (target_peak / peak)
-    log.info(
-        "[audio-upload] soundfile decode: src_rate=%s samples=%d input_peak=%.4f scaled_to_peak=%.4f",
-        src_rate, len(mono), peak, target_peak if peak > 1e-6 else 0.0,
-    )
 
     pcm = _np.clip(mono * 32767.0, -32768, 32767).astype("<i2")
 
@@ -3410,16 +3406,6 @@ async def admin_smpp_account_audio(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account has no uploaded audio")
 
     return _serve_smpp_audio_response(settings, raw_audio_path)
-
-
-@app.get("/admin/debug/last-played-audio")
-async def admin_debug_last_played_audio(
-    _: None = Depends(dep_admin_credentials),
-):
-    snapshot = BASE_DIR / "data" / "debug_audio" / "smpp_audio_last.wav"
-    if not snapshot.exists() or not snapshot.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No debug snapshot has been written yet (place a test call first).")
-    return FileResponse(snapshot, media_type="audio/wav", filename=snapshot.name)
 
 
 @app.get("/admin/config/smpp-part-audio/{account_id}/{part_ordinal}")

@@ -60,49 +60,6 @@ def _audio_fingerprint(path: Path) -> str:
         return f"{path.name}:0:0"
 
 
-def _write_debug_snapshot(source_path: str, name: str) -> None:
-    try:
-        snapshot_dir = _REPO_ROOT / "data" / "debug_audio"
-        snapshot_dir.mkdir(parents=True, exist_ok=True)
-        target = snapshot_dir / f"{name}.wav"
-        target.write_bytes(Path(source_path).read_bytes())
-        log.info("[audio-resolve] debug snapshot written: %s", target)
-    except Exception as exc:
-        log.warning("[audio-resolve] failed to write debug snapshot %s: %s", name, exc)
-
-
-def _log_wav_amplitude(label: str, wav_bytes: bytes) -> None:
-    try:
-        import io as _io
-        import wave as _wave
-        with _wave.open(_io.BytesIO(wav_bytes), "rb") as w:
-            n_channels = w.getnchannels()
-            sampwidth = w.getsampwidth()
-            framerate = w.getframerate()
-            nframes = w.getnframes()
-            raw = w.readframes(nframes)
-        peak = mean_abs = -1
-        if sampwidth == 2 and raw:
-            count = len(raw) // 2
-            peak = 0
-            total = 0
-            step = max(1, count // 4096)
-            sampled = 0
-            for i in range(0, count, step):
-                sample = int.from_bytes(raw[i*2:i*2+2], "little", signed=True)
-                a = abs(sample)
-                if a > peak:
-                    peak = a
-                total += a
-                sampled += 1
-            mean_abs = total // max(1, sampled)
-        log.info(
-            "[audio-amp] %s: %d bytes, ch=%d sw=%d fr=%d nframes=%d peak_abs=%d mean_abs=%d",
-            label, len(wav_bytes), n_channels, sampwidth, framerate, nframes, peak, mean_abs,
-        )
-    except Exception as exc:
-        log.warning("[audio-amp] %s: failed to inspect WAV: %s", label, exc)
-
 log = logging.getLogger(__name__)
 
 _SMS_GATEWAY_PJSUA_SCOPE = "sms-gateway"
@@ -352,19 +309,11 @@ class SMSGateway:
                 if all_digits_have_audio and digit_wavs:
                     wav_parts.extend(digit_wavs)
                     used_uploaded_files.extend(digit_files)
-                    log.info(
-                        "Static template parameter ord=%s value=%r resolved via digit audio (%d files)",
-                        ordinal, resolved_value, len(digit_files),
-                    )
                 else:
                     if resolved_value.strip():
                         seg_path, _ = self.tts.get_or_create_audio(resolved_value)
                         wav_parts.append(Path(seg_path).read_bytes())
                         used_tts_segments.append(resolved_value)
-                        log.info(
-                            "Static template parameter ord=%s value=%r resolved via TTS (digit audio incomplete)",
-                            ordinal, resolved_value,
-                        )
                 continue
 
             part_info = part_audio_map.get(ordinal)
@@ -374,52 +323,28 @@ class SMSGateway:
             if uploaded_part_path is not None:
                 wav_parts.append(uploaded_part_path.read_bytes())
                 used_uploaded_files.append(uploaded_part_path)
-                log.info(
-                    "Static template part ord=%s resolved via uploaded audio: %s",
-                    ordinal, uploaded_part_path,
-                )
             else:
                 if spoken_value.strip():
                     seg_path, _ = self.tts.get_or_create_audio(spoken_value)
                     wav_parts.append(Path(seg_path).read_bytes())
                     used_tts_segments.append(spoken_value)
-                    log.info(
-                        "Static template part ord=%s resolved via TTS (no upload): %r",
-                        ordinal, spoken_value,
-                    )
 
         if not wav_parts:
             return self.tts.get_or_create_audio(rendered_text)
-
-        for idx, w in enumerate(wav_parts):
-            _log_wav_amplitude(f"input wav_parts[{idx}]", w)
 
         fingerprint = "|".join(_audio_fingerprint(p) for p in used_uploaded_files)
         cache_text = f"{rendered_text}␟{fingerprint}␟" + "␟".join(used_tts_segments)
         merged_hash = self.tts.hash_for(cache_text)
         cached = self.audio_cache.get_audio_path(merged_hash)
         if cached:
-            log.info("[audio-resolve] reusing cached merged audio: %s", cached)
-            _log_wav_amplitude("cached merged", Path(cached).read_bytes())
             return cached, True
 
         if len(wav_parts) == 1 and used_uploaded_files and not used_tts_segments:
             single = _ensure_wav_format(wav_parts[0])
-            _log_wav_amplitude("single (no merge needed)", single)
-            stored = self.audio_cache.store_audio(merged_hash, single)
-            log.info("[audio-resolve] stored single uploaded WAV at: %s", stored)
-            _write_debug_snapshot(stored, "smpp_audio_last")
-            return stored, False
+            return self.audio_cache.store_audio(merged_hash, single), False
 
-        normalized = [_ensure_wav_format(w) for w in wav_parts]
-        for idx, w in enumerate(normalized):
-            _log_wav_amplitude(f"normalized wav_parts[{idx}]", w)
-        merged = _ensure_wav_format(_concat_wavs(normalized))
-        _log_wav_amplitude("merged final", merged)
-        stored = self.audio_cache.store_audio(merged_hash, merged)
-        log.info("[audio-resolve] stored merged WAV at: %s (size=%d)", stored, len(merged))
-        _write_debug_snapshot(stored, "smpp_audio_last")
-        return stored, False
+        merged = _ensure_wav_format(_concat_wavs([_ensure_wav_format(w) for w in wav_parts]))
+        return self.audio_cache.store_audio(merged_hash, merged), False
 
     def process(self, sms: IncomingSMS, *, queue_retries: bool = True) -> GatewayResult:
         try:
@@ -445,20 +370,6 @@ class SMSGateway:
             )
             rendered_from_static_template = True
 
-        log.info(
-            "[audio-resolve] smpp_username=%r smpp_account=%s template_enabled=%s "
-            "template_set=%s uploaded_audio_path=%r part_audio_keys=%s digit_audio_keys=%s "
-            "rendered_from_static_template=%s",
-            sms.smpp_username,
-            (smpp_account.username or smpp_account.id) if smpp_account else None,
-            bool(smpp_account and smpp_account.static_default_message_enabled),
-            bool(smpp_account and smpp_account.static_default_message_template),
-            (smpp_account.uploaded_audio_path if smpp_account else ""),
-            sorted((smpp_account.static_message_part_audio or {}).keys()) if smpp_account else [],
-            sorted((smpp_account.static_message_digit_audio or {}).keys()) if smpp_account else [],
-            rendered_from_static_template,
-        )
-
         if not spoken_text:
             return GatewayResult(
                 success=False,
@@ -479,10 +390,8 @@ class SMSGateway:
             )
 
             if account_audio_path is not None:
-                log.info("[audio-resolve] using account-wide uploaded audio: %s", account_audio_path)
                 audio_path, was_cached = str(account_audio_path), True
             elif rendered_from_static_template and smpp_account is not None:
-                log.info("[audio-resolve] using static template resolver (template enabled)")
                 audio_path, was_cached = self._resolve_static_template_audio(
                     inbound_text=extract_destination(sms)[1],
                     rendered_text=spoken_text,
@@ -499,11 +408,6 @@ class SMSGateway:
                     smpp_account.static_default_message_template,
                     inbound_text_only,
                 )
-                log.info(
-                    "[audio-resolve] template flag is OFF but part/digit audio present "
-                    "and template is set — rendering via template anyway. rendered=%r",
-                    (rendered_for_audio or "")[:120],
-                )
                 audio_path, was_cached = self._resolve_static_template_audio(
                     inbound_text=inbound_text_only,
                     rendered_text=rendered_for_audio or spoken_text,
@@ -511,7 +415,6 @@ class SMSGateway:
                     smpp_account=smpp_account,
                 )
             else:
-                log.info("[audio-resolve] falling through to plain TTS for spoken_text=%r", spoken_text[:80])
                 audio_path, was_cached = self.tts.get_or_create_audio(spoken_text)
         except Exception as exc:
             log.exception("TTS failed for text=%r", spoken_text[:60])
