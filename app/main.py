@@ -78,7 +78,13 @@ from .sms_handler import (
     _utc_now_iso,
 )
 from .smpp_service import SMPPService
-from .tts_service import TTSService
+from .tts_service import (
+    TARGET_CHANNELS as _AUDIO_TARGET_CHANNELS,
+    TARGET_RATE as _AUDIO_TARGET_RATE,
+    TARGET_SAMPWIDTH as _AUDIO_TARGET_SAMPWIDTH,
+    TTSService,
+    _ensure_wav_format,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -891,6 +897,122 @@ def _guess_audio_media_type(audio_path: Path) -> str:
 _ALLOWED_SMPP_AUDIO_SUFFIXES = {".wav", ".mp3", ".ogg", ".m4a", ".aac", ".flac", ".opus"}
 
 
+def _ffmpeg_executable() -> str | None:
+    import shutil as _shutil
+    return _shutil.which("ffmpeg")
+
+
+def _convert_audio_to_wav_with_ffmpeg(raw: bytes, suffix: str) -> bytes | None:
+    ffmpeg = _ffmpeg_executable()
+    if not ffmpeg:
+        return None
+
+    import tempfile as _tempfile
+
+    with _tempfile.NamedTemporaryFile(suffix=suffix or "", delete=False) as src_file:
+        src_file.write(raw)
+        src_path = src_file.name
+    dst_path = src_path + ".converted.wav"
+    try:
+        cmd = [
+            ffmpeg, "-y", "-loglevel", "error",
+            "-i", src_path,
+            "-ac", str(_AUDIO_TARGET_CHANNELS),
+            "-ar", str(_AUDIO_TARGET_RATE),
+            "-sample_fmt", "s16",
+            "-f", "wav",
+            dst_path,
+        ]
+        completed = subprocess.run(cmd, capture_output=True, timeout=120)
+        if completed.returncode != 0:
+            stderr = completed.stderr.decode("utf-8", errors="replace") if completed.stderr else ""
+            log.warning("ffmpeg audio conversion failed (rc=%s): %s", completed.returncode, stderr[-500:])
+            return None
+        return Path(dst_path).read_bytes()
+    finally:
+        for path in (src_path, dst_path):
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _convert_audio_to_wav_with_soundfile(raw: bytes) -> bytes | None:
+    try:
+        import io as _io
+        import numpy as _np
+        import soundfile as _sf
+    except Exception as exc:
+        log.debug("soundfile unavailable for audio conversion: %s", exc)
+        return None
+
+    try:
+        data, src_rate = _sf.read(_io.BytesIO(raw), always_2d=True)
+    except Exception as exc:
+        log.debug("soundfile failed to read uploaded audio: %s", exc)
+        return None
+
+    if data.size == 0:
+        return None
+
+    mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
+
+    if src_rate != _AUDIO_TARGET_RATE:
+        try:
+            from scipy.signal import resample_poly as _resample_poly
+            from math import gcd as _gcd
+            divisor = _gcd(int(src_rate), int(_AUDIO_TARGET_RATE))
+            up = int(_AUDIO_TARGET_RATE // divisor)
+            down = int(src_rate // divisor)
+            mono = _resample_poly(mono, up, down).astype("float64")
+        except Exception as exc:
+            log.debug("scipy resample failed, falling back to linear interp: %s", exc)
+            target_len = int(round(len(mono) * _AUDIO_TARGET_RATE / float(src_rate)))
+            if target_len <= 0:
+                return None
+            xp = _np.linspace(0.0, 1.0, num=len(mono), endpoint=False)
+            x = _np.linspace(0.0, 1.0, num=target_len, endpoint=False)
+            mono = _np.interp(x, xp, mono)
+
+    peak = float(_np.max(_np.abs(mono))) if mono.size else 0.0
+    if peak > 1.0:
+        mono = mono / peak
+
+    pcm = _np.clip(mono * 32767.0, -32768, 32767).astype("<i2")
+
+    import io as _io2
+    import wave as _wave
+    out = _io2.BytesIO()
+    with _wave.open(out, "wb") as w:
+        w.setnchannels(_AUDIO_TARGET_CHANNELS)
+        w.setsampwidth(_AUDIO_TARGET_SAMPWIDTH)
+        w.setframerate(_AUDIO_TARGET_RATE)
+        w.writeframes(pcm.tobytes())
+    return out.getvalue()
+
+
+def _convert_uploaded_audio_to_wav(raw: bytes, suffix: str, original_name: str) -> bytes:
+    if suffix == ".wav":
+        try:
+            return _ensure_wav_format(raw)
+        except Exception as exc:
+            log.debug("Direct WAV normalisation failed for %s: %s — retrying via ffmpeg/soundfile", original_name, exc)
+
+    converted = _convert_audio_to_wav_with_ffmpeg(raw, suffix)
+    if converted:
+        return converted
+
+    converted = _convert_audio_to_wav_with_soundfile(raw)
+    if converted:
+        return converted
+
+    raise HTTPException(
+        status.HTTP_400_BAD_REQUEST,
+        f"Unable to decode '{original_name}'. Install ffmpeg on the server (recommended) "
+        f"or upload a 16-bit PCM WAV / FLAC / OGG file.",
+    )
+
+
 async def _store_smpp_audio_upload(
     account_id: str,
     upload: UploadFile | None,
@@ -916,6 +1038,8 @@ async def _store_smpp_audio_upload(
     if not raw:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Uploaded audio file '{original_name}' is empty")
 
+    wav_bytes = _convert_uploaded_audio_to_wav(raw, suffix, original_name)
+
     account_dir = _smpp_audio_account_dir(account_id)
     for existing in account_dir.glob(f"{stem}.*"):
         try:
@@ -924,8 +1048,8 @@ async def _store_smpp_audio_upload(
         except Exception:
             log.debug("Unable to remove previous uploaded audio file %s", existing, exc_info=True)
 
-    destination = account_dir / f"{stem}{suffix}"
-    destination.write_bytes(raw)
+    destination = account_dir / f"{stem}.wav"
+    destination.write_bytes(wav_bytes)
     return _relative_config_path(destination), original_name
 
 
