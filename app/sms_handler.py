@@ -24,11 +24,40 @@ from typing import Optional
 
 from .admin_reports import QueueItem, get_queue_store
 from .cache import AudioCache
-from .config import SIPAccount, Settings
+from .config import SIPAccount, Settings, SMPPAccount
 from .config_store import get_sip_account_for_smpp_username
-from .message_parts import extract_spoken_segments, render_static_default_message
+from .message_parts import (
+    render_static_default_message,
+    resolve_static_message_parts,
+)
 from .pjsua2_service import SipCallRequest, build_pjsua2_service
 from .tts_service import TTSService, _concat_wavs, _ensure_wav_format, _generate_silence
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_uploaded_audio_abs_path(raw_path: str) -> Optional[Path]:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = (_REPO_ROOT / candidate)
+    try:
+        candidate = candidate.resolve()
+    except Exception:
+        return None
+    if candidate.exists() and candidate.is_file():
+        return candidate
+    return None
+
+
+def _audio_fingerprint(path: Path) -> str:
+    try:
+        stat = path.stat()
+        return f"{path.name}:{int(stat.st_mtime_ns)}:{stat.st_size}"
+    except Exception:
+        return f"{path.name}:0:0"
 
 log = logging.getLogger(__name__)
 
@@ -202,28 +231,135 @@ class SMSGateway:
         inbound_text: str,
         rendered_text: str,
         template: str,
+        smpp_account: Optional[SMPPAccount] = None,
     ) -> tuple[str, bool]:
-        merged_hash = self.tts.hash_for(rendered_text)
-        cached_merged_audio = self.audio_cache.get_audio_path(merged_hash)
-        if cached_merged_audio:
-            return cached_merged_audio, True
+        if smpp_account is not None:
+            uploaded_account_path = _resolve_uploaded_audio_abs_path(
+                str(smpp_account.uploaded_audio_path or "")
+            )
+            if uploaded_account_path is not None:
+                log.info(
+                    "Using account-wide uploaded audio for SMPP user %s: %s",
+                    smpp_account.username or smpp_account.id,
+                    uploaded_account_path,
+                )
+                return str(uploaded_account_path), True
 
-        spoken_segments = [
-            segment
-            for segment in extract_spoken_segments(template, inbound_text)
-            if str(segment).strip()
-        ]
-        if len(spoken_segments) <= 1:
+        part_audio_map = dict((smpp_account.static_message_part_audio or {}) if smpp_account else {})
+        digit_audio_map = dict((smpp_account.static_message_digit_audio or {}) if smpp_account else {})
+
+        resolved_parts = resolve_static_message_parts(template, inbound_text)
+        spoken_resolved_parts: list[dict] = []
+        for part in resolved_parts:
+            if part.get("kind") == "parameter":
+                if str(part.get("resolved_value", "")).strip():
+                    spoken_resolved_parts.append(part)
+            elif part.get("spoken") and str(part.get("spoken_value", "")).strip():
+                spoken_resolved_parts.append(part)
+
+        if not spoken_resolved_parts:
             return self.tts.get_or_create_audio(rendered_text)
 
-        wav_parts: list[bytes] = []
-        for segment in spoken_segments:
-            segment_audio_path, _segment_cached = self.tts.get_or_create_audio(segment)
-            wav_parts.append(Path(segment_audio_path).read_bytes())
+        if not part_audio_map and not digit_audio_map:
+            if len(spoken_resolved_parts) <= 1:
+                return self.tts.get_or_create_audio(rendered_text)
+            merged_hash = self.tts.hash_for(rendered_text)
+            cached = self.audio_cache.get_audio_path(merged_hash)
+            if cached:
+                return cached, True
+            wavs: list[bytes] = []
+            for part in spoken_resolved_parts:
+                segment_text = (
+                    str(part.get("resolved_value", ""))
+                    if part.get("kind") == "parameter"
+                    else str(part.get("spoken_value", ""))
+                )
+                segment_audio_path, _ = self.tts.get_or_create_audio(segment_text)
+                wavs.append(Path(segment_audio_path).read_bytes())
+            merged = _ensure_wav_format(_concat_wavs([_ensure_wav_format(w) for w in wavs]))
+            return self.audio_cache.store_audio(merged_hash, merged), False
 
-        merged_audio = _ensure_wav_format(_concat_wavs(wav_parts))
-        stored_path = self.audio_cache.store_audio(merged_hash, merged_audio)
-        return stored_path, False
+        wav_parts: list[bytes] = []
+        used_uploaded_files: list[Path] = []
+        used_tts_segments: list[str] = []
+
+        for part in spoken_resolved_parts:
+            ordinal = str(part.get("ordinal", "")).strip()
+            kind = part.get("kind")
+            resolved_value = str(part.get("resolved_value", ""))
+            spoken_value = str(part.get("spoken_value", ""))
+
+            if kind == "parameter":
+                digit_wavs: list[bytes] = []
+                digit_files: list[Path] = []
+                all_digits_have_audio = bool(resolved_value)
+                for character in resolved_value:
+                    info = digit_audio_map.get(character) if character.isdigit() else None
+                    if not isinstance(info, dict):
+                        all_digits_have_audio = False
+                        break
+                    digit_path = _resolve_uploaded_audio_abs_path(str(info.get("path", "")))
+                    if digit_path is None:
+                        all_digits_have_audio = False
+                        break
+                    digit_wavs.append(digit_path.read_bytes())
+                    digit_files.append(digit_path)
+
+                if all_digits_have_audio and digit_wavs:
+                    wav_parts.extend(digit_wavs)
+                    used_uploaded_files.extend(digit_files)
+                    log.info(
+                        "Static template parameter ord=%s value=%r resolved via digit audio (%d files)",
+                        ordinal, resolved_value, len(digit_files),
+                    )
+                else:
+                    if resolved_value.strip():
+                        seg_path, _ = self.tts.get_or_create_audio(resolved_value)
+                        wav_parts.append(Path(seg_path).read_bytes())
+                        used_tts_segments.append(resolved_value)
+                        log.info(
+                            "Static template parameter ord=%s value=%r resolved via TTS (digit audio incomplete)",
+                            ordinal, resolved_value,
+                        )
+                continue
+
+            part_info = part_audio_map.get(ordinal)
+            uploaded_part_path = None
+            if isinstance(part_info, dict):
+                uploaded_part_path = _resolve_uploaded_audio_abs_path(str(part_info.get("path", "")))
+            if uploaded_part_path is not None:
+                wav_parts.append(uploaded_part_path.read_bytes())
+                used_uploaded_files.append(uploaded_part_path)
+                log.info(
+                    "Static template part ord=%s resolved via uploaded audio: %s",
+                    ordinal, uploaded_part_path,
+                )
+            else:
+                if spoken_value.strip():
+                    seg_path, _ = self.tts.get_or_create_audio(spoken_value)
+                    wav_parts.append(Path(seg_path).read_bytes())
+                    used_tts_segments.append(spoken_value)
+                    log.info(
+                        "Static template part ord=%s resolved via TTS (no upload): %r",
+                        ordinal, spoken_value,
+                    )
+
+        if not wav_parts:
+            return self.tts.get_or_create_audio(rendered_text)
+
+        fingerprint = "|".join(_audio_fingerprint(p) for p in used_uploaded_files)
+        cache_text = f"{rendered_text}␟{fingerprint}␟" + "␟".join(used_tts_segments)
+        merged_hash = self.tts.hash_for(cache_text)
+        cached = self.audio_cache.get_audio_path(merged_hash)
+        if cached:
+            return cached, True
+
+        if len(wav_parts) == 1 and used_uploaded_files and not used_tts_segments:
+            single = _ensure_wav_format(wav_parts[0])
+            return self.audio_cache.store_audio(merged_hash, single), False
+
+        merged = _ensure_wav_format(_concat_wavs([_ensure_wav_format(w) for w in wav_parts]))
+        return self.audio_cache.store_audio(merged_hash, merged), False
 
     def process(self, sms: IncomingSMS, *, queue_retries: bool = True) -> GatewayResult:
         try:
@@ -263,6 +399,7 @@ class SMSGateway:
                     inbound_text=extract_destination(sms)[1],
                     rendered_text=spoken_text,
                     template=smpp_account.static_default_message_template,
+                    smpp_account=smpp_account,
                 )
             else:
                 audio_path, was_cached = self.tts.get_or_create_audio(spoken_text)
