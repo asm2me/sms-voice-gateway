@@ -463,58 +463,73 @@ def _build_live_call_context(settings: Settings) -> dict:
     active_call_items = status.get("active_call_items", []) or []
     now = time.time()
 
-    active_item_counts: dict[str, int] = {}
-
-    for index, item in enumerate(active_call_items, start=1):
-        state = str(item.get("state", "")).strip().lower() or "unknown"
-        status_meta = _live_call_status_meta(state)
-        connected_at = float(item.get("connected_at") or 0.0)
-        hangup_at = float(item.get("hangup_at") or 0.0)
-        updated_at = float(item.get("updated_at") or 0.0)
-        duration_seconds = 0
-        if connected_at > 0:
-            duration_end = hangup_at if hangup_at > 0 else now
-            duration_seconds = max(0, int(duration_end - connected_at))
-        elif updated_at > 0:
-            duration_seconds = max(0, int(now - updated_at))
-
-        destination_number = str(item.get("destination_number", "")).strip()
-        account_id = str(item.get("account_id", "")).strip() or current_account_id or "unknown"
-        extension = str(item.get("remote_uri_user", "")).strip() or destination_number
-        active_item_counts[account_id] = active_item_counts.get(account_id, 0) + 1
-        active_calls.append(
-            {
-                "channel": f"sip:{account_id}#{index}",
-                "caller_id_num": "",
-                "caller_id_name": account_id,
-                "connected_line_num": destination_number,
-                "connected_line_name": destination_number,
-                "state": state,
-                "state_label": status_meta["label"],
-                "state_class": status_meta["class"],
-                "extension": extension,
-                "destination_number": destination_number,
-                "application": "direct-sip-ua",
-                "duration": str(duration_seconds),
-                "call_id": str(item.get("call_id", "")).strip(),
-                "answered": bool(item.get("answered")),
-                "last_status_code": int(item.get("last_status_code", 0) or 0),
-                "hangup_at": hangup_at,
-                "updated_at": updated_at,
-            }
-        )
-
-    for account_id, count in all_active_calls.items():
-        normalized_count = max(0, int(count or 0))
-        missing_count = max(0, normalized_count - active_item_counts.get(str(account_id).strip() or "unknown", 0))
-        for index in range(missing_count):
-            state = "dialing"
+    if active_call_items:
+        for index, item in enumerate(active_call_items, start=1):
+            state = str(item.get("state", "")).strip().lower() or "unknown"
             status_meta = _live_call_status_meta(state)
+            connected_at = float(item.get("connected_at") or 0.0)
+            hangup_at = float(item.get("hangup_at") or 0.0)
+            updated_at = float(item.get("updated_at") or 0.0)
+            duration_seconds = 0
+            if connected_at > 0:
+                duration_end = hangup_at if hangup_at > 0 else now
+                duration_seconds = max(0, int(duration_end - connected_at))
+            elif updated_at > 0:
+                duration_seconds = max(0, int(now - updated_at))
+
+            destination_number = str(item.get("destination_number", "")).strip()
+            account_id = str(item.get("account_id", "")).strip() or current_account_id or "unknown"
+            extension = str(item.get("remote_uri_user", "")).strip() or destination_number
             active_calls.append(
                 {
-                    "channel": f"sip:{account_id or 'unknown'}#{index + 1}",
+                    "channel": f"sip:{account_id}#{index}",
                     "caller_id_num": "",
-                    "caller_id_name": account_id or "active-call",
+                    "caller_id_name": account_id,
+                    "connected_line_num": destination_number,
+                    "connected_line_name": destination_number,
+                    "state": state,
+                    "state_label": status_meta["label"],
+                    "state_class": status_meta["class"],
+                    "extension": extension,
+                    "destination_number": destination_number,
+                    "application": "direct-sip-ua",
+                    "duration": str(duration_seconds),
+                    "call_id": str(item.get("call_id", "")).strip(),
+                    "answered": bool(item.get("answered")),
+                    "last_status_code": int(item.get("last_status_code", 0) or 0),
+                    "hangup_at": hangup_at,
+                    "updated_at": updated_at,
+                }
+            )
+    elif total_active_calls > 0:
+        for account_id, count in all_active_calls.items():
+            normalized_count = max(0, int(count or 0))
+            for index in range(normalized_count):
+                state = "dialing"
+                status_meta = _live_call_status_meta(state)
+                active_calls.append(
+                    {
+                        "channel": f"sip:{account_id or 'unknown'}#{index + 1}",
+                        "caller_id_num": "",
+                        "caller_id_name": account_id or "active-call",
+                        "connected_line_num": "",
+                        "connected_line_name": "",
+                        "state": state,
+                        "state_label": status_meta["label"],
+                        "state_class": status_meta["class"],
+                        "extension": "",
+                        "application": "direct-sip-ua",
+                        "duration": "",
+                    }
+                )
+    elif current_account_id and status.get("registered"):
+        state = "registered"
+        status_meta = _live_call_status_meta(state)
+        active_calls.append(
+                {
+                    "channel": f"sip:{current_account_id}",
+                    "caller_id_num": "",
+                    "caller_id_name": current_account_id,
                     "connected_line_num": "",
                     "connected_line_name": "",
                     "state": state,
@@ -524,25 +539,6 @@ def _build_live_call_context(settings: Settings) -> dict:
                     "application": "direct-sip-ua",
                     "duration": "",
                 }
-            )
-
-    if not active_calls and current_account_id and status.get("registered"):
-        state = "registered"
-        status_meta = _live_call_status_meta(state)
-        active_calls.append(
-            {
-                "channel": f"sip:{current_account_id}",
-                "caller_id_num": "",
-                "caller_id_name": current_account_id,
-                "connected_line_num": "",
-                "connected_line_name": "",
-                "state": state,
-                "state_label": status_meta["label"],
-                "state_class": status_meta["class"],
-                "extension": "",
-                "application": "direct-sip-ua",
-                "duration": "",
-            }
         )
 
     smpp_active_calls_by_user: list[dict] = []
@@ -3136,11 +3132,34 @@ async def admin_tools_test_send_status(
 
 @app.get("/admin/reports/live")
 async def admin_reports_live(
+    request: Request,
     _: None = Depends(dep_admin_credentials),
     settings: Settings = Depends(dep_settings),
 ):
     report_summary, recent_reports = _report_context(settings)
-    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(settings)
+    queue_search = str(request.query_params.get("search", "")).strip()
+    queue_status = str(request.query_params.get("status", "")).strip()
+    queue_provider = str(request.query_params.get("provider", "")).strip()
+    queue_page = int(request.query_params.get("queue_page", "1") or "1")
+    queue_page_size = _coerce_page_size(request.query_params.get("queue_page_size"), default=20)
+    inbox_search = str(request.query_params.get("inbox_search", "")).strip()
+    inbox_status = str(request.query_params.get("inbox_status", "")).strip()
+    inbox_provider = str(request.query_params.get("inbox_provider", "")).strip()
+    inbox_page = int(request.query_params.get("inbox_page", "1") or "1")
+    inbox_page_size = _coerce_page_size(request.query_params.get("inbox_page_size"), default=20)
+    sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(
+        settings,
+        search=queue_search,
+        status_filter=queue_status,
+        provider_filter=queue_provider,
+        page=queue_page,
+        queue_page_size=queue_page_size,
+        inbox_search=inbox_search,
+        inbox_status=inbox_status,
+        inbox_provider=inbox_provider,
+        inbox_page=inbox_page,
+        inbox_page_size=inbox_page_size,
+    )
     live_calls = _build_live_call_context(settings)
     queue_items = []
     for item in recent_queue_items.get("items", []):
