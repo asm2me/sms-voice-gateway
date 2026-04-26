@@ -929,13 +929,18 @@ async def _store_smpp_audio_upload(
     return _relative_config_path(destination), original_name
 
 
-async def _apply_smpp_account_audio_updates(form) -> dict[str, object]:
-    account_id = str(form.get("account_id", "")).strip()
+async def _apply_smpp_account_audio_updates(
+    form,
+    account_id: str | None = None,
+    existing_account: SMPPAccount | None = None,
+) -> dict[str, object]:
+    account_id = str(account_id or form.get("account_id", "")).strip()
     if not account_id:
         return {}
 
-    current = ensure_default_accounts(load_settings_from_store())
-    existing_account = next((account for account in current.smpp_accounts if account.id == account_id), None)
+    if existing_account is None:
+        current = ensure_default_accounts(load_settings_from_store())
+        existing_account = next((account for account in current.smpp_accounts if account.id == account_id), None)
 
     updates: dict[str, object] = {}
     part_audio = dict(existing_account.static_message_part_audio or {}) if existing_account else {}
