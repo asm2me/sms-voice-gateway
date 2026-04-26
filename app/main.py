@@ -921,6 +921,9 @@ def _convert_audio_to_wav_with_ffmpeg(raw: bytes, suffix: str) -> bytes | None:
             "-ac", str(_AUDIO_TARGET_CHANNELS),
             "-ar", str(_AUDIO_TARGET_RATE),
             "-sample_fmt", "s16",
+            # Peak-normalize to about -2 dBFS so trunk-side VAD/silence-suppression
+            # doesn't drop low-amplitude frames.
+            "-af", "dynaudnorm=p=0.85:m=10:s=12,volume=-2dB",
             "-f", "wav",
             dst_path,
         ]
@@ -976,8 +979,13 @@ def _convert_audio_to_wav_with_soundfile(raw: bytes) -> bytes | None:
             mono = _np.interp(x, xp, mono)
 
     peak = float(_np.max(_np.abs(mono))) if mono.size else 0.0
-    if peak > 1.0:
-        mono = mono / peak
+    target_peak = 0.794  # ~-2 dBFS, leaves headroom but is loud enough for G.729 trunks
+    if peak > 1e-6:
+        mono = mono * (target_peak / peak)
+    log.info(
+        "[audio-upload] soundfile decode: src_rate=%s samples=%d input_peak=%.4f scaled_to_peak=%.4f",
+        src_rate, len(mono), peak, target_peak if peak > 1e-6 else 0.0,
+    )
 
     pcm = _np.clip(mono * 32767.0, -32768, 32767).astype("<i2")
 
