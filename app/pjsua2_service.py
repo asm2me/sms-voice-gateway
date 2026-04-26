@@ -2228,10 +2228,52 @@ class _CallCallbackHolder:
     def wait_for_completion(self, timeout_seconds: float) -> dict[str, Any]:
         deadline = time.time() + max(1.0, timeout_seconds)
         media_check_counter = 0
+        last_state_dump_at = 0.0
+        loop_start = time.time()
         while time.time() < deadline:
             self._session._pump_events(50)
 
             media_check_counter += 1
+
+            # Periodic full-state debug dump (every ~2s) so the journal shows
+            # exactly which playback flags are set/unset while the call is in
+            # progress. Existing logs only fire on transitions; if a flag is
+            # stuck wrong, there's no other record. Safe to leave on — it's
+            # one INFO line every 2s per active call.
+            now_ts = time.time()
+            if now_ts - last_state_dump_at >= 2.0:
+                last_state_dump_at = now_ts
+                wav_size = -1
+                if self._playback_audio_path:
+                    try:
+                        wav_size = Path(self._playback_audio_path).stat().st_size
+                    except Exception:
+                        wav_size = -1
+                log.info(
+                    "Outbound SIP wait state account=%s call_id=%s elapsed=%.1fs "
+                    "answered_at=%s state_text=%s last_status=%s "
+                    "playback_ready=%s playback_pending=%s playback_started=%s "
+                    "playback_started_at=%s playback_finished_at=%s "
+                    "playback_error=%s audio_path=%s wav_size=%s "
+                    "duration=%.3f hangup_requested=%s done=%s",
+                    self._account_id,
+                    self._call_id,
+                    now_ts - loop_start,
+                    self._answered_at,
+                    self._state_text,
+                    self._last_status_code,
+                    self._playback_ready,
+                    self._playback_pending,
+                    self._playback_started,
+                    self._playback_started_at,
+                    self._playback_finished_at,
+                    (self._playback_error or "")[:120],
+                    (self._playback_audio_path or "")[:80],
+                    wav_size,
+                    self._playback_audio_duration_seconds,
+                    self._playback_hangup_requested,
+                    self._done.is_set(),
+                )
 
             if self._playback_ready and self._playback_pending and not self._playback_started and self._answered_at is not None:
                 call_obj = self._call_obj or getattr(self._session, "_last_call", None)
