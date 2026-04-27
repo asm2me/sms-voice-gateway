@@ -1382,3 +1382,57 @@ a {
   color: var(--muted);
   border: 1px solid var(--panel-border);
 }
+
+.ws-status-bar {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.35rem 1rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-bottom: 1px solid transparent;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.ws-status-bar .ws-status-icon {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.ws-status-bar-connected {
+  background: #ffffff;
+  color: #065f46;
+  border-bottom-color: #d1fae5;
+}
+
+.ws-status-bar-connected .ws-status-icon {
+  color: #16a34a;
+}
+
+.ws-status-bar-disconnected {
+  background: #dc2626;
+  color: #ffffff;
+  border-bottom-color: #b91c1c;
+  box-shadow: 0 1px 0 rgba(127, 29, 29, 0.45);
+}
+
+.ws-status-bar-disconnected .ws-status-icon {
+  color: #ffffff;
+}
+
+.ws-status-bar-unknown {
+  background: #fef3c7;
+  color: #92400e;
+  border-bottom-color: #fde68a;
+}
+
+.ws-status-bar-unknown .ws-status-icon {
+  color: #b45309;
+}

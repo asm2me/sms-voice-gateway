@@ -3460,8 +3460,28 @@
       }
     };
 
-  window.__adminPollReportsLive =
-    window.__adminPollReportsLive ||
+  window.__adminUpdateWsStatusBar =
+    window.__adminUpdateWsStatusBar ||
+    function (status) {
+      const bar = document.getElementById("ws-status-bar");
+      if (!bar) return;
+      const presets = {
+        connected:    { cls: "connected",    icon: "●",  text: "Live · WebSocket connected" },
+        connecting:   { cls: "unknown",      icon: "○",  text: "Connecting…" },
+        disconnected: { cls: "disconnected", icon: "✕",  text: "Disconnected — attempting to reconnect" },
+        unsupported:  { cls: "disconnected", icon: "✕",  text: "WebSocket not supported in this browser" },
+      };
+      const preset = presets[status] || presets.connecting;
+      bar.className = "ws-status-bar ws-status-bar-" + preset.cls;
+      const iconNode = bar.querySelector(".ws-status-icon");
+      const textNode = bar.querySelector(".ws-status-text");
+      if (iconNode) iconNode.textContent = preset.icon;
+      if (textNode) textNode.textContent = preset.text;
+    };
+
+  // Initial-render fetch only. Subsequent updates flow through the WebSocket.
+  window.__adminInitialReportsFetch =
+    window.__adminInitialReportsFetch ||
     async function () {
       const state = window.__adminReportsLiveState;
       if (!state || state.busy) return;
@@ -3479,33 +3499,34 @@
         });
         const payload = await response.json();
         if (!response.ok) {
-          throw new Error((payload && payload.detail) || "Unable to refresh live queue data");
+          throw new Error((payload && payload.detail) || "Unable to load delivery report data");
         }
-        // When the WS is delivering frames, prefer the WS-provided "ws" badge.
         const transport = state.wsConnected ? "ws" : "http";
         window.__adminApplyReportsLivePayload(payload, transport);
       } catch (error) {
-        console.warn((error && error.message) || "Unable to refresh live queue data");
+        console.warn((error && error.message) || "Unable to load delivery report data");
       } finally {
         state.busy = false;
-        // Keep polling running as a safety net even when WS is connected,
-        // but back off to 5s while WS is alive (2s when only HTTP is up).
-        const nextDelay = state.wsConnected ? 5000 : 2000;
-        state.timer = window.setTimeout(window.__adminPollReportsLive, nextDelay);
       }
     };
+  // Backwards-compat alias for any existing callers.
+  window.__adminPollReportsLive = window.__adminPollReportsLive || window.__adminInitialReportsFetch;
 
   window.__adminConnectReportsWs =
     window.__adminConnectReportsWs ||
     function () {
-      if (typeof WebSocket === "undefined") return false;
-      if (window.location.pathname.indexOf("/admin/reports") !== 0) return false;
-
       const state = window.__adminReportsLiveState;
       if (!state) return false;
+      if (window.location.pathname.indexOf("/admin/reports") !== 0) return false;
+      if (typeof WebSocket === "undefined") {
+        window.__adminUpdateWsStatusBar("unsupported");
+        return false;
+      }
       if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
         return true;
       }
+
+      window.__adminUpdateWsStatusBar(state.wsConnected ? "connected" : "connecting");
 
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const url = protocol + "//" + window.location.host + "/admin/reports/ws" + (window.location.search || "");
@@ -3514,13 +3535,27 @@
         socket = new WebSocket(url);
       } catch (error) {
         console.warn("WebSocket open failed", error);
+        window.__adminUpdateWsStatusBar("disconnected");
+        scheduleReconnect();
         return false;
       }
       state.ws = socket;
 
+      function scheduleReconnect() {
+        if (window.location.pathname.indexOf("/admin/reports") !== 0) return;
+        if (state.reconnectTimer) return;
+        const delay = Math.min(15000, state.wsBackoffMs || 1000);
+        state.wsBackoffMs = Math.min(15000, delay * 2);
+        state.reconnectTimer = window.setTimeout(function () {
+          state.reconnectTimer = null;
+          window.__adminConnectReportsWs();
+        }, delay);
+      }
+
       socket.addEventListener("open", function () {
         state.wsConnected = true;
         state.wsBackoffMs = 1000;
+        window.__adminUpdateWsStatusBar("connected");
       });
 
       socket.addEventListener("message", function (event) {
@@ -3536,26 +3571,16 @@
         }
       });
 
-      const handleClose = function () {
+      socket.addEventListener("close", function () {
         state.wsConnected = false;
         state.ws = null;
-        if (window.location.pathname.indexOf("/admin/reports") !== 0) return;
-        const delay = Math.min(15000, (state.wsBackoffMs || 1000));
-        state.wsBackoffMs = delay * 2;
-        state.reconnectTimer = window.setTimeout(function () {
-          state.reconnectTimer = null;
-          if (!window.__adminConnectReportsWs()) {
-            window.__adminPollReportsLive();
-          }
-        }, delay);
-        if (!state.timer) {
-          state.timer = window.setTimeout(window.__adminPollReportsLive, 1500);
-        }
-      };
+        window.__adminUpdateWsStatusBar("disconnected");
+        scheduleReconnect();
+      });
 
-      socket.addEventListener("close", handleClose);
       socket.addEventListener("error", function (error) {
         console.warn("Reports WS error", error);
+        window.__adminUpdateWsStatusBar("disconnected");
       });
       return true;
     };
@@ -3951,10 +3976,13 @@
 
     if (window.location.pathname.indexOf("/admin/reports") === 0) {
       window.__adminClearReportsLivePoll();
+      window.__adminUpdateWsStatusBar("connecting");
+      // One-shot initial fetch so the page renders fresh data before the WS
+      // handshake completes; afterwards the WS is the only update channel.
+      window.__adminInitialReportsFetch();
       if (typeof window.__adminConnectReportsWs === "function") {
         window.__adminConnectReportsWs();
       }
-      window.__adminPollReportsLive();
     }
 
     document.querySelectorAll("[data-table-filter-toggle]").forEach((button) => {
