@@ -1347,36 +1347,16 @@ a {
 
 .audio-pulse svg rect {
   fill: var(--panel-border);
-  transition: fill 0.2s ease;
+  transition: height 0.18s linear, y 0.18s linear, fill 0.18s linear;
 }
 
 .audio-pulse.is-active svg rect {
   fill: var(--success);
-  animation: audio-pulse-bar 1s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: center;
 }
-
-.audio-pulse.is-active svg rect:nth-child(1) { animation-delay: 0s; }
-.audio-pulse.is-active svg rect:nth-child(2) { animation-delay: 0.07s; }
-.audio-pulse.is-active svg rect:nth-child(3) { animation-delay: 0.14s; }
-.audio-pulse.is-active svg rect:nth-child(4) { animation-delay: 0.21s; }
-.audio-pulse.is-active svg rect:nth-child(5) { animation-delay: 0.28s; }
-.audio-pulse.is-active svg rect:nth-child(6) { animation-delay: 0.35s; }
-.audio-pulse.is-active svg rect:nth-child(7) { animation-delay: 0.42s; }
-.audio-pulse.is-active svg rect:nth-child(8) { animation-delay: 0.49s; }
-.audio-pulse.is-active svg rect:nth-child(9) { animation-delay: 0.56s; }
-.audio-pulse.is-active svg rect:nth-child(10) { animation-delay: 0.63s; }
-.audio-pulse.is-active svg rect:nth-child(11) { animation-delay: 0.70s; }
 
 .audio-pulse.is-active .audio-pulse-label {
   color: var(--success);
   font-weight: 600;
-}
-
-@keyframes audio-pulse-bar {
-  0%, 100% { transform: scaleY(0.45); }
-  50% { transform: scaleY(1.15); }
 }
 
 .realtime-pill {

@@ -652,7 +652,7 @@
           <td class="mono">{{ call.destination_number or call.connected_line_num or call.connected_line_name or '—' }}</td>
           <td>{{ call.application or '—' }}</td>
           <td class="mono">{{ call.duration or '—' }}</td>
-          <td><div class="audio-pulse {% if call.answered %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}"><svg viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><rect x="2" y="10" width="3" height="4"/><rect x="9" y="8" width="3" height="8"/><rect x="16" y="6" width="3" height="12"/><rect x="23" y="3" width="3" height="18"/><rect x="30" y="7" width="3" height="10"/><rect x="37" y="9" width="3" height="6"/><rect x="44" y="5" width="3" height="14"/><rect x="51" y="8" width="3" height="8"/><rect x="58" y="4" width="3" height="16"/><rect x="65" y="9" width="3" height="6"/><rect x="72" y="6" width="3" height="12"/></svg><span class="audio-pulse-label">{% if call.answered %}live audio{% else %}—{% endif %}</span></div></td>
+          <td><div class="audio-pulse {% if call.answered and call.audio_levels %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}" data-levels="{{ call.audio_levels|join(',') if call.audio_levels else '' }}"><svg viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true">{% set _levels = call.audio_levels if call.audio_levels else [] %}{% for i in range(11) %}{% set _lvl = _levels[i] if i < _levels|length else 0 %}{% set _h = (1 + (_lvl * 22))|round(2) %}{% set _y = ((24 - _h) / 2)|round(2) %}<rect x="{{ 2 + i * 7 }}" y="{{ _y }}" width="3" height="{{ _h }}"/>{% endfor %}</svg><span class="audio-pulse-label">{% if call.answered and call.audio_levels %}RTP {{ "%.0f"|format((_levels[-1] if _levels else 0) * 100) }}%{% elif call.answered %}awaiting RTP{% else %}—{% endif %}</span></div></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -3329,24 +3329,33 @@
           const callIdAttr = escapeHtml(
             (call && (call.call_id || call.channel)) ? String(call.call_id || call.channel) : ""
           );
+          const rawLevels = (call && Array.isArray(call.audio_levels)) ? call.audio_levels : [];
+          const levels = [];
+          for (let i = 0; i < 11; i++) {
+            const v = Number(rawLevels[i] != null ? rawLevels[i] : 0);
+            levels.push(isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
+          }
+          const hasRtp = rawLevels.length > 0;
+          let bars = "";
+          for (let i = 0; i < 11; i++) {
+            const h = +(1 + levels[i] * 22).toFixed(2);
+            const y = +((24 - h) / 2).toFixed(2);
+            bars += '<rect x="' + (2 + i * 7) + '" y="' + y + '" width="3" height="' + h + '"/>';
+          }
+          const lastLevel = rawLevels.length ? Number(rawLevels[rawLevels.length - 1]) || 0 : 0;
+          const labelText = (answered && hasRtp)
+            ? "RTP " + Math.round(Math.max(0, Math.min(1, lastLevel)) * 100) + "%"
+            : (answered ? "awaiting RTP" : "—");
           const audioCell =
             '<div class="audio-pulse' +
-            (answered ? " is-active" : "") +
-            '" data-call-id="' + callIdAttr + '" data-answered="' + (answered ? "1" : "0") + '">' +
+            (answered && hasRtp ? " is-active" : "") +
+            '" data-call-id="' + callIdAttr +
+            '" data-answered="' + (answered ? "1" : "0") +
+            '" data-levels="' + escapeHtml(rawLevels.join(",")) + '">' +
             '<svg viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true">' +
-            '<rect x="2" y="10" width="3" height="4"/>' +
-            '<rect x="9" y="8" width="3" height="8"/>' +
-            '<rect x="16" y="6" width="3" height="12"/>' +
-            '<rect x="23" y="3" width="3" height="18"/>' +
-            '<rect x="30" y="7" width="3" height="10"/>' +
-            '<rect x="37" y="9" width="3" height="6"/>' +
-            '<rect x="44" y="5" width="3" height="14"/>' +
-            '<rect x="51" y="8" width="3" height="8"/>' +
-            '<rect x="58" y="4" width="3" height="16"/>' +
-            '<rect x="65" y="9" width="3" height="6"/>' +
-            '<rect x="72" y="6" width="3" height="12"/>' +
+            bars +
             '</svg>' +
-            '<span class="audio-pulse-label">' + (answered ? "live audio" : "&mdash;") + '</span>' +
+            '<span class="audio-pulse-label">' + escapeHtml(labelText) + '</span>' +
             '</div>';
 
           return (

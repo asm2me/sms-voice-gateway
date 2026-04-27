@@ -204,6 +204,55 @@ _PJSUA_ACTIVE_PLAYERS: dict[str, dict[str, Any]] = {}
 _PJSUA_RETIRED_PLAYERS: list[dict[str, Any]] = []
 _PJSUA_AUDIO_SETUP_LOCKS: dict[str, threading.RLock] = {}
 
+# RTP audio-level telemetry. Kept in a SEPARATE lock/dict so live-call concurrency
+# state (_TRUNK_*) is never widened with new fields. Each call_id maps to a
+# fixed-size ring of recent normalized samples (0.0..1.0).
+_TRUNK_AUDIO_LEVELS_LOCK = threading.Lock()
+_TRUNK_AUDIO_LEVELS: dict[str, list[float]] = {}
+_AUDIO_LEVEL_HISTORY_LEN = 11
+
+
+def _record_audio_levels(call_id: str, rx_level: float, tx_level: float) -> None:
+    if not call_id:
+        return
+    try:
+        rx = float(rx_level or 0.0)
+    except Exception:
+        rx = 0.0
+    try:
+        tx = float(tx_level or 0.0)
+    except Exception:
+        tx = 0.0
+    if rx > 1.0 or tx > 1.0:
+        rx = max(0.0, min(1.0, rx / 255.0))
+        tx = max(0.0, min(1.0, tx / 255.0))
+    else:
+        rx = max(0.0, min(1.0, rx))
+        tx = max(0.0, min(1.0, tx))
+    sample = rx if rx >= tx else tx
+    with _TRUNK_AUDIO_LEVELS_LOCK:
+        history = _TRUNK_AUDIO_LEVELS.setdefault(call_id, [])
+        history.append(sample)
+        if len(history) > _AUDIO_LEVEL_HISTORY_LEN:
+            del history[: len(history) - _AUDIO_LEVEL_HISTORY_LEN]
+
+
+def _get_audio_levels(call_id: str) -> list[float]:
+    if not call_id:
+        return []
+    with _TRUNK_AUDIO_LEVELS_LOCK:
+        history = _TRUNK_AUDIO_LEVELS.get(call_id)
+        if not history:
+            return []
+        return list(history)
+
+
+def _drop_audio_levels(call_id: str) -> None:
+    if not call_id:
+        return
+    with _TRUNK_AUDIO_LEVELS_LOCK:
+        _TRUNK_AUDIO_LEVELS.pop(call_id, None)
+
 
 def _pjsua_registration_key(endpoint: object | None) -> int:
     return id(endpoint) if endpoint is not None else 0
@@ -1115,6 +1164,8 @@ class PJSipUASession:
                 key=lambda item: float(item.get("updated_at") or 0.0),
                 reverse=True,
             )
+        for item in active_call_items:
+            item["audio_levels"] = _get_audio_levels(str(item.get("call_id") or ""))
         return {
             "available": self.available,
             "registered": self._registered,
@@ -1790,6 +1841,8 @@ class _CallCallbackHolder:
                     retained["release_error"] = cleanup_error
                 _TRUNK_CALL_STATES[self._call_id] = retained
 
+            _drop_audio_levels(self._call_id)
+
             log.info(
                 "Released SIP trunk concurrency slot account=%s call_id=%s active_calls=%s",
                 self._account_id,
@@ -2452,11 +2505,32 @@ class _CallCallbackHolder:
         deadline = time.time() + max(1.0, timeout_seconds)
         media_check_counter = 0
         last_state_dump_at = 0.0
+        last_audio_sample_at = 0.0
         loop_start = time.time()
         while time.time() < deadline:
             self._session._pump_events(50)
 
             media_check_counter += 1
+
+            # Sample real RTP audio levels (rx/tx) every ~150ms so the admin
+            # UI can render actual audio activity instead of a fake animation.
+            # Pure read of getRxLevel/getTxLevel — no concurrency mutation.
+            sample_now = time.time()
+            if sample_now - last_audio_sample_at >= 0.15:
+                last_audio_sample_at = sample_now
+                media_obj = self._player_media
+                if media_obj is not None and self._call_obj is not None:
+                    try:
+                        rx_value = 0.0
+                        tx_value = 0.0
+                        if hasattr(media_obj, "getRxLevel"):
+                            rx_value = media_obj.getRxLevel()
+                        if hasattr(media_obj, "getTxLevel"):
+                            tx_value = media_obj.getTxLevel()
+                        _record_audio_levels(self._call_id, rx_value, tx_value)
+                    except Exception:
+                        # Silent: PJSUA2 versions vary; never break the loop.
+                        pass
 
             # Periodic full-state debug dump (every ~2s) so the journal shows
             # exactly which playback flags are set/unset while the call is in
