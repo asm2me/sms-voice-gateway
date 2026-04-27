@@ -1,0 +1,12 @@
+[
+  {
+    "action": "admin.view",
+    "actor": "admin",
+    "detail": "Viewed the 'reports' admin section.",
+    "metadata": {},
+    "section": "reports",
+    "status": "success",
+    "target": "/admin/reports",
+    "timestamp": "2026-04-27T19:09:43.635267+00:00"
+  }
+]

@@ -3529,7 +3529,13 @@
       window.__adminUpdateWsStatusBar(state.wsConnected ? "connected" : "connecting");
 
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const url = protocol + "//" + window.location.host + "/admin/reports/ws" + (window.location.search || "");
+      const wsParams = new URLSearchParams(window.location.search || "");
+      const wsToken = "{{ reports_ws_token | default('') }}";
+      const wsTokenTs = "{{ reports_ws_token_ts | default('') }}";
+      if (wsToken) wsParams.set("token", wsToken);
+      if (wsTokenTs) wsParams.set("ts", wsTokenTs);
+      const wsQuery = wsParams.toString();
+      const url = protocol + "//" + window.location.host + "/admin/reports/ws" + (wsQuery ? "?" + wsQuery : "");
       let socket;
       try {
         socket = new WebSocket(url);

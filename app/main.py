@@ -116,6 +116,7 @@ _QUEUE_WORKER_POOL_SIZE = max(1, int(os.environ.get("SMS_GATEWAY_QUEUE_WORKERS",
 _queue_worker_executor: "concurrent.futures.ThreadPoolExecutor | None" = None
 _queue_in_flight_lock = threading.Lock()
 _queue_in_flight_ids: set[str] = set()
+_REPORTS_WS_TOKEN_TTL_SECONDS = 300
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -397,6 +398,35 @@ def _websocket_basic_auth_ok(websocket: WebSocket, settings: Settings) -> bool:
     if not sep:
         return False
     return username == settings.admin_username and password == settings.admin_password
+
+
+def _build_reports_ws_auth_context(settings: Settings) -> dict[str, str]:
+    token_ts = str(int(time.time() // _REPORTS_WS_TOKEN_TTL_SECONDS))
+    signing_key = f"{settings.admin_username}:{settings.admin_password}".encode("utf-8")
+    token_message = f"{settings.admin_username}:{token_ts}".encode("utf-8")
+    token = hmac.new(signing_key, token_message, hashlib.sha256).hexdigest()
+    return {"token": token, "token_ts": token_ts}
+
+
+def _websocket_reports_ws_token_ok(websocket: WebSocket, settings: Settings) -> bool:
+    token = str(websocket.query_params.get("token", "") or "").strip()
+    token_ts_raw = str(websocket.query_params.get("ts", "") or "").strip()
+    if not token or not token_ts_raw:
+        return False
+
+    try:
+        token_ts = int(token_ts_raw)
+    except Exception:
+        return False
+
+    current_bucket = int(time.time() // _REPORTS_WS_TOKEN_TTL_SECONDS)
+    if abs(current_bucket - token_ts) > 1:
+        return False
+
+    signing_key = f"{settings.admin_username}:{settings.admin_password}".encode("utf-8")
+    token_message = f"{settings.admin_username}:{token_ts}".encode("utf-8")
+    expected_token = hmac.new(signing_key, token_message, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(token, expected_token)
 
 
 def _is_secret_field(name: str) -> bool:
@@ -1765,6 +1795,7 @@ def _admin_context(
     health_payload = health_context or _build_health_context(settings)
     health_payload.setdefault("sip_trunks", sip_trunks_health)
     health_payload.setdefault("sip_trunk_summary", sip_trunks_health.get("summary", {}))
+    reports_ws_auth = _build_reports_ws_auth_context(settings)
     context = {
         "request": request,
         "active_section": active_section,
@@ -1895,6 +1926,8 @@ def _admin_context(
             "provider": str((tools_form_values or {}).get("provider", "admin-test")).strip() or "admin-test",
         },
         "audit_entries": list_audit_entries(limit=20),
+        "reports_ws_token": reports_ws_auth["token"],
+        "reports_ws_token_ts": reports_ws_auth["token_ts"],
     }
     if success_message:
         context["success_message"] = success_message
@@ -3994,7 +4027,7 @@ async def admin_reports_ws(websocket: WebSocket) -> None:
     from starlette.websockets import WebSocketDisconnect as _WebSocketDisconnect
 
     settings = dep_settings()
-    if not _websocket_basic_auth_ok(websocket, settings):
+    if not (_websocket_basic_auth_ok(websocket, settings) or _websocket_reports_ws_token_ok(websocket, settings)):
         await websocket.close(code=4401)
         return
 
