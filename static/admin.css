@@ -1378,3 +1378,27 @@ a {
   0%, 100% { transform: scaleY(0.45); }
   50% { transform: scaleY(1.15); }
 }
+
+.realtime-pill {
+  font-variant: small-caps;
+  letter-spacing: 0.06em;
+  font-size: 0.7rem;
+}
+
+.realtime-pill-success {
+  background: #d1fae5;
+  color: #065f46;
+  border: 1px solid #6ee7b7;
+}
+
+.realtime-pill-warning {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.realtime-pill-unknown {
+  background: var(--accent-soft);
+  color: var(--muted);
+  border: 1px solid var(--panel-border);
+}

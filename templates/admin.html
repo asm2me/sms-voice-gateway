@@ -622,6 +622,7 @@
       <p class="muted">This section auto-refreshes and shows current outbound SIP runtime activity from the gateway process.</p>
     </div>
     <div class="page-actions">
+      <span class="pill realtime-pill realtime-pill-unknown" data-realtime-transport>—</span>
       <span class="pill" id="live-calls-count">{{ live_calls.active_count }} active</span>
       <span class="pill" id="live-updated-at">{{ live_calls.updated_at }}</span>
     </div>
@@ -671,6 +672,7 @@
       <p class="muted">Review inbound messages alongside delivery reports from the same admin reports page.</p>
     </div>
     <div class="page-actions">
+      <span class="pill realtime-pill realtime-pill-unknown" data-realtime-transport>—</span>
       <span class="pill">{{ sms_inbox_summary.unread_label or 'Recent' }}</span>
     </div>
   </div>
@@ -698,7 +700,7 @@
           <th>Last Error</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody id="live-inbox-body">
         {% for message in recent_inbox_messages %}
         <tr>
           <td><input type="checkbox" name="item_ids" value="{{ message.id }}" /></td>
@@ -3367,15 +3369,80 @@
       if (emptyState) emptyState.style.display = "none";
     };
 
+  window.__adminRenderInboxRows =
+    window.__adminRenderInboxRows ||
+    function (payload) {
+      const inboxData = payload && payload.recent_inbox_messages ? payload.recent_inbox_messages : [];
+      const items = Array.isArray(inboxData)
+        ? inboxData
+        : Array.isArray(inboxData.items)
+        ? inboxData.items
+        : [];
+      const body = document.getElementById("live-inbox-body");
+      if (!body) return;
+
+      if (!items.length) {
+        body.innerHTML = "";
+        return;
+      }
+
+      body.innerHTML = items
+        .map(function (message) {
+          const itemId = escapeHtml(message && message.id ? message.id : "");
+          const createdAt = escapeHtml(message && message.created_at ? message.created_at : "—");
+          const fromNumber = escapeHtml(
+            (message && (message.phone_number || message.from_number)) || "—"
+          );
+          const destination = escapeHtml(
+            (message && (message.destination || message.to_number)) || "—"
+          );
+          const provider = escapeHtml(message && message.provider ? message.provider : "—");
+          const statusValue = escapeHtml(message && message.status ? message.status : "received");
+          const statusClass = escapeHtml(message && message.status_class ? message.status_class : "unknown");
+          const source = escapeHtml(message && message.source ? message.source : "—");
+          const preview = escapeHtml((message && (message.body_preview || message.body)) || "—");
+          const lastError = escapeHtml(message && message.last_error ? message.last_error : "—");
+          return (
+            "<tr>" +
+            '<td><input type="checkbox" name="item_ids" value="' + itemId + '" /></td>' +
+            '<td class="mono">' + createdAt + "</td>" +
+            '<td class="mono">' + fromNumber + "</td>" +
+            '<td class="mono">' + destination + "</td>" +
+            "<td>" + provider + "</td>" +
+            '<td><span class="status-badge status-' + statusClass + '">' + statusValue + "</span></td>" +
+            "<td>" + source + "</td>" +
+            '<td class="message-preview">' + preview + "</td>" +
+            "<td>" + lastError + "</td>" +
+            "</tr>"
+          );
+        })
+        .join("");
+    };
+
+  window.__adminUpdateRealtimeBadges =
+    window.__adminUpdateRealtimeBadges ||
+    function (transport) {
+      const label = transport === "ws" ? "WS live" : transport === "http" ? "HTTP poll" : "—";
+      const cls = transport === "ws" ? "success" : transport === "http" ? "warning" : "unknown";
+      document.querySelectorAll("[data-realtime-transport]").forEach(function (node) {
+        node.className = "pill realtime-pill realtime-pill-" + cls;
+        node.textContent = label;
+      });
+    };
+
   window.__adminApplyReportsLivePayload =
     window.__adminApplyReportsLivePayload ||
-    function (payload) {
+    function (payload, transport) {
       if (!payload || typeof payload !== "object") return;
       window.__adminRenderReportSummary(payload);
       window.__adminRenderReportRows(payload);
       window.__adminRenderQueueSummary(payload);
       window.__adminRenderQueueRows(payload);
+      window.__adminRenderInboxRows(payload);
       window.__adminRenderLiveCalls(payload);
+      if (typeof window.__adminUpdateRealtimeBadges === "function") {
+        window.__adminUpdateRealtimeBadges(transport || "http");
+      }
 
       const updatedAt = payload.updated_at;
       if (updatedAt) {
@@ -3407,7 +3474,7 @@
           throw new Error((payload && payload.detail) || "Unable to refresh live queue data");
         }
 
-        window.__adminApplyReportsLivePayload(payload);
+        window.__adminApplyReportsLivePayload(payload, "http");
       } catch (error) {
         console.warn((error && error.message) || "Unable to refresh live queue data");
       } finally {
@@ -3456,7 +3523,7 @@
             console.warn("Reports WS error", payload.detail || payload.error);
             return;
           }
-          window.__adminApplyReportsLivePayload(payload);
+          window.__adminApplyReportsLivePayload(payload, "ws");
         } catch (error) {
           console.warn("Reports WS payload parse failed", error);
         }
