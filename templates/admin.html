@@ -3466,7 +3466,6 @@
       const state = window.__adminReportsLiveState;
       if (!state || state.busy) return;
       if (window.location.pathname.indexOf("/admin/reports") !== 0) return;
-      if (state.wsConnected) return;
 
       state.busy = true;
       try {
@@ -3482,15 +3481,17 @@
         if (!response.ok) {
           throw new Error((payload && payload.detail) || "Unable to refresh live queue data");
         }
-
-        window.__adminApplyReportsLivePayload(payload, "http");
+        // When the WS is delivering frames, prefer the WS-provided "ws" badge.
+        const transport = state.wsConnected ? "ws" : "http";
+        window.__adminApplyReportsLivePayload(payload, transport);
       } catch (error) {
         console.warn((error && error.message) || "Unable to refresh live queue data");
       } finally {
         state.busy = false;
-        if (!state.wsConnected) {
-          state.timer = window.setTimeout(window.__adminPollReportsLive, 3000);
-        }
+        // Keep polling running as a safety net even when WS is connected,
+        // but back off to 5s while WS is alive (2s when only HTTP is up).
+        const nextDelay = state.wsConnected ? 5000 : 2000;
+        state.timer = window.setTimeout(window.__adminPollReportsLive, nextDelay);
       }
     };
 
@@ -3519,10 +3520,7 @@
 
       socket.addEventListener("open", function () {
         state.wsConnected = true;
-        if (state.timer) {
-          window.clearTimeout(state.timer);
-          state.timer = null;
-        }
+        state.wsBackoffMs = 1000;
       });
 
       socket.addEventListener("message", function (event) {
