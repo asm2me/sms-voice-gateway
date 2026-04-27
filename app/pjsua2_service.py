@@ -1808,6 +1808,21 @@ class _CallCallbackHolder:
         self._scheduled_hangup_at = None
         self._playback_bridge_released = False
 
+        if self._answered_at is not None and self._playback_audio_path and not self._playback_started:
+            started = self._maybe_start_playback(self._call_obj)
+            if started:
+                log.info(
+                    "Outbound SIP playback started after context became available account=%s call_id=%s",
+                    self._account_id,
+                    self._call_id,
+                )
+            elif self._playback_pending:
+                log.info(
+                    "Outbound SIP playback queued after context became available account=%s call_id=%s",
+                    self._account_id,
+                    self._call_id,
+                )
+
     def attach_call(self, call_obj: Any) -> None:
         if call_obj is not None:
             self._call_obj = call_obj
@@ -2033,7 +2048,7 @@ class _CallCallbackHolder:
                 with _PJSUA_PLAYER_LOCK:
                     _PJSUA_ACTIVE_PLAYERS[self._call_id] = {
                         "player": player,
-                        "player_media": player,
+                        "player_media": call_audio_media,
                         "call_audio_media": call_audio_media,
                         "recorder": recorder,
                         "recording_path": recording_path,
@@ -2042,7 +2057,7 @@ class _CallCallbackHolder:
                     }
 
                 self._player = player
-                self._player_media = player
+                self._player_media = call_audio_media
                 self._recorder = recorder
                 self._call_obj = call_obj
                 self._playback_started = True
