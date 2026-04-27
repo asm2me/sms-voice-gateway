@@ -638,6 +638,7 @@
           <th>Destination</th>
           <th>Application</th>
           <th>Duration</th>
+          <th>Audio</th>
         </tr>
       </thead>
       <tbody id="live-calls-body">
@@ -650,6 +651,7 @@
           <td class="mono">{{ call.destination_number or call.connected_line_num or call.connected_line_name or '—' }}</td>
           <td>{{ call.application or '—' }}</td>
           <td class="mono">{{ call.duration or '—' }}</td>
+          <td><div class="audio-pulse {% if call.answered %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}"><svg viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><rect x="2" y="10" width="3" height="4"/><rect x="9" y="8" width="3" height="8"/><rect x="16" y="6" width="3" height="12"/><rect x="23" y="3" width="3" height="18"/><rect x="30" y="7" width="3" height="10"/><rect x="37" y="9" width="3" height="6"/><rect x="44" y="5" width="3" height="14"/><rect x="51" y="8" width="3" height="8"/><rect x="58" y="4" width="3" height="16"/><rect x="65" y="9" width="3" height="6"/><rect x="72" y="6" width="3" height="12"/></svg><span class="audio-pulse-label">{% if call.answered %}live audio{% else %}—{% endif %}</span></div></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -3058,19 +3060,29 @@
       }
     };
 
-  window.__adminReportsLiveState = window.__adminReportsLiveState || { timer: null, busy: false };
+  window.__adminReportsLiveState =
+    window.__adminReportsLiveState ||
+    { timer: null, busy: false, ws: null, wsConnected: false, reconnectTimer: null, wsBackoffMs: 1000 };
 
   window.__adminClearReportsLivePoll =
     window.__adminClearReportsLivePoll ||
     function () {
       const state = window.__adminReportsLiveState;
-      if (state && state.timer) {
+      if (!state) return;
+      if (state.timer) {
         window.clearTimeout(state.timer);
         state.timer = null;
       }
-      if (state) {
-        state.busy = false;
+      if (state.reconnectTimer) {
+        window.clearTimeout(state.reconnectTimer);
+        state.reconnectTimer = null;
       }
+      if (state.ws) {
+        try { state.ws.close(); } catch (_) {}
+        state.ws = null;
+      }
+      state.wsConnected = false;
+      state.busy = false;
     };
 
   window.__adminRenderReportSummary =
@@ -3311,6 +3323,30 @@
           const application = escapeHtml(call && call.application ? call.application : "—");
           const duration = escapeHtml(call && call.duration ? call.duration : "—");
 
+          const answered = !!(call && call.answered);
+          const callIdAttr = escapeHtml(
+            (call && (call.call_id || call.channel)) ? String(call.call_id || call.channel) : ""
+          );
+          const audioCell =
+            '<div class="audio-pulse' +
+            (answered ? " is-active" : "") +
+            '" data-call-id="' + callIdAttr + '" data-answered="' + (answered ? "1" : "0") + '">' +
+            '<svg viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true">' +
+            '<rect x="2" y="10" width="3" height="4"/>' +
+            '<rect x="9" y="8" width="3" height="8"/>' +
+            '<rect x="16" y="6" width="3" height="12"/>' +
+            '<rect x="23" y="3" width="3" height="18"/>' +
+            '<rect x="30" y="7" width="3" height="10"/>' +
+            '<rect x="37" y="9" width="3" height="6"/>' +
+            '<rect x="44" y="5" width="3" height="14"/>' +
+            '<rect x="51" y="8" width="3" height="8"/>' +
+            '<rect x="58" y="4" width="3" height="16"/>' +
+            '<rect x="65" y="9" width="3" height="6"/>' +
+            '<rect x="72" y="6" width="3" height="12"/>' +
+            '</svg>' +
+            '<span class="audio-pulse-label">' + (answered ? "live audio" : "&mdash;") + '</span>' +
+            '</div>';
+
           return (
             "<tr>" +
             '<td class="mono">' + channel + "</td>" +
@@ -3320,6 +3356,7 @@
             '<td class="mono">' + destination + "</td>" +
             "<td>" + application + "</td>" +
             '<td class="mono">' + duration + "</td>" +
+            "<td>" + audioCell + "</td>" +
             "</tr>"
           );
         })
@@ -3330,12 +3367,30 @@
       if (emptyState) emptyState.style.display = "none";
     };
 
+  window.__adminApplyReportsLivePayload =
+    window.__adminApplyReportsLivePayload ||
+    function (payload) {
+      if (!payload || typeof payload !== "object") return;
+      window.__adminRenderReportSummary(payload);
+      window.__adminRenderReportRows(payload);
+      window.__adminRenderQueueSummary(payload);
+      window.__adminRenderQueueRows(payload);
+      window.__adminRenderLiveCalls(payload);
+
+      const updatedAt = payload.updated_at;
+      if (updatedAt) {
+        const liveUpdatedAt = document.getElementById("live-updated-at");
+        if (liveUpdatedAt) liveUpdatedAt.textContent = String(updatedAt);
+      }
+    };
+
   window.__adminPollReportsLive =
     window.__adminPollReportsLive ||
     async function () {
       const state = window.__adminReportsLiveState;
       if (!state || state.busy) return;
       if (window.location.pathname.indexOf("/admin/reports") !== 0) return;
+      if (state.wsConnected) return;
 
       state.busy = true;
       try {
@@ -3352,23 +3407,83 @@
           throw new Error((payload && payload.detail) || "Unable to refresh live queue data");
         }
 
-        window.__adminRenderReportSummary(payload);
-        window.__adminRenderReportRows(payload);
-        window.__adminRenderQueueSummary(payload);
-        window.__adminRenderQueueRows(payload);
-        window.__adminRenderLiveCalls(payload);
-
-        const updatedAt = payload && payload.updated_at ? payload.updated_at : "";
-        if (updatedAt) {
-          const liveUpdatedAt = document.getElementById("live-updated-at");
-          if (liveUpdatedAt) liveUpdatedAt.textContent = updatedAt;
-        }
+        window.__adminApplyReportsLivePayload(payload);
       } catch (error) {
         console.warn((error && error.message) || "Unable to refresh live queue data");
       } finally {
         state.busy = false;
-        state.timer = window.setTimeout(window.__adminPollReportsLive, 3000);
+        if (!state.wsConnected) {
+          state.timer = window.setTimeout(window.__adminPollReportsLive, 3000);
+        }
       }
+    };
+
+  window.__adminConnectReportsWs =
+    window.__adminConnectReportsWs ||
+    function () {
+      if (typeof WebSocket === "undefined") return false;
+      if (window.location.pathname.indexOf("/admin/reports") !== 0) return false;
+
+      const state = window.__adminReportsLiveState;
+      if (!state) return false;
+      if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
+        return true;
+      }
+
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const url = protocol + "//" + window.location.host + "/admin/reports/ws" + (window.location.search || "");
+      let socket;
+      try {
+        socket = new WebSocket(url);
+      } catch (error) {
+        console.warn("WebSocket open failed", error);
+        return false;
+      }
+      state.ws = socket;
+
+      socket.addEventListener("open", function () {
+        state.wsConnected = true;
+        if (state.timer) {
+          window.clearTimeout(state.timer);
+          state.timer = null;
+        }
+      });
+
+      socket.addEventListener("message", function (event) {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload && payload.error) {
+            console.warn("Reports WS error", payload.detail || payload.error);
+            return;
+          }
+          window.__adminApplyReportsLivePayload(payload);
+        } catch (error) {
+          console.warn("Reports WS payload parse failed", error);
+        }
+      });
+
+      const handleClose = function () {
+        state.wsConnected = false;
+        state.ws = null;
+        if (window.location.pathname.indexOf("/admin/reports") !== 0) return;
+        const delay = Math.min(15000, (state.wsBackoffMs || 1000));
+        state.wsBackoffMs = delay * 2;
+        state.reconnectTimer = window.setTimeout(function () {
+          state.reconnectTimer = null;
+          if (!window.__adminConnectReportsWs()) {
+            window.__adminPollReportsLive();
+          }
+        }, delay);
+        if (!state.timer) {
+          state.timer = window.setTimeout(window.__adminPollReportsLive, 1500);
+        }
+      };
+
+      socket.addEventListener("close", handleClose);
+      socket.addEventListener("error", function (error) {
+        console.warn("Reports WS error", error);
+      });
+      return true;
     };
 
   (function () {
@@ -3762,6 +3877,9 @@
 
     if (window.location.pathname.indexOf("/admin/reports") === 0) {
       window.__adminClearReportsLivePoll();
+      if (typeof window.__adminConnectReportsWs === "function") {
+        window.__adminConnectReportsWs();
+      }
       window.__adminPollReportsLive();
     }
 

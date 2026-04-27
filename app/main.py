@@ -32,7 +32,10 @@ from threading import Event, Thread
 import threading
 from typing import Annotated, Optional
 
-from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
+import base64
+import binascii
+
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -380,6 +383,20 @@ def dep_admin_credentials(
             detail="Invalid admin credentials",
             headers={"WWW-Authenticate": "Basic"},
         )
+
+
+def _websocket_basic_auth_ok(websocket: WebSocket, settings: Settings) -> bool:
+    auth_header = websocket.headers.get("authorization", "") or ""
+    if not auth_header.lower().startswith("basic "):
+        return False
+    try:
+        decoded = base64.b64decode(auth_header.split(" ", 1)[1]).decode("utf-8", "ignore")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return False
+    username, sep, password = decoded.partition(":")
+    if not sep:
+        return False
+    return username == settings.admin_username and password == settings.admin_password
 
 
 def _is_secret_field(name: str) -> bool:
@@ -3902,23 +3919,18 @@ async def admin_tools_test_send_status(
     return JSONResponse(job)
 
 
-@app.get("/admin/reports/live")
-async def admin_reports_live(
-    request: Request,
-    _: None = Depends(dep_admin_credentials),
-    settings: Settings = Depends(dep_settings),
-):
+def _build_reports_live_payload(settings: Settings, query_params) -> dict:
     report_summary, recent_reports = _report_context(settings)
-    queue_search = str(request.query_params.get("search", "")).strip()
-    queue_status = str(request.query_params.get("status", "")).strip()
-    queue_provider = str(request.query_params.get("provider", "")).strip()
-    queue_page = int(request.query_params.get("queue_page", "1") or "1")
-    queue_page_size = _coerce_page_size(request.query_params.get("queue_page_size"), default=20)
-    inbox_search = str(request.query_params.get("inbox_search", "")).strip()
-    inbox_status = str(request.query_params.get("inbox_status", "")).strip()
-    inbox_provider = str(request.query_params.get("inbox_provider", "")).strip()
-    inbox_page = int(request.query_params.get("inbox_page", "1") or "1")
-    inbox_page_size = _coerce_page_size(request.query_params.get("inbox_page_size"), default=20)
+    queue_search = str(query_params.get("search", "")).strip()
+    queue_status = str(query_params.get("status", "")).strip()
+    queue_provider = str(query_params.get("provider", "")).strip()
+    queue_page = int(query_params.get("queue_page", "1") or "1")
+    queue_page_size = _coerce_page_size(query_params.get("queue_page_size"), default=20)
+    inbox_search = str(query_params.get("inbox_search", "")).strip()
+    inbox_status = str(query_params.get("inbox_status", "")).strip()
+    inbox_provider = str(query_params.get("inbox_provider", "")).strip()
+    inbox_page = int(query_params.get("inbox_page", "1") or "1")
+    inbox_page_size = _coerce_page_size(query_params.get("inbox_page_size"), default=20)
     sms_inbox_summary, recent_inbox_messages, queue_summary, recent_queue_items, queue_filters, inbox_filters = _build_queue_context(
         settings,
         search=queue_search,
@@ -3957,6 +3969,57 @@ async def admin_reports_live(
         "live_calls": live_calls,
         "updated_at": live_calls.get("updated_at", ""),
     }
+
+
+@app.get("/admin/reports/live")
+async def admin_reports_live(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    return _build_reports_live_payload(settings, request.query_params)
+
+
+@app.websocket("/admin/reports/ws")
+async def admin_reports_ws(websocket: WebSocket) -> None:
+    import asyncio as _asyncio
+    from starlette.websockets import WebSocketDisconnect as _WebSocketDisconnect
+
+    settings = dep_settings()
+    if not _websocket_basic_auth_ok(websocket, settings):
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    query_params = dict(websocket.query_params)
+    interval_seconds = max(0.5, float(os.environ.get("SMS_GATEWAY_REPORTS_WS_INTERVAL", "1.5") or 1.5))
+
+    while True:
+        try:
+            payload = await _asyncio.to_thread(
+                _build_reports_live_payload, settings, query_params
+            )
+        except Exception as exc:
+            log.warning("admin_reports_ws build payload failed: %s", exc)
+            payload = {"error": "build_failed", "detail": str(exc)}
+
+        try:
+            await websocket.send_json(payload)
+        except _WebSocketDisconnect:
+            return
+        except Exception as exc:
+            log.info("admin_reports_ws closed during send: %s", exc)
+            return
+
+        try:
+            await _asyncio.wait_for(websocket.receive_text(), timeout=interval_seconds)
+        except _asyncio.TimeoutError:
+            continue
+        except _WebSocketDisconnect:
+            return
+        except Exception as exc:
+            log.info("admin_reports_ws closed during receive: %s", exc)
+            return
 
 
 @app.get("/admin/reports/export/{dataset}.{file_format}")
