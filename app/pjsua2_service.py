@@ -925,7 +925,7 @@ class PJSipUASession:
                     audio_duration_seconds=float(playback_result.audio_duration_seconds or 0.0),
                     repeat_count=request.playback_repeats,
                     pause_ms=request.playback_pause_ms,
-                    cleanup_wav=bool(playback_result.details.get("cleanup_wav")) if playback_result.details else False,
+                    cleanup_wav=False,
                     enable_recording=bool(request.enable_recording),
                     destination_number=destination,
                 )
@@ -1734,7 +1734,7 @@ class _CallCallbackHolder:
         cleanup_error = ""
         try:
             try:
-                self._release_playback_bridge(stop_transmit=False, reason="call_disconnected")
+                self._release_playback_bridge(stop_transmit=True, reason="call_disconnected")
             except Exception as exc:
                 cleanup_error = f"{type(exc).__name__}: {exc}"
                 log.warning(
