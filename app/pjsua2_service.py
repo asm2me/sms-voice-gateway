@@ -263,6 +263,88 @@ def _drop_audio_levels(call_id: str) -> None:
         _TRUNK_AUDIO_LEVELS.pop(call_id, None)
 
 
+# Live "spy" (one-way listen) state. Separate lock/dict — never widens
+# concurrency state. The HTTP layer queues a "start"/"stop" command; the
+# per-call PJSUA2 thread consumes the command, attaches/detaches an
+# AudioMediaRecorder writing to a WAV file, and publishes metadata.
+_TRUNK_SPY_LOCK = threading.Lock()
+_TRUNK_SPY_STATE: dict[str, dict[str, Any]] = {}
+
+
+def _spy_dir() -> Path:
+    path = Path(tempfile.gettempdir()) / "sms_voice_gateway_spy"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def request_spy_start(call_id: str) -> dict[str, Any]:
+    if not call_id:
+        return {"ok": False, "error": "call_id is required"}
+    with _TRUNK_SPY_LOCK:
+        state = _TRUNK_SPY_STATE.setdefault(call_id, {})
+        if state.get("active"):
+            return {
+                "ok": True,
+                "active": True,
+                "wav_path": state.get("wav_path", ""),
+                "sample_rate": int(state.get("sample_rate") or 0),
+                "channels": int(state.get("channels") or 1),
+                "bits_per_sample": int(state.get("bits_per_sample") or 16),
+            }
+        state["command"] = "start"
+        state["error"] = ""
+    return {"ok": True, "queued": True}
+
+
+def request_spy_stop(call_id: str) -> dict[str, Any]:
+    if not call_id:
+        return {"ok": False, "error": "call_id is required"}
+    with _TRUNK_SPY_LOCK:
+        state = _TRUNK_SPY_STATE.get(call_id)
+        if not state:
+            return {"ok": True, "active": False}
+        state["command"] = "stop"
+    return {"ok": True}
+
+
+def get_spy_state(call_id: str) -> dict[str, Any]:
+    if not call_id:
+        return {}
+    with _TRUNK_SPY_LOCK:
+        state = _TRUNK_SPY_STATE.get(call_id)
+        if not state:
+            return {}
+        return dict(state)
+
+
+def _drop_spy_state(call_id: str) -> None:
+    if not call_id:
+        return
+    with _TRUNK_SPY_LOCK:
+        _TRUNK_SPY_STATE.pop(call_id, None)
+
+
+def _read_wav_header(path: str) -> dict[str, int] | None:
+    try:
+        with open(path, "rb") as fh:
+            header = fh.read(44)
+    except Exception:
+        return None
+    if len(header) < 44 or header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
+        return None
+    try:
+        channels = int.from_bytes(header[22:24], "little")
+        sample_rate = int.from_bytes(header[24:28], "little")
+        bits_per_sample = int.from_bytes(header[34:36], "little")
+    except Exception:
+        return None
+    return {
+        "channels": channels or 1,
+        "sample_rate": sample_rate or 0,
+        "bits_per_sample": bits_per_sample or 16,
+    }
+
+
 def _pjsua_registration_key(endpoint: object | None) -> int:
     return id(endpoint) if endpoint is not None else 0
 
@@ -1738,6 +1820,8 @@ class _CallCallbackHolder:
         self._recording_error = ""
         self._destination_number = ""
         self._call_obj = None
+        self._spy_recorder = None
+        self._spy_wav_path = ""
 
     def _set_runtime_state(
         self,
@@ -1853,6 +1937,14 @@ class _CallCallbackHolder:
                 _TRUNK_CALL_STATES[self._call_id] = retained
 
             _drop_audio_levels(self._call_id)
+
+            with suppress(Exception):
+                self._stop_spy_recorder()
+            spy_wav = self._spy_wav_path
+            _drop_spy_state(self._call_id)
+            if spy_wav:
+                with suppress(Exception):
+                    Path(spy_wav).unlink(missing_ok=True)
 
             log.info(
                 "Released SIP trunk concurrency slot account=%s call_id=%s active_calls=%s",
@@ -2244,6 +2336,107 @@ class _CallCallbackHolder:
             )
             return False
 
+    def _process_spy_commands(self) -> None:
+        """Run on the per-call PJSUA2 thread. Consume queued spy commands."""
+        with _TRUNK_SPY_LOCK:
+            state = _TRUNK_SPY_STATE.get(self._call_id)
+            command = state.get("command") if state else None
+            if state is not None:
+                state["command"] = None
+        if command not in ("start", "stop"):
+            return
+
+        pj = self._session._pj
+        if command == "start":
+            if self._spy_recorder is not None:
+                return
+            call_audio_media = self._player_media
+            if call_audio_media is None or pj is None:
+                with _TRUNK_SPY_LOCK:
+                    bucket = _TRUNK_SPY_STATE.setdefault(self._call_id, {})
+                    bucket["error"] = "call audio media not available yet"
+                    bucket["active"] = False
+                return
+            try:
+                spy_dir = _spy_dir()
+                wav_path = spy_dir / f"spy_{self._call_id}_{int(time.time() * 1000)}.wav"
+                recorder = pj.AudioMediaRecorder()
+                recorder.createRecorder(str(wav_path))
+                with suppress(Exception):
+                    call_audio_media.startTransmit(recorder)
+                if self._player is not None:
+                    with suppress(Exception):
+                        self._player.startTransmit(recorder)
+                self._spy_recorder = recorder
+                self._spy_wav_path = str(wav_path)
+                # Header is written when the recorder is created. Give PJSUA2
+                # a moment to flush, then parse format metadata.
+                metadata: dict[str, int] = {}
+                for _ in range(10):
+                    metadata = _read_wav_header(str(wav_path)) or {}
+                    if metadata.get("sample_rate"):
+                        break
+                    time.sleep(0.02)
+                with _TRUNK_SPY_LOCK:
+                    bucket = _TRUNK_SPY_STATE.setdefault(self._call_id, {})
+                    bucket.update(
+                        {
+                            "active": True,
+                            "wav_path": str(wav_path),
+                            "sample_rate": int(metadata.get("sample_rate") or 0),
+                            "channels": int(metadata.get("channels") or 1),
+                            "bits_per_sample": int(metadata.get("bits_per_sample") or 16),
+                            "error": "",
+                        }
+                    )
+                log.info(
+                    "Outbound SIP spy started account=%s call_id=%s wav=%s sr=%s ch=%s bps=%s",
+                    self._account_id,
+                    self._call_id,
+                    str(wav_path),
+                    metadata.get("sample_rate"),
+                    metadata.get("channels"),
+                    metadata.get("bits_per_sample"),
+                )
+            except Exception as exc:
+                with _TRUNK_SPY_LOCK:
+                    bucket = _TRUNK_SPY_STATE.setdefault(self._call_id, {})
+                    bucket["active"] = False
+                    bucket["error"] = f"{type(exc).__name__}: {exc}"
+                log.warning(
+                    "Outbound SIP spy start failed account=%s call_id=%s error=%s",
+                    self._account_id,
+                    self._call_id,
+                    exc,
+                )
+        elif command == "stop":
+            self._stop_spy_recorder()
+
+    def _stop_spy_recorder(self) -> None:
+        recorder = self._spy_recorder
+        if recorder is None:
+            with _TRUNK_SPY_LOCK:
+                bucket = _TRUNK_SPY_STATE.get(self._call_id)
+                if bucket is not None:
+                    bucket["active"] = False
+            return
+        with suppress(Exception):
+            if self._player_media is not None and hasattr(self._player_media, "stopTransmit"):
+                self._player_media.stopTransmit(recorder)
+        with suppress(Exception):
+            if self._player is not None and hasattr(self._player, "stopTransmit"):
+                self._player.stopTransmit(recorder)
+        self._spy_recorder = None
+        with _TRUNK_SPY_LOCK:
+            bucket = _TRUNK_SPY_STATE.get(self._call_id)
+            if bucket is not None:
+                bucket["active"] = False
+        log.info(
+            "Outbound SIP spy stopped account=%s call_id=%s",
+            self._account_id,
+            self._call_id,
+        )
+
     def onCallState(self, *args: Any, **kwargs: Any) -> None:
         self._session._register_current_thread()
         call_obj = args[0] if args else None
@@ -2542,6 +2735,9 @@ class _CallCallbackHolder:
                     except Exception:
                         # Silent: PJSUA2 versions vary; never break the loop.
                         pass
+
+            # Process pending spy (live-listen) commands on this PJSUA2 thread.
+            self._process_spy_commands()
 
             # Periodic full-state debug dump (every ~2s) so the journal shows
             # exactly which playback flags are set/unset while the call is in

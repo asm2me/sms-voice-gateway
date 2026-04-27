@@ -25,7 +25,7 @@ import re
 import subprocess
 import sys
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
@@ -73,7 +73,13 @@ from .config_store import (
     load_settings_from_store,
     save_settings_to_store,
 )
-from .pjsua2_service import SipAccountProfile, build_pjsua2_service
+from .pjsua2_service import (
+    SipAccountProfile,
+    build_pjsua2_service,
+    get_spy_state,
+    request_spy_start,
+    request_spy_stop,
+)
 from .sms_handler import (
     IncomingSMS,
     SMSGateway,
@@ -4026,6 +4032,128 @@ async def admin_reports_live(
     settings: Settings = Depends(dep_settings),
 ):
     return _build_reports_live_payload(settings, request.query_params)
+
+
+@app.post("/admin/spy/{call_id}/start")
+async def admin_spy_start(
+    call_id: str,
+    _: None = Depends(dep_admin_credentials),
+):
+    result = request_spy_start(call_id)
+    if not result.get("ok"):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, result.get("error", "spy start failed"))
+
+    if result.get("active"):
+        return result
+
+    import asyncio as _asyncio
+
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        await _asyncio.sleep(0.1)
+        state = get_spy_state(call_id)
+        if state.get("active") and state.get("sample_rate"):
+            return {
+                "ok": True,
+                "active": True,
+                "wav_path": state.get("wav_path", ""),
+                "sample_rate": int(state.get("sample_rate") or 0),
+                "channels": int(state.get("channels") or 1),
+                "bits_per_sample": int(state.get("bits_per_sample") or 16),
+            }
+        if state.get("error"):
+            raise HTTPException(status.HTTP_409_CONFLICT, state.get("error", "spy start failed"))
+
+    raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "Spy did not start in time")
+
+
+@app.post("/admin/spy/{call_id}/stop")
+async def admin_spy_stop(
+    call_id: str,
+    _: None = Depends(dep_admin_credentials),
+):
+    return request_spy_stop(call_id)
+
+
+@app.websocket("/admin/spy/{call_id}/stream")
+async def admin_spy_stream(websocket: WebSocket, call_id: str) -> None:
+    import asyncio as _asyncio
+    from starlette.websockets import WebSocketDisconnect as _WebSocketDisconnect
+
+    settings = dep_settings()
+    if not (_websocket_basic_auth_ok(websocket, settings) or _websocket_reports_ws_token_ok(websocket, settings)):
+        await websocket.close(code=4401)
+        return
+
+    state = get_spy_state(call_id)
+    if not state.get("active") or not state.get("wav_path"):
+        await websocket.close(code=4404)
+        return
+
+    wav_path = str(state.get("wav_path"))
+    sample_rate = int(state.get("sample_rate") or 0)
+    channels = int(state.get("channels") or 1)
+    bits_per_sample = int(state.get("bits_per_sample") or 16)
+    if sample_rate <= 0:
+        await websocket.close(code=4404)
+        return
+
+    await websocket.accept()
+
+    bytes_per_sample = max(1, bits_per_sample // 8)
+    frame_bytes = bytes_per_sample * max(1, channels)
+    chunk_target_ms = 80
+    target_frames = max(1, int(sample_rate * chunk_target_ms / 1000))
+    target_bytes = target_frames * frame_bytes
+
+    try:
+        await websocket.send_json(
+            {
+                "type": "format",
+                "sample_rate": sample_rate,
+                "channels": channels,
+                "bits_per_sample": bits_per_sample,
+            }
+        )
+    except Exception:
+        return
+
+    try:
+        fh = open(wav_path, "rb")
+    except Exception as exc:
+        log.warning("admin_spy_stream open failed call_id=%s error=%s", call_id, exc)
+        await websocket.close(code=1011)
+        return
+
+    try:
+        fh.seek(44)  # skip standard PCM WAV header
+        idle_ticks = 0
+        while True:
+            current_state = get_spy_state(call_id)
+            if not current_state.get("active"):
+                break
+
+            chunk = await _asyncio.to_thread(fh.read, target_bytes)
+            if not chunk:
+                idle_ticks += 1
+                # Tolerate up to ~10s of silence (file not growing) before exit.
+                if idle_ticks > 200:
+                    break
+                await _asyncio.sleep(0.05)
+                continue
+            idle_ticks = 0
+            try:
+                await websocket.send_bytes(chunk)
+            except _WebSocketDisconnect:
+                return
+            except Exception as exc:
+                log.info("admin_spy_stream send failed call_id=%s: %s", call_id, exc)
+                return
+    finally:
+        with suppress(Exception):
+            fh.close()
+        with suppress(Exception):
+            await websocket.close()
 
 
 @app.websocket("/admin/reports/ws")
