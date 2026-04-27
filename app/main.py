@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
 import threading
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import base64
 import binascii
@@ -876,8 +876,8 @@ def _update_queue_item_from_result(settings: Settings, queue_item_id: str, resul
 
 def _save_admin_config(form, keys: list[str]) -> Settings:
     current = ensure_default_accounts(load_settings_from_store())
-    data = current.model_dump()
     field_types = {name: field.annotation for name, field in Settings.model_fields.items()}
+    updates: dict[str, Any] = {}
 
     for key in keys:
         if key not in form:
@@ -888,19 +888,19 @@ def _save_admin_config(form, keys: list[str]) -> Settings:
         stripped = raw.strip()
 
         if annotation is bool:
-            data[key] = stripped.lower() in {"1", "true", "yes", "on"}
+            updates[key] = stripped.lower() in {"1", "true", "yes", "on"}
         elif annotation is int:
             if stripped != "":
-                data[key] = int(stripped)
+                updates[key] = int(stripped)
         elif annotation is float:
             if stripped != "":
-                data[key] = float(stripped)
+                updates[key] = float(stripped)
         elif stripped != "":
-            data[key] = raw
+            updates[key] = raw
         elif _is_secret_field(key):
-            data[key] = data.get(key)
+            updates[key] = getattr(current, key, None)
 
-    updated = Settings(**data)
+    updated = current.model_copy(update=updates)
     save_settings_to_store(updated)
     return updated
 
