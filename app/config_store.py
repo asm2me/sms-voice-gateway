@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from .config import SIPAccount, SMPPAccount, Settings, SystemUser
 
 log = logging.getLogger(__name__)
@@ -101,7 +103,14 @@ def _coerce_smpp_account(raw: Any) -> SMPPAccount | None:
         data["id"] = _DEFAULT_SMPP_ACCOUNT_ID
     if "label" not in data:
         data["label"] = data.get("id", "")
-    return SMPPAccount(**data)
+    if not str(data.get("username", "")).strip():
+        log.warning("Skipping SMPP account with empty username in config store: %r", data)
+        return None
+    try:
+        return SMPPAccount(**data)
+    except ValidationError as exc:
+        log.warning("Skipping invalid SMPP account in config store: %s", exc)
+        return None
 
 
 def _coerce_system_user(raw: Any) -> SystemUser | None:
@@ -188,11 +197,12 @@ def _normalize_account_lists(
             )
 
         if legacy_smpp_username or legacy_smpp_password:
+            smpp_account_username = legacy_smpp_username or "smpp"
             smpp_accounts.append(
                 SMPPAccount(
                     id=_DEFAULT_SMPP_ACCOUNT_ID,
                     label="Default SMPP",
-                    username=legacy_smpp_username,
+                    username=smpp_account_username,
                     password=legacy_smpp_password,
                     enabled=True,
                     default_for_inbound=True,
@@ -201,7 +211,7 @@ def _normalize_account_lists(
                 )
             )
             if sip_accounts:
-                smpp_sip_assignments[legacy_smpp_username or _DEFAULT_SMPP_ACCOUNT_ID] = _DEFAULT_SIP_ACCOUNT_ID
+                smpp_sip_assignments[smpp_account_username] = _DEFAULT_SIP_ACCOUNT_ID
 
     if sip_accounts and not any(account.default_for_outbound for account in sip_accounts):
         sip_accounts[0] = sip_accounts[0].model_copy(update={"default_for_outbound": True})
@@ -356,6 +366,8 @@ def ensure_default_accounts(settings: Settings) -> Settings:
             SMPPAccount(
                 id=_DEFAULT_SMPP_ACCOUNT_ID,
                 label="Default SMPP",
+                username=settings.smpp_username or "smpp",
+                password=settings.smpp_password or "smpp_secret",
                 enabled=True,
                 default_for_inbound=True,
                 default_sip_account_id=sip_accounts[0].id,
