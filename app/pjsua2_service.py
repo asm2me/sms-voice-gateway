@@ -205,10 +205,11 @@ _PJSUA_RETIRED_PLAYERS: list[dict[str, Any]] = []
 _PJSUA_AUDIO_SETUP_LOCKS: dict[str, threading.RLock] = {}
 
 # RTP audio-level telemetry. Kept in a SEPARATE lock/dict so live-call concurrency
-# state (_TRUNK_*) is never widened with new fields. Each call_id maps to a
-# fixed-size ring of recent normalized samples (0.0..1.0).
+# state (_TRUNK_*) is never widened with new fields. Each call_id maps to a pair of
+# fixed-size rings ("caller" = TX from the gateway, "callee" = RX from the remote
+# party), each holding recent normalized samples (0.0..1.0).
 _TRUNK_AUDIO_LEVELS_LOCK = threading.Lock()
-_TRUNK_AUDIO_LEVELS: dict[str, list[float]] = {}
+_TRUNK_AUDIO_LEVELS: dict[str, dict[str, list[float]]] = {}
 _AUDIO_LEVEL_HISTORY_LEN = 11
 
 
@@ -229,22 +230,30 @@ def _record_audio_levels(call_id: str, rx_level: float, tx_level: float) -> None
     else:
         rx = max(0.0, min(1.0, rx))
         tx = max(0.0, min(1.0, tx))
-    sample = rx if rx >= tx else tx
     with _TRUNK_AUDIO_LEVELS_LOCK:
-        history = _TRUNK_AUDIO_LEVELS.setdefault(call_id, [])
-        history.append(sample)
-        if len(history) > _AUDIO_LEVEL_HISTORY_LEN:
-            del history[: len(history) - _AUDIO_LEVEL_HISTORY_LEN]
+        bucket = _TRUNK_AUDIO_LEVELS.setdefault(call_id, {"caller": [], "callee": []})
+        caller_history = bucket["caller"]
+        callee_history = bucket["callee"]
+        caller_history.append(tx)
+        callee_history.append(rx)
+        if len(caller_history) > _AUDIO_LEVEL_HISTORY_LEN:
+            del caller_history[: len(caller_history) - _AUDIO_LEVEL_HISTORY_LEN]
+        if len(callee_history) > _AUDIO_LEVEL_HISTORY_LEN:
+            del callee_history[: len(callee_history) - _AUDIO_LEVEL_HISTORY_LEN]
 
 
-def _get_audio_levels(call_id: str) -> list[float]:
+def _get_audio_levels(call_id: str) -> dict[str, list[float]]:
+    empty = {"caller": [], "callee": []}
     if not call_id:
-        return []
+        return empty
     with _TRUNK_AUDIO_LEVELS_LOCK:
-        history = _TRUNK_AUDIO_LEVELS.get(call_id)
-        if not history:
-            return []
-        return list(history)
+        bucket = _TRUNK_AUDIO_LEVELS.get(call_id)
+        if not bucket:
+            return empty
+        return {
+            "caller": list(bucket.get("caller") or []),
+            "callee": list(bucket.get("callee") or []),
+        }
 
 
 def _drop_audio_levels(call_id: str) -> None:
@@ -1165,7 +1174,9 @@ class PJSipUASession:
                 reverse=True,
             )
         for item in active_call_items:
-            item["audio_levels"] = _get_audio_levels(str(item.get("call_id") or ""))
+            levels = _get_audio_levels(str(item.get("call_id") or ""))
+            item["audio_levels_caller"] = levels["caller"]
+            item["audio_levels_callee"] = levels["callee"]
         return {
             "available": self.available,
             "registered": self._registered,

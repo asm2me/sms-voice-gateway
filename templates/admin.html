@@ -652,7 +652,7 @@
           <td class="mono">{{ call.destination_number or call.connected_line_num or call.connected_line_name or '—' }}</td>
           <td>{{ call.application or '—' }}</td>
           <td class="mono">{{ call.duration or '—' }}</td>
-          <td><div class="audio-pulse {% if call.answered and call.audio_levels %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}" data-levels="{{ call.audio_levels|join(',') if call.audio_levels else '' }}"><svg viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true">{% set _levels = call.audio_levels if call.audio_levels else [] %}{% for i in range(11) %}{% set _lvl = _levels[i] if i < _levels|length else 0 %}{% set _h = (1 + (_lvl * 22))|round(2) %}{% set _y = ((24 - _h) / 2)|round(2) %}<rect x="{{ 2 + i * 7 }}" y="{{ _y }}" width="3" height="{{ _h }}"/>{% endfor %}</svg><span class="audio-pulse-label">{% if call.answered and call.audio_levels %}RTP {{ "%.0f"|format((_levels[-1] if _levels else 0) * 100) }}%{% elif call.answered %}awaiting RTP{% else %}—{% endif %}</span></div></td>
+          <td>{% set _caller_levels = call.audio_levels_caller if call.audio_levels_caller else [] %}{% set _callee_levels = call.audio_levels_callee if call.audio_levels_callee else [] %}{% set _has_rtp = (_caller_levels|length) or (_callee_levels|length) %}<div class="audio-pulse audio-pulse-dual {% if call.answered and _has_rtp %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}" data-caller-levels="{{ _caller_levels|join(',') }}" data-callee-levels="{{ _callee_levels|join(',') }}"><svg viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true">{% for i in range(11) %}{% set _cl = _caller_levels[i] if i < _caller_levels|length else 0 %}{% set _ch = (1 + (_cl * 22))|round(2) %}{% set _cy = ((24 - _ch) / 2)|round(2) %}<rect class="audio-pulse-bar-caller" x="{{ 2 + i * 7 }}" y="{{ _cy }}" width="2" height="{{ _ch }}"/>{% set _kl = _callee_levels[i] if i < _callee_levels|length else 0 %}{% set _kh = (1 + (_kl * 22))|round(2) %}{% set _ky = ((24 - _kh) / 2)|round(2) %}<rect class="audio-pulse-bar-callee" x="{{ 5 + i * 7 }}" y="{{ _ky }}" width="2" height="{{ _kh }}"/>{% endfor %}</svg><span class="audio-pulse-label">{% if call.answered and _has_rtp %}<span class="audio-pulse-channel audio-pulse-channel-caller" title="Caller (gateway → trunk)">↑{{ "%.0f"|format((_caller_levels[-1] if _caller_levels else 0) * 100) }}%</span> <span class="audio-pulse-channel audio-pulse-channel-callee" title="Callee (trunk → gateway)">↓{{ "%.0f"|format((_callee_levels[-1] if _callee_levels else 0) * 100) }}%</span>{% elif call.answered %}awaiting RTP{% else %}—{% endif %}</span></div></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -3329,33 +3329,53 @@
           const callIdAttr = escapeHtml(
             (call && (call.call_id || call.channel)) ? String(call.call_id || call.channel) : ""
           );
-          const rawLevels = (call && Array.isArray(call.audio_levels)) ? call.audio_levels : [];
-          const levels = [];
-          for (let i = 0; i < 11; i++) {
-            const v = Number(rawLevels[i] != null ? rawLevels[i] : 0);
-            levels.push(isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
-          }
-          const hasRtp = rawLevels.length > 0;
+          const rawCallerLevels = (call && Array.isArray(call.audio_levels_caller)) ? call.audio_levels_caller : [];
+          const rawCalleeLevels = (call && Array.isArray(call.audio_levels_callee)) ? call.audio_levels_callee : [];
+          const normalize = function (raw) {
+            const out = [];
+            for (let i = 0; i < 11; i++) {
+              const v = Number(raw[i] != null ? raw[i] : 0);
+              out.push(isFinite(v) ? Math.max(0, Math.min(1, v)) : 0);
+            }
+            return out;
+          };
+          const callerLevels = normalize(rawCallerLevels);
+          const calleeLevels = normalize(rawCalleeLevels);
+          const hasRtp = rawCallerLevels.length > 0 || rawCalleeLevels.length > 0;
           let bars = "";
           for (let i = 0; i < 11; i++) {
-            const h = +(1 + levels[i] * 22).toFixed(2);
-            const y = +((24 - h) / 2).toFixed(2);
-            bars += '<rect x="' + (2 + i * 7) + '" y="' + y + '" width="3" height="' + h + '"/>';
+            const ch = +(1 + callerLevels[i] * 22).toFixed(2);
+            const cy = +((24 - ch) / 2).toFixed(2);
+            bars += '<rect class="audio-pulse-bar-caller" x="' + (2 + i * 7) + '" y="' + cy + '" width="2" height="' + ch + '"/>';
+            const kh = +(1 + calleeLevels[i] * 22).toFixed(2);
+            const ky = +((24 - kh) / 2).toFixed(2);
+            bars += '<rect class="audio-pulse-bar-callee" x="' + (5 + i * 7) + '" y="' + ky + '" width="2" height="' + kh + '"/>';
           }
-          const lastLevel = rawLevels.length ? Number(rawLevels[rawLevels.length - 1]) || 0 : 0;
-          const labelText = (answered && hasRtp)
-            ? "RTP " + Math.round(Math.max(0, Math.min(1, lastLevel)) * 100) + "%"
-            : (answered ? "awaiting RTP" : "—");
+          const lastCaller = rawCallerLevels.length ? Number(rawCallerLevels[rawCallerLevels.length - 1]) || 0 : 0;
+          const lastCallee = rawCalleeLevels.length ? Number(rawCalleeLevels[rawCalleeLevels.length - 1]) || 0 : 0;
+          let labelHtml;
+          if (answered && hasRtp) {
+            const callerPct = Math.round(Math.max(0, Math.min(1, lastCaller)) * 100);
+            const calleePct = Math.round(Math.max(0, Math.min(1, lastCallee)) * 100);
+            labelHtml =
+              '<span class="audio-pulse-channel audio-pulse-channel-caller" title="Caller (gateway → trunk)">↑' + callerPct + '%</span> ' +
+              '<span class="audio-pulse-channel audio-pulse-channel-callee" title="Callee (trunk → gateway)">↓' + calleePct + '%</span>';
+          } else if (answered) {
+            labelHtml = "awaiting RTP";
+          } else {
+            labelHtml = "—";
+          }
           const audioCell =
-            '<div class="audio-pulse' +
+            '<div class="audio-pulse audio-pulse-dual' +
             (answered && hasRtp ? " is-active" : "") +
             '" data-call-id="' + callIdAttr +
             '" data-answered="' + (answered ? "1" : "0") +
-            '" data-levels="' + escapeHtml(rawLevels.join(",")) + '">' +
+            '" data-caller-levels="' + escapeHtml(rawCallerLevels.join(",")) +
+            '" data-callee-levels="' + escapeHtml(rawCalleeLevels.join(",")) + '">' +
             '<svg viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true">' +
             bars +
             '</svg>' +
-            '<span class="audio-pulse-label">' + escapeHtml(labelText) + '</span>' +
+            '<span class="audio-pulse-label">' + labelHtml + '</span>' +
             '</div>';
 
           return (

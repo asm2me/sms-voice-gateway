@@ -1359,6 +1359,41 @@ a {
   font-weight: 600;
 }
 
+.audio-pulse-dual svg rect.audio-pulse-bar-caller {
+  fill: var(--panel-border);
+}
+
+.audio-pulse-dual svg rect.audio-pulse-bar-callee {
+  fill: var(--panel-border);
+  opacity: 0.7;
+}
+
+.audio-pulse-dual.is-active svg rect.audio-pulse-bar-caller {
+  fill: #16a34a;
+}
+
+.audio-pulse-dual.is-active svg rect.audio-pulse-bar-callee {
+  fill: #2563eb;
+  opacity: 1;
+}
+
+.audio-pulse-channel {
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-pulse-channel-caller {
+  color: #16a34a;
+}
+
+.audio-pulse-channel-callee {
+  color: #2563eb;
+}
+
+.audio-pulse-dual.is-active .audio-pulse-label {
+  color: inherit;
+}
+
 .realtime-pill {
   font-variant: small-caps;
   letter-spacing: 0.06em;

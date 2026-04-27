@@ -621,13 +621,19 @@ def _build_live_call_context(settings: Settings) -> dict:
             destination_number = str(item.get("destination_number", "")).strip()
             account_id = str(item.get("account_id", "")).strip() or current_account_id or "unknown"
             extension = str(item.get("remote_uri_user", "")).strip() or destination_number
-            audio_levels_raw = item.get("audio_levels") or []
-            audio_levels: list[float] = []
-            try:
-                for level in audio_levels_raw:
-                    audio_levels.append(max(0.0, min(1.0, float(level))))
-            except Exception:
-                audio_levels = []
+            def _normalize_levels(raw: object) -> list[float]:
+                values: list[float] = []
+                if not raw:
+                    return values
+                try:
+                    for level in raw:  # type: ignore[assignment]
+                        values.append(max(0.0, min(1.0, float(level))))
+                except Exception:
+                    return []
+                return values
+
+            audio_levels_caller = _normalize_levels(item.get("audio_levels_caller"))
+            audio_levels_callee = _normalize_levels(item.get("audio_levels_callee"))
             active_calls.append(
                 {
                     "channel": f"sip:{account_id}#{index}",
@@ -647,7 +653,8 @@ def _build_live_call_context(settings: Settings) -> dict:
                     "last_status_code": int(item.get("last_status_code", 0) or 0),
                     "hangup_at": hangup_at,
                     "updated_at": updated_at,
-                    "audio_levels": audio_levels,
+                    "audio_levels_caller": audio_levels_caller,
+                    "audio_levels_callee": audio_levels_callee,
                 }
             )
     elif total_active_calls > 0:
