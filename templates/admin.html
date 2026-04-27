@@ -652,7 +652,7 @@
           <td class="mono">{{ call.destination_number or call.connected_line_num or call.connected_line_name or '—' }}</td>
           <td>{{ call.application or '—' }}</td>
           <td class="mono">{{ call.duration or '—' }}</td>
-          <td>{% set _caller_levels = call.audio_levels_caller if call.audio_levels_caller else [] %}{% set _callee_levels = call.audio_levels_callee if call.audio_levels_callee else [] %}{% set _has_rtp = (_caller_levels|length) or (_callee_levels|length) %}<div class="audio-pulse audio-pulse-dual {% if call.answered and _has_rtp %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}" data-caller-levels="{{ _caller_levels|join(',') }}" data-callee-levels="{{ _callee_levels|join(',') }}"><svg viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true">{% for i in range(11) %}{% set _cl = _caller_levels[i] if i < _caller_levels|length else 0 %}{% set _ch = (1 + (_cl * 22))|round(2) %}{% set _cy = ((24 - _ch) / 2)|round(2) %}<rect class="audio-pulse-bar-caller" x="{{ 2 + i * 7 }}" y="{{ _cy }}" width="2" height="{{ _ch }}"/>{% set _kl = _callee_levels[i] if i < _callee_levels|length else 0 %}{% set _kh = (1 + (_kl * 22))|round(2) %}{% set _ky = ((24 - _kh) / 2)|round(2) %}<rect class="audio-pulse-bar-callee" x="{{ 5 + i * 7 }}" y="{{ _ky }}" width="2" height="{{ _kh }}"/>{% endfor %}</svg><span class="audio-pulse-label">{% if call.answered and _has_rtp %}<span class="audio-pulse-channel audio-pulse-channel-caller" title="Caller (gateway → trunk)">↑{{ "%.0f"|format((_caller_levels[-1] if _caller_levels else 0) * 100) }}%</span> <span class="audio-pulse-channel audio-pulse-channel-callee" title="Callee (trunk → gateway)">↓{{ "%.0f"|format((_callee_levels[-1] if _callee_levels else 0) * 100) }}%</span>{% elif call.answered %}awaiting RTP{% else %}—{% endif %}</span></div></td>
+          <td>{% set _caller_levels = call.audio_levels_caller if call.audio_levels_caller else [] %}{% set _callee_levels = call.audio_levels_callee if call.audio_levels_callee else [] %}{% set _has_rtp = (_caller_levels|length) or (_callee_levels|length) %}<div class="audio-pulse audio-pulse-dual {% if call.answered and _has_rtp %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}" data-caller-levels="{{ _caller_levels|join(',') }}" data-callee-levels="{{ _callee_levels|join(',') }}"><svg class="audio-pulse-svg" viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><line class="audio-pulse-baseline" x1="0" y1="23" x2="80" y2="23"/><polyline class="audio-pulse-line audio-pulse-line-caller" fill="none" points="{% for i in range(11) %}{% set _cl = _caller_levels[i] if i < _caller_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _cl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/><polyline class="audio-pulse-line audio-pulse-line-callee" fill="none" points="{% for i in range(11) %}{% set _kl = _callee_levels[i] if i < _callee_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _kl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/></svg><span class="audio-pulse-label">{% if call.answered and _has_rtp %}<span class="audio-pulse-channel audio-pulse-channel-caller" title="Caller (gateway → trunk)">↑{{ "%.0f"|format((_caller_levels[-1] if _caller_levels else 0) * 100) }}%</span> <span class="audio-pulse-channel audio-pulse-channel-callee" title="Callee (trunk → gateway)">↓{{ "%.0f"|format((_callee_levels[-1] if _callee_levels else 0) * 100) }}%</span>{% elif call.answered %}awaiting RTP{% else %}—{% endif %}</span></div></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -3342,15 +3342,21 @@
           const callerLevels = normalize(rawCallerLevels);
           const calleeLevels = normalize(rawCalleeLevels);
           const hasRtp = rawCallerLevels.length > 0 || rawCalleeLevels.length > 0;
-          let bars = "";
-          for (let i = 0; i < 11; i++) {
-            const ch = +(1 + callerLevels[i] * 22).toFixed(2);
-            const cy = +((24 - ch) / 2).toFixed(2);
-            bars += '<rect class="audio-pulse-bar-caller" x="' + (2 + i * 7) + '" y="' + cy + '" width="2" height="' + ch + '"/>';
-            const kh = +(1 + calleeLevels[i] * 22).toFixed(2);
-            const ky = +((24 - kh) / 2).toFixed(2);
-            bars += '<rect class="audio-pulse-bar-callee" x="' + (5 + i * 7) + '" y="' + ky + '" width="2" height="' + kh + '"/>';
-          }
+          const buildPoints = function (arr) {
+            const out = [];
+            for (let i = 0; i < 11; i++) {
+              const x = +(2 + i * 7.6).toFixed(2);
+              const y = +(23 - arr[i] * 22).toFixed(2);
+              out.push(x + "," + y);
+            }
+            return out.join(" ");
+          };
+          const callerPoints = buildPoints(callerLevels);
+          const calleePoints = buildPoints(calleeLevels);
+          const svgInner =
+            '<line class="audio-pulse-baseline" x1="0" y1="23" x2="80" y2="23"/>' +
+            '<polyline class="audio-pulse-line audio-pulse-line-caller" fill="none" points="' + callerPoints + '"/>' +
+            '<polyline class="audio-pulse-line audio-pulse-line-callee" fill="none" points="' + calleePoints + '"/>';
           const lastCaller = rawCallerLevels.length ? Number(rawCallerLevels[rawCallerLevels.length - 1]) || 0 : 0;
           const lastCallee = rawCalleeLevels.length ? Number(rawCalleeLevels[rawCalleeLevels.length - 1]) || 0 : 0;
           let labelHtml;
@@ -3372,8 +3378,8 @@
             '" data-answered="' + (answered ? "1" : "0") +
             '" data-caller-levels="' + escapeHtml(rawCallerLevels.join(",")) +
             '" data-callee-levels="' + escapeHtml(rawCalleeLevels.join(",")) + '">' +
-            '<svg viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true">' +
-            bars +
+            '<svg class="audio-pulse-svg" viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true">' +
+            svgInner +
             '</svg>' +
             '<span class="audio-pulse-label">' + labelHtml + '</span>' +
             '</div>';
