@@ -820,6 +820,13 @@ class PJSipUASession:
                 with _TRUNK_CONCURRENCY_LOCK:
                     active_calls = _TRUNK_ACTIVE_CALLS.get(account_id, 0)
                     if concurrency_limit > 0 and active_calls >= concurrency_limit:
+                        log.warning(
+                            "SIP trunk concurrency limit reached account=%s destination=%s active_calls=%s concurrency_limit=%s",
+                            account_id,
+                            destination,
+                            active_calls,
+                            concurrency_limit,
+                        )
                         return PJSUA2Result(
                             success=False,
                             account_id=account_id,
@@ -834,6 +841,14 @@ class PJSipUASession:
                         )
                     _TRUNK_ACTIVE_CALLS[account_id] = active_calls + 1
                     now = time.time()
+                    log.info(
+                        "Reserved SIP trunk concurrency slot account=%s destination=%s active_calls=%s concurrency_limit=%s call_id=%s",
+                        account_id,
+                        destination,
+                        active_calls + 1,
+                        concurrency_limit,
+                        call_id,
+                    )
                     _TRUNK_CALL_STATES[call_id] = {
                         "call_id": call_id,
                         "account_id": account_id,
@@ -1871,6 +1886,24 @@ class _CallCallbackHolder:
             return False
 
         wav_path = Path(self._playback_audio_path)
+        try:
+            wav_size = wav_path.stat().st_size if wav_path.exists() else -1
+        except Exception:
+            wav_size = -1
+        log.info(
+            "Outbound SIP playback file check account=%s call_id=%s path=%s exists=%s size=%s duration=%.3f repeats=%s pause_ms=%s answered_at=%s playback_started=%s pending=%s",
+            self._account_id,
+            self._call_id,
+            str(wav_path),
+            wav_path.exists(),
+            wav_size,
+            self._playback_audio_duration_seconds,
+            self._playback_repeat_count,
+            self._playback_pause_ms,
+            self._answered_at,
+            self._playback_started,
+            self._playback_pending,
+        )
         if not wav_path.exists():
             self._playback_error = "Playback audio file does not exist"
             log.warning(
@@ -1937,9 +1970,16 @@ class _CallCallbackHolder:
 
                 if call_audio_media is None:
                     log.info(
-                        "Outbound SIP playback waiting for active call audio media account=%s call_id=%s",
+                        "Outbound SIP playback waiting for active call audio media account=%s call_id=%s answered=%s media_list_seen=%s call_obj_type=%s playback_started=%s playback_pending=%s state_text=%s last_status=%s",
                         self._account_id,
                         self._call_id,
+                        self._answered_at is not None,
+                        media_list_seen,
+                        type(call_obj).__name__ if call_obj is not None else "None",
+                        self._playback_started,
+                        self._playback_pending,
+                        self._state_text,
+                        self._last_status_code,
                     )
                     self._playback_pending = True
                     return False
@@ -2375,13 +2415,19 @@ class _CallCallbackHolder:
                         wav_size = Path(self._playback_audio_path).stat().st_size
                     except Exception:
                         wav_size = -1
+                with _TRUNK_CONCURRENCY_LOCK:
+                    active_calls = _TRUNK_ACTIVE_CALLS.get(self._account_id, 0)
+                    total_active_calls = sum(int(value or 0) for value in _TRUNK_ACTIVE_CALLS.values())
+                    current_state = dict(_TRUNK_CALL_STATES.get(self._call_id, {}))
                 log.info(
                     "Outbound SIP wait state account=%s call_id=%s elapsed=%.1fs "
                     "answered_at=%s state_text=%s last_status=%s "
                     "playback_ready=%s playback_pending=%s playback_started=%s "
                     "playback_started_at=%s playback_finished_at=%s "
                     "playback_error=%s audio_path=%s wav_size=%s "
-                    "duration=%.3f hangup_requested=%s done=%s",
+                    "duration=%.3f hangup_requested=%s done=%s "
+                    "active_calls=%s total_active_calls=%s current_state=%s "
+                    "player_present=%s recorder_present=%s audio_setup_lock=%s",
                     self._account_id,
                     self._call_id,
                     now_ts - loop_start,
@@ -2399,6 +2445,19 @@ class _CallCallbackHolder:
                     self._playback_audio_duration_seconds,
                     self._playback_hangup_requested,
                     self._done.is_set(),
+                    active_calls,
+                    total_active_calls,
+                    {
+                        "state": current_state.get("state", ""),
+                        "answered": current_state.get("answered", False),
+                        "last_status_code": current_state.get("last_status_code", 0),
+                        "destination_number": current_state.get("destination_number", ""),
+                        "connected_at": current_state.get("connected_at"),
+                        "hangup_at": current_state.get("hangup_at"),
+                    },
+                    self._player is not None,
+                    self._recorder is not None,
+                    self._call_id in _PJSUA_AUDIO_SETUP_LOCKS,
                 )
 
             if self._playback_ready and self._playback_pending and not self._playback_started and self._answered_at is not None:
