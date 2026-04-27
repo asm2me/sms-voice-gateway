@@ -1822,6 +1822,14 @@ class _CallCallbackHolder:
         self._hangup_requested_at = None
         self._scheduled_hangup_at = None
         self._playback_bridge_released = False
+        self._playback_started = False
+        self._playback_started_at = None
+        self._playback_finished_at = None
+        self._playback_ready = False
+        self._playback_pending = False
+        self._playback_error = ""
+        self._player_media = None
+        self._recorder = None
 
         if self._answered_at is not None and self._playback_audio_path and not self._playback_started:
             started = self._maybe_start_playback(self._call_obj)
@@ -1882,6 +1890,51 @@ class _CallCallbackHolder:
                 self._account_id,
                 self._call_id,
                 self._playback_error,
+            )
+            return False
+
+        call_info = None
+        call_state_text = ""
+        call_state_name = ""
+        call_last_status_code = 0
+        with suppress(Exception):
+            if call_obj is not None and hasattr(call_obj, "getInfo"):
+                call_info = call_obj.getInfo()
+
+        if call_info is not None:
+            for attr in ("stateText", "state_text"):
+                with suppress(Exception):
+                    value = getattr(call_info, attr)
+                    if value is not None:
+                        call_state_text = str(value)
+                        break
+
+            for attr in ("state", "callState", "call_state"):
+                with suppress(Exception):
+                    value = getattr(call_info, attr)
+                    if value is not None:
+                        call_state_name = str(value)
+                        break
+
+            for attr in ("lastStatusCode", "last_status_code"):
+                with suppress(Exception):
+                    value = getattr(call_info, attr)
+                    if value is not None:
+                        call_last_status_code = int(value)
+                        break
+
+        normalized_call_state = (call_state_text or call_state_name or "").strip().upper()
+        if normalized_call_state not in {"CONFIRMED", "ACTIVE", "CONNECTED"}:
+            self._playback_pending = True
+            log.info(
+                "Outbound SIP playback waiting for confirmed media path account=%s call_id=%s call_state=%s state_name=%s last_status=%s answered_at=%s playback_started=%s",
+                self._account_id,
+                self._call_id,
+                call_state_text,
+                call_state_name,
+                call_last_status_code,
+                self._answered_at,
+                self._playback_started,
             )
             return False
 
