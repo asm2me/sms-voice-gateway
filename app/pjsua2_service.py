@@ -1853,7 +1853,7 @@ class _CallCallbackHolder:
     def _maybe_start_playback(self, call_obj: Any) -> bool:
         if self._playback_started:
             return True
-        if not self._playback_audio_path or self._answered_at is None:
+        if not self._playback_audio_path:
             return False
 
         self._playback_ready = True
@@ -2380,7 +2380,11 @@ class _CallCallbackHolder:
         )
 
         if not answered:
-            return
+            log.info(
+                "Outbound SIP media state arrived before answered marker account=%s call_id=%s; will still evaluate playback readiness",
+                self._account_id,
+                self._call_id,
+            )
 
         if self._playback_audio_path and not self._playback_started:
             started = self._maybe_start_playback(call_obj)
