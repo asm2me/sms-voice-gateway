@@ -1552,8 +1552,11 @@ def _simulate_smpp_test_send(
     # Admin test-send should always execute with admin-test semantics so it keeps:
     # - no queued retries
     # - silence fallback when the configured TTS provider is rate-limited/unavailable
-    # Use the shared SIP session so the outbound call appears in live call tracking.
-    gateway = SMSGateway(settings, isolated_sip=True)
+    # Reuse the shared SIP runtime. Regular webhook processing already uses the
+    # shared session from background threads; creating an isolated PJSUA2 session
+    # here can force endpoint setup on the worker thread and trip pjlib's
+    # "unknown/external thread" assertion before registration is possible.
+    gateway = SMSGateway(settings)
     sms = IncomingSMS(body=body, destination=phone_number, provider="admin-test", smpp_username=smpp_username)
     try:
         result = gateway.process(sms)
