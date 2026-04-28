@@ -781,8 +781,8 @@ class PJSipUASession:
         self._register_current_thread()
         with self._lock:
             try:
+                self.ensure_available()
                 pj = self._pj
-                assert pj is not None
                 selected = self.select_profile(profile)
                 existing_profile = self._current_profile
                 self._current_profile = selected
