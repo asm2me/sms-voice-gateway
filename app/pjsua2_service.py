@@ -287,16 +287,49 @@ def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
 
     wav_path = player_state.get("wav_path")
     cleanup_wav = bool(player_state.get("cleanup_wav"))
-    player = player_state.get("player")
-    call_audio_media = player_state.get("call_audio_media")
-    recorder = player_state.get("recorder")
-    stop_transmit_error = ""
 
     # Some PJSUA2 builds assert if AudioMediaPlayer destruction happens from a
     # callback/event thread. Keep released player objects strongly referenced
-    # after detaching them so Python GC does not immediately run native cleanup on
-    # an unsafe thread.
-    if stop_transmit:
+    # after detaching them so Python GC does not immediately run native cleanup
+    # on an unsafe thread. Native media teardown is deferred to the request
+    # thread via _flush_retired_players().
+    retired_state = dict(player_state)
+    retired_state["released_at"] = time.time()
+    retired_state["stop_transmit"] = bool(stop_transmit)
+    retired_state["stop_transmit_pending"] = bool(stop_transmit)
+    retired_state["stop_transmit_error"] = retired_state.get("stop_transmit_error", "")
+    retired_state["call_audio_media"] = None
+
+    with _PJSUA_PLAYER_LOCK:
+        _PJSUA_RETIRED_PLAYERS.append(retired_state)
+        if len(_PJSUA_RETIRED_PLAYERS) > 32:
+            del _PJSUA_RETIRED_PLAYERS[:-32]
+
+    if cleanup_wav and wav_path:
+        with suppress(Exception):
+            Path(str(wav_path)).unlink(missing_ok=True)
+
+def _flush_retired_players() -> None:
+    with _PJSUA_PLAYER_LOCK:
+        if not _PJSUA_RETIRED_PLAYERS:
+            return
+        retired_players = list(_PJSUA_RETIRED_PLAYERS)
+        _PJSUA_RETIRED_PLAYERS.clear()
+
+    still_retired: list[dict[str, Any]] = []
+
+    for player_state in retired_players:
+        setup_lock = _PJSUA_AUDIO_SETUP_LOCKS.pop(str(player_state.get("call_id") or ""), None)
+        stop_transmit = bool(player_state.get("stop_transmit_pending", False))
+        if not stop_transmit:
+            continue
+
+        wav_path = player_state.get("wav_path")
+        player = player_state.get("player")
+        call_audio_media = player_state.get("call_audio_media")
+        recorder = player_state.get("recorder")
+        stop_transmit_error = ""
+
         with (setup_lock if setup_lock is not None else nullcontext()):
             try:
                 if player is not None and call_audio_media is not None and hasattr(player, "stopTransmit"):
@@ -305,7 +338,7 @@ def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
                 stop_transmit_error = f"{type(exc).__name__}: {exc}"
                 log.warning(
                     "Outbound SIP player stopTransmit failed call_id=%s error=%s",
-                    call_id,
+                    player_state.get("call_id", ""),
                     stop_transmit_error,
                 )
 
@@ -317,7 +350,7 @@ def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
                 stop_transmit_error = f"{stop_transmit_error}; {extra_error}".strip("; ")
                 log.warning(
                     "Outbound SIP player->recorder stopTransmit failed call_id=%s error=%s",
-                    call_id,
+                    player_state.get("call_id", ""),
                     extra_error,
                 )
 
@@ -329,24 +362,27 @@ def _release_player(call_id: str, *, stop_transmit: bool = True) -> None:
                 stop_transmit_error = f"{stop_transmit_error}; {extra_error}".strip("; ")
                 log.warning(
                     "Outbound SIP call media->recorder stopTransmit failed call_id=%s error=%s",
-                    call_id,
+                    player_state.get("call_id", ""),
                     extra_error,
                 )
 
-    retired_state = dict(player_state)
-    retired_state["released_at"] = time.time()
-    retired_state["stop_transmit"] = stop_transmit
-    retired_state["stop_transmit_error"] = stop_transmit_error
-    retired_state["call_audio_media"] = None
+        player_state["stop_transmit_pending"] = False
+        player_state["stop_transmit_error"] = stop_transmit_error
+        player_state["player"] = None
+        player_state["call_audio_media"] = None
+        player_state["recorder"] = None
+        player_state["released_cleanup_at"] = time.time()
+        still_retired.append(player_state)
 
-    with _PJSUA_PLAYER_LOCK:
-        _PJSUA_RETIRED_PLAYERS.append(retired_state)
-        if len(_PJSUA_RETIRED_PLAYERS) > 32:
-            del _PJSUA_RETIRED_PLAYERS[:-32]
+        if wav_path and bool(player_state.get("cleanup_wav")):
+            with suppress(Exception):
+                Path(str(wav_path)).unlink(missing_ok=True)
 
-    if cleanup_wav and wav_path:
-        with suppress(Exception):
-            Path(str(wav_path)).unlink(missing_ok=True)
+    if still_retired:
+        with _PJSUA_PLAYER_LOCK:
+            _PJSUA_RETIRED_PLAYERS.extend(still_retired)
+            if len(_PJSUA_RETIRED_PLAYERS) > 32:
+                del _PJSUA_RETIRED_PLAYERS[:-32]
 
 
 def _pjsua_media_status_text(media_status: Any) -> str:
@@ -417,24 +453,10 @@ class PJSipUASession:
             if thread_id in registered_threads:
                 return
 
-        # Critical: if pj already knows this thread (because it's one of pj's
-        # own internal worker threads invoking us via a callback), DO NOT call
-        # libRegisterThread on it. Re-registering a pj-native thread corrupts
-        # the thread descriptor table and causes later pj_thread_this()
-        # / grp_lock_unset_owner_thread assertions to fire (pj/lock.c:279).
-        if self._endpoint is not None:
-            is_registered_fn = getattr(self._endpoint, "libIsThreadRegistered", None)
-            if callable(is_registered_fn):
-                try:
-                    if bool(is_registered_fn()):
-                        with _PJSUA_GLOBAL_LOCK:
-                            _PJSUA_REGISTERED_THREADS.setdefault(registration_key, set()).add(thread_id)
-                        return
-                except Exception:
-                    # If the check itself fails, fall through to the
-                    # registration attempt below — it's no worse than before.
-                    pass
-
+        # Never probe pjlib for thread state from here. Some bindings assert
+        # if libIsThreadRegistered() is called from an unregistered foreign
+        # thread, so we rely on our own registry and only attempt registration
+        # once per Python thread id.
         name = f"py-{thread_id}"[:31]
         desc = _PJSUA_THREAD_DESCS.get(thread_id)
         if desc is None:
@@ -1664,18 +1686,12 @@ def _gateway_call_subclass_init(self: Any, pj: Any, account: Any, callback: "_Ca
 def _gateway_call_handle_state(call_obj: Any, prm: Any = None) -> None:
     callback = getattr(call_obj, "_callback", None)
     if callback is not None:
-        session = getattr(callback, "_session", None)
-        if session is not None:
-            session._register_current_thread()
         callback.onCallState(call_obj)
 
 
 def _gateway_call_handle_media(call_obj: Any, prm: Any = None) -> None:
     callback = getattr(call_obj, "_callback", None)
     if callback is not None:
-        session = getattr(callback, "_session", None)
-        if session is not None:
-            session._register_current_thread()
         callback.onCallMediaState(call_obj)
 
 
@@ -1787,7 +1803,6 @@ class _CallCallbackHolder:
         )
 
     def _release_slot(self) -> None:
-        self._session._register_current_thread()
         with self._lock:
             if self._released:
                 return
@@ -2048,7 +2063,6 @@ class _CallCallbackHolder:
                     log.info("Outbound SIP playback already started after lock acquire account=%s call_id=%s", self._account_id, self._call_id)
                     return True
 
-                self._session._register_current_thread()
                 pj = self._session._pj
                 if pj is None:
                     self._playback_error = "PJSUA2 bindings are unavailable during playback"
@@ -2245,7 +2259,6 @@ class _CallCallbackHolder:
             return False
 
     def onCallState(self, *args: Any, **kwargs: Any) -> None:
-        self._session._register_current_thread()
         call_obj = args[0] if args else None
         if call_obj is not None:
             self._call_obj = call_obj
@@ -2426,7 +2439,6 @@ class _CallCallbackHolder:
             self._release_slot()
 
     def onCallMediaState(self, *args: Any, **kwargs: Any) -> None:
-        self._session._register_current_thread()
         call_obj = args[0] if args else None
         if call_obj is not None:
             self._call_obj = call_obj
@@ -2486,7 +2498,6 @@ class _CallCallbackHolder:
 
         try:
             pj = self._session._pj
-            self._session._register_current_thread()
             if pj is not None:
                 self._playback_hangup_requested = True
                 self._hangup_requested_at = time.time()
@@ -2684,8 +2695,11 @@ class _CallCallbackHolder:
             ):
                 self._hangup_call(reason=f"deadline_reached:{deadline}")
 
+            _flush_retired_players()
             if self._done.wait(0.1):
                 break
+
+        _flush_retired_players()
 
         if not self._done.is_set():
             log.warning(
