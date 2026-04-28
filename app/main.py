@@ -166,7 +166,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
 
     result = None
     try:
-        result = SMSGateway(settings, isolated_sip=False).process(sms, queue_retries=False)
+        result = SMSGateway(settings, isolated_sip=True).process(sms, queue_retries=False)
 
         latest = queue_store.get(item.id)
         if latest is None:
@@ -1547,7 +1547,7 @@ def _simulate_smpp_test_send(
     # - no queued retries
     # - silence fallback when the configured TTS provider is rate-limited/unavailable
     # Use the shared SIP session so the outbound call appears in live call tracking.
-    gateway = SMSGateway(settings, isolated_sip=False)
+    gateway = SMSGateway(settings, isolated_sip=True)
     sms = IncomingSMS(body=body, destination=phone_number, provider="admin-test", smpp_username=smpp_username)
     try:
         result = gateway.process(sms)
@@ -4062,8 +4062,11 @@ async def admin_spy_start(
                 "channels": int(state.get("channels") or 1),
                 "bits_per_sample": int(state.get("bits_per_sample") or 16),
             }
-        if state.get("error"):
-            raise HTTPException(status.HTTP_409_CONFLICT, state.get("error", "spy start failed"))
+        error = str(state.get("error") or "")
+        if error and error != "call audio media not available yet":
+            raise HTTPException(status.HTTP_409_CONFLICT, error or "spy start failed")
+        if error == "call audio media not available yet":
+            continue
 
     state = get_spy_state(call_id)
     return {

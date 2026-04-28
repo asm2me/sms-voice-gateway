@@ -1,0 +1,7 @@
+from pathlib import Path
+
+lines = Path("app/pjsua2_service.py").read_text(encoding="utf-8").splitlines()
+start = 2353
+end = 2408
+for i in range(start, min(end, len(lines)) + 1):
+    print(f"{i}:{lines[i-1]}")

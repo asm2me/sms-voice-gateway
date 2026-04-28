@@ -197,6 +197,7 @@ _PJSUA_GLOBAL_ENDPOINT = None
 _PJSUA_GLOBAL_TRANSPORT = None
 _PJSUA_GLOBAL_SESSIONS: dict[str, "PJSipUASession"] = {}
 _PJSUA_REGISTERED_THREADS: dict[int, set[int]] = {}
+_PJSUA_THREAD_REGISTRY = threading.local()
 _PJSUA_THREAD_DESCS: dict[int, Any] = {}
 _PJSUA_PLAYER_LOCK = threading.RLock()
 _PJSUA_EVENT_PUMP_LOCKS: dict[int, threading.RLock] = {}
@@ -512,6 +513,7 @@ class PJSipUASession:
         self._registered = False
         self._last_call = None
         self._isolated = bool(isolated)
+        self._thread_registration_token = object()
 
     @property
     def available(self) -> bool:
@@ -529,11 +531,16 @@ class PJSipUASession:
             return
 
         thread_id = threading.get_ident()
-        registration_key = _pjsua_registration_key(self._endpoint)
-        with _PJSUA_GLOBAL_LOCK:
-            registered_threads = _PJSUA_REGISTERED_THREADS.setdefault(registration_key, set())
-            if thread_id in registered_threads:
-                return
+        registration_key = getattr(self, "_thread_registration_token", None)
+        if registration_key is None:
+            registration_key = object()
+            self._thread_registration_token = registration_key
+        registered_keys = getattr(_PJSUA_THREAD_REGISTRY, "registered_endpoint_keys", None)
+        if registered_keys is None:
+            registered_keys = set()
+            _PJSUA_THREAD_REGISTRY.registered_endpoint_keys = registered_keys
+        if registration_key in registered_keys:
+            return
 
         # Never probe pjlib for thread state from here. Some bindings assert
         # if libIsThreadRegistered() is called from an unregistered foreign
@@ -566,9 +573,11 @@ class PJSipUASession:
         for register_fn, args in register_candidates:
             try:
                 register_fn(*args)
-                with _PJSUA_GLOBAL_LOCK:
-                    registered_threads = _PJSUA_REGISTERED_THREADS.setdefault(registration_key, set())
-                    registered_threads.add(thread_id)
+                registered_keys = getattr(_PJSUA_THREAD_REGISTRY, "registered_endpoint_keys", None)
+                if registered_keys is None:
+                    registered_keys = set()
+                registered_keys.add(registration_key)
+                _PJSUA_THREAD_REGISTRY.registered_endpoint_keys = registered_keys
                 return
             except TypeError:
                 continue
@@ -2368,8 +2377,11 @@ class _CallCallbackHolder:
             if call_audio_media is None or pj is None:
                 with _TRUNK_SPY_LOCK:
                     bucket = _TRUNK_SPY_STATE.setdefault(self._call_id, {})
-                    bucket["error"] = "call audio media not available yet"
+                    bucket["pending_reason"] = "call audio media not available yet"
+                    bucket["error"] = ""
                     bucket["active"] = False
+                    bucket["queued"] = True
+                    bucket["command"] = "start"
                 return
             try:
                 spy_dir = _spy_dir()
