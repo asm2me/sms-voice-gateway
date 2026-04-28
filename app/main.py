@@ -166,7 +166,7 @@ def _retry_queue_item(settings: Settings, item) -> None:
 
     result = None
     try:
-        result = SMSGateway(settings, isolated_sip=True).process(sms, queue_retries=False)
+        result = SMSGateway(settings).process(sms, queue_retries=False)
 
         latest = queue_store.get(item.id)
         if latest is None:
@@ -348,6 +348,12 @@ async def lifespan(app: FastAPI):
         smpp_service.start()
     except Exception:
         log.exception("Failed to start SMPP listener")
+    pjsua2_session = build_pjsua2_service(settings, scope=_SMS_GATEWAY_PJSUA_SCOPE)
+    if pjsua2_session.available:
+        try:
+            pjsua2_session.initialize()
+        except Exception:
+            log.exception("PJSUA2 pre-initialization failed")
     _start_retry_worker()
     yield
     _stop_retry_worker()
