@@ -4048,7 +4048,8 @@ async def admin_spy_start(
 
     import asyncio as _asyncio
 
-    deadline = time.time() + 3.0
+    spy_start_timeout = float(os.environ.get("SMS_GATEWAY_SPY_START_TIMEOUT_SECONDS", "10.0") or 10.0)
+    deadline = time.time() + max(3.0, spy_start_timeout)
     while time.time() < deadline:
         await _asyncio.sleep(0.1)
         state = get_spy_state(call_id)
@@ -4064,7 +4065,18 @@ async def admin_spy_start(
         if state.get("error"):
             raise HTTPException(status.HTTP_409_CONFLICT, state.get("error", "spy start failed"))
 
-    raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "Spy did not start in time")
+    state = get_spy_state(call_id)
+    return {
+        "ok": True,
+        "active": bool(state.get("active")),
+        "queued": bool(state.get("command") == "start" or state.get("queued")),
+        "pending": True,
+        "wav_path": state.get("wav_path", ""),
+        "sample_rate": int(state.get("sample_rate") or 0),
+        "channels": int(state.get("channels") or 1),
+        "bits_per_sample": int(state.get("bits_per_sample") or 16),
+        "message": "Spy start is still pending on the call thread.",
+    }
 
 
 @app.post("/admin/spy/{call_id}/stop")
