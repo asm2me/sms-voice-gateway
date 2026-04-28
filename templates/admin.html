@@ -640,6 +640,7 @@
           <th>Application</th>
           <th>Duration</th>
           <th>Audio</th>
+          <th>Spy</th>
         </tr>
       </thead>
       <tbody id="live-calls-body">
@@ -653,6 +654,7 @@
           <td>{{ call.application or '—' }}</td>
           <td class="mono">{{ call.duration or '—' }}</td>
           <td>{% set _caller_levels = call.audio_levels_caller if call.audio_levels_caller else [] %}{% set _callee_levels = call.audio_levels_callee if call.audio_levels_callee else [] %}{% set _has_rtp = (_caller_levels|length) or (_callee_levels|length) %}<div class="audio-pulse audio-pulse-dual {% if call.answered and _has_rtp %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}" data-caller-levels="{{ _caller_levels|join(',') }}" data-callee-levels="{{ _callee_levels|join(',') }}"><svg class="audio-pulse-svg" viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><line class="audio-pulse-baseline" x1="0" y1="23" x2="80" y2="23"/><polyline class="audio-pulse-line audio-pulse-line-caller" fill="none" points="{% for i in range(11) %}{% set _cl = _caller_levels[i] if i < _caller_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _cl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/><polyline class="audio-pulse-line audio-pulse-line-callee" fill="none" points="{% for i in range(11) %}{% set _kl = _callee_levels[i] if i < _callee_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _kl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/></svg><span class="audio-pulse-label">{% if call.answered and _has_rtp %}<span class="audio-pulse-channel audio-pulse-channel-caller" title="Caller (gateway → trunk)">↑{{ "%.0f"|format((_caller_levels[-1] if _caller_levels else 0) * 100) }}%</span> <span class="audio-pulse-channel audio-pulse-channel-callee" title="Callee (trunk → gateway)">↓{{ "%.0f"|format((_callee_levels[-1] if _callee_levels else 0) * 100) }}%</span>{% elif call.answered %}awaiting RTP{% else %}—{% endif %}</span></div></td>
+          <td>{% set _spy_call_id = call.call_id or call.channel %}<button type="button" class="button button-secondary button-small spy-toggle-button" data-call-id="{{ _spy_call_id }}" data-state="idle" {% if not call.answered %}disabled aria-disabled="true" title="Spy is available once the call is answered"{% else %}onclick="window.__adminSpyToggle(this)"{% endif %}><span class="spy-button-label">Spy</span><span class="spy-button-status" aria-hidden="true"></span></button></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -2893,6 +2895,174 @@
     return numeric.toFixed(2) + "s";
   }
 
+  window.__adminSpySessions = window.__adminSpySessions || {};
+
+  window.__adminSpyToggle =
+    window.__adminSpyToggle ||
+    async function (button) {
+      if (!button) return;
+      const callId = button.getAttribute("data-call-id") || "";
+      if (!callId) return;
+      const sessions = window.__adminSpySessions;
+      const current = sessions[callId];
+
+      const setIdle = function () {
+        button.setAttribute("data-state", "idle");
+        button.classList.remove("is-active");
+        const labelEl = button.querySelector(".spy-button-label");
+        if (labelEl) labelEl.textContent = "Spy";
+        delete sessions[callId];
+      };
+
+      if (current) {
+        setIdle();
+        try {
+          if (current.ws && current.ws.readyState !== WebSocket.CLOSED) {
+            current.ws.close();
+          }
+        } catch (_) {}
+        try {
+          if (current.audioCtx && current.audioCtx.state !== "closed") {
+            current.audioCtx.close();
+          }
+        } catch (_) {}
+        try {
+          await fetch("/admin/spy/" + encodeURIComponent(callId) + "/stop", { method: "POST" });
+        } catch (_) {}
+        return;
+      }
+
+      button.setAttribute("data-state", "starting");
+      button.disabled = true;
+      const labelEl = button.querySelector(".spy-button-label");
+      if (labelEl) labelEl.textContent = "Starting...";
+
+      let startInfo;
+      try {
+        const resp = await fetch("/admin/spy/" + encodeURIComponent(callId) + "/start", { method: "POST" });
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => "");
+          throw new Error("Spy start failed (" + resp.status + "): " + text);
+        }
+        startInfo = await resp.json();
+      } catch (err) {
+        button.disabled = false;
+        if (labelEl) labelEl.textContent = "Spy";
+        button.setAttribute("data-state", "idle");
+        alert(err && err.message ? err.message : "Spy start failed");
+        return;
+      }
+
+      const sampleRate = Number(startInfo && startInfo.sample_rate) || 0;
+      const channels = Math.max(1, Number(startInfo && startInfo.channels) || 1);
+      const bitsPerSample = Number(startInfo && startInfo.bits_per_sample) || 16;
+      if (!sampleRate) {
+        button.disabled = false;
+        if (labelEl) labelEl.textContent = "Spy";
+        button.setAttribute("data-state", "idle");
+        alert("Spy: gateway returned an invalid sample rate.");
+        return;
+      }
+
+      let audioCtx;
+      try {
+        const Ctor = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new Ctor({ sampleRate: sampleRate });
+      } catch (_) {
+        try {
+          const Ctor = window.AudioContext || window.webkitAudioContext;
+          audioCtx = new Ctor();
+        } catch (err) {
+          button.disabled = false;
+          if (labelEl) labelEl.textContent = "Spy";
+          button.setAttribute("data-state", "idle");
+          alert("Spy: WebAudio not available in this browser.");
+          return;
+        }
+      }
+      try { await audioCtx.resume(); } catch (_) {}
+
+      const session = {
+        ws: null,
+        audioCtx: audioCtx,
+        nextStartTime: audioCtx.currentTime + 0.15,
+        sampleRate: sampleRate,
+        channels: channels,
+        bitsPerSample: bitsPerSample,
+      };
+      sessions[callId] = session;
+
+      const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = wsProtocol + "//" + window.location.host + "/admin/spy/" + encodeURIComponent(callId) + "/stream";
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer";
+      session.ws = ws;
+
+      const enqueuePcm = function (arrayBuffer) {
+        if (!session.audioCtx) return;
+        const ctx = session.audioCtx;
+        const sampleBytes = Math.max(1, session.bitsPerSample / 8);
+        const totalSamples = Math.floor(arrayBuffer.byteLength / sampleBytes / session.channels);
+        if (totalSamples <= 0) return;
+
+        const audioBuffer = ctx.createBuffer(session.channels, totalSamples, session.sampleRate);
+        const view = new DataView(arrayBuffer);
+        for (let ch = 0; ch < session.channels; ch++) {
+          const channelData = audioBuffer.getChannelData(ch);
+          for (let i = 0; i < totalSamples; i++) {
+            const sampleIndex = (i * session.channels + ch) * sampleBytes;
+            const int16 = view.getInt16(sampleIndex, true);
+            channelData[i] = Math.max(-1, Math.min(1, int16 / 32768));
+          }
+        }
+
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+        const startAt = Math.max(ctx.currentTime + 0.02, session.nextStartTime);
+        source.start(startAt);
+        session.nextStartTime = startAt + audioBuffer.duration;
+      };
+
+      ws.onopen = function () {
+        button.disabled = false;
+        button.setAttribute("data-state", "active");
+        button.classList.add("is-active");
+        if (labelEl) labelEl.textContent = "Stop";
+      };
+
+      ws.onmessage = function (event) {
+        if (typeof event.data === "string") {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg && msg.type === "format") {
+              if (msg.sample_rate) session.sampleRate = Number(msg.sample_rate);
+              if (msg.channels) session.channels = Number(msg.channels);
+              if (msg.bits_per_sample) session.bitsPerSample = Number(msg.bits_per_sample);
+            }
+          } catch (_) {}
+          return;
+        }
+        try {
+          enqueuePcm(event.data);
+        } catch (err) {
+          console.warn("spy enqueue error", err);
+        }
+      };
+
+      ws.onerror = function () {
+        // onclose will follow.
+      };
+
+      ws.onclose = function () {
+        if (sessions[callId] === session) {
+          setIdle();
+          try { audioCtx.close(); } catch (_) {}
+          fetch("/admin/spy/" + encodeURIComponent(callId) + "/stop", { method: "POST" }).catch(() => {});
+        }
+      };
+    };
+
   window.__adminQueueAudioPlayer = window.__adminQueueAudioPlayer || new Audio();
   window.__adminPlayQueueAudio =
     window.__adminPlayQueueAudio ||
@@ -3384,6 +3554,24 @@
             '<span class="audio-pulse-label">' + labelHtml + '</span>' +
             '</div>';
 
+          const spyCallIdRaw = (call && (call.call_id || call.channel)) ? String(call.call_id || call.channel) : "";
+          const existingButton = spyCallIdRaw
+            ? body.querySelector('button.spy-toggle-button[data-call-id="' + spyCallIdRaw.replace(/"/g, '\\"') + '"]')
+            : null;
+          const existingSpyState = existingButton ? existingButton.getAttribute("data-state") : null;
+          const spyButtonState = existingSpyState === "active" ? "active" : "idle";
+          const spyButtonLabel = spyButtonState === "active" ? "Stop" : "Spy";
+          const spyButtonExtraClass = spyButtonState === "active" ? " is-active" : "";
+          const spyDisabled = answered ? "" : ' disabled aria-disabled="true" title="Spy is available once the call is answered"';
+          const spyOnclick = answered ? ' onclick="window.__adminSpyToggle(this)"' : "";
+          const spyCell =
+            '<button type="button" class="button button-secondary button-small spy-toggle-button' + spyButtonExtraClass +
+            '" data-call-id="' + escapeHtml(spyCallIdRaw) +
+            '" data-state="' + spyButtonState + '"' + spyDisabled + spyOnclick + ">" +
+            '<span class="spy-button-label">' + spyButtonLabel + '</span>' +
+            '<span class="spy-button-status" aria-hidden="true"></span>' +
+            "</button>";
+
           return (
             "<tr>" +
             '<td class="mono">' + channel + "</td>" +
@@ -3394,6 +3582,7 @@
             "<td>" + application + "</td>" +
             '<td class="mono">' + duration + "</td>" +
             "<td>" + audioCell + "</td>" +
+            "<td>" + spyCell + "</td>" +
             "</tr>"
           );
         })
