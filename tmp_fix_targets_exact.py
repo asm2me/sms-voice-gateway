@@ -11,3 +11,4 @@ def dump(path: str, ranges: list[tuple[int, int]]) -> None:
 dump("app/sms_handler.py", [(470, 645)])
 dump("app/pjsua2_service.py", [(281, 345), (2362, 2418)])
 dump("app/main.py", [(4037, 4095)])
+ 
