@@ -11,7 +11,10 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Deque, Optional
 
-from openpyxl import Workbook
+try:
+    from openpyxl import Workbook as _OpenPyxlWorkbook
+except Exception:  # pragma: no cover - optional dependency
+    _OpenPyxlWorkbook = None
 
 from .config import Settings
 
@@ -789,9 +792,15 @@ def export_delivery_reports_csv(settings: Settings) -> bytes:
         )
     return buffer.getvalue().encode("utf-8")
 
+def _require_openpyxl() -> type[Any]:
+    if _OpenPyxlWorkbook is None:
+        raise RuntimeError("XLSX export requires the optional 'openpyxl' package to be installed")
+    return _OpenPyxlWorkbook
+
+
 def export_delivery_reports_xlsx(settings: Settings) -> bytes:
     reports = get_delivery_report_collector(settings).list_reports(limit=getattr(settings, "delivery_report_max_items", 1000))
-    workbook = Workbook()
+    workbook = _require_openpyxl()()
     sheet = workbook.active
     sheet.title = "Delivery Reports"
     sheet.append(["timestamp", "status", "provider", "phone_number", "destination", "message", "message_excerpt", "ami_action_id", "error"])
@@ -837,7 +846,7 @@ def export_inbox_messages_csv(settings: Settings) -> bytes:
 
 def export_inbox_messages_xlsx(settings: Settings) -> bytes:
     messages = list_inbox_messages(settings, limit=getattr(settings, "delivery_report_max_items", 1000))
-    workbook = Workbook()
+    workbook = _require_openpyxl()()
     sheet = workbook.active
     sheet.title = "SMS Inbox"
     sheet.append(["created_at", "updated_at", "from_number", "to_number", "provider", "status", "body", "body_preview", "source", "last_error"])
