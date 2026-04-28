@@ -2394,6 +2394,20 @@ class _CallCallbackHolder:
                     bucket["command"] = "start"
                 return
             try:
+                # Read format from the live media object before creating the
+                # recorder — this is authoritative and avoids the WAV header
+                # timing race that caused the 8 kHz fallback to fire.
+                resolved_sample_rate = 0
+                resolved_channels = 1
+                resolved_bits = 16
+                with suppress(Exception):
+                    media_info = call_audio_media.getInfo()
+                    fmt = getattr(media_info, "format", None)
+                    if fmt is not None:
+                        resolved_sample_rate = int(getattr(fmt, "clockRate", 0) or 0)
+                        resolved_channels = int(getattr(fmt, "channelCount", 1) or 1)
+                        resolved_bits = int(getattr(fmt, "bitsPerSample", 16) or 16)
+
                 spy_dir = _spy_dir()
                 wav_path = spy_dir / f"spy_{self._call_id}_{int(time.time() * 1000)}.wav"
                 recorder = pj.AudioMediaRecorder()
@@ -2405,17 +2419,21 @@ class _CallCallbackHolder:
                         self._player.startTransmit(recorder)
                 self._spy_recorder = recorder
                 self._spy_wav_path = str(wav_path)
-                # Header is written when the recorder is created. Give PJSUA2
-                # a moment to flush, then parse format metadata.
-                metadata: dict[str, int] = {}
-                for _ in range(10):
-                    metadata = _read_wav_header(str(wav_path)) or {}
-                    if metadata.get("sample_rate"):
-                        break
-                    time.sleep(0.02)
-                resolved_sample_rate = int(metadata.get("sample_rate") or 0)
+
+                # Fall back to WAV header if getInfo() didn't give a rate.
                 if resolved_sample_rate <= 0:
-                    resolved_sample_rate = 8000
+                    metadata: dict[str, int] = {}
+                    for _ in range(10):
+                        metadata = _read_wav_header(str(wav_path)) or {}
+                        if metadata.get("sample_rate"):
+                            break
+                        time.sleep(0.02)
+                    resolved_sample_rate = int(metadata.get("sample_rate") or 0)
+                    resolved_channels = int(metadata.get("channels") or resolved_channels)
+                    resolved_bits = int(metadata.get("bits_per_sample") or resolved_bits)
+                if resolved_sample_rate <= 0:
+                    resolved_sample_rate = 16000
+
                 with _TRUNK_SPY_LOCK:
                     bucket = _TRUNK_SPY_STATE.setdefault(self._call_id, {})
                     bucket.update(
@@ -2423,8 +2441,8 @@ class _CallCallbackHolder:
                             "active": True,
                             "wav_path": str(wav_path),
                             "sample_rate": resolved_sample_rate,
-                            "channels": int(metadata.get("channels") or 1),
-                            "bits_per_sample": int(metadata.get("bits_per_sample") or 16),
+                            "channels": resolved_channels,
+                            "bits_per_sample": resolved_bits,
                             "error": "",
                         }
                     )
@@ -2433,9 +2451,9 @@ class _CallCallbackHolder:
                     self._account_id,
                     self._call_id,
                     str(wav_path),
-                    metadata.get("sample_rate"),
-                    metadata.get("channels"),
-                    metadata.get("bits_per_sample"),
+                    resolved_sample_rate,
+                    resolved_channels,
+                    resolved_bits,
                 )
             except Exception as exc:
                 with _TRUNK_SPY_LOCK:
