@@ -284,11 +284,14 @@ def request_spy_start(call_id: str) -> dict[str, Any]:
     with _TRUNK_SPY_LOCK:
         state = _TRUNK_SPY_STATE.setdefault(call_id, {})
         if state.get("active"):
+            sample_rate = int(state.get("sample_rate") or 0)
+            if sample_rate <= 0:
+                sample_rate = 8000
             return {
                 "ok": True,
                 "active": True,
                 "wav_path": state.get("wav_path", ""),
-                "sample_rate": int(state.get("sample_rate") or 0),
+                "sample_rate": sample_rate,
                 "channels": int(state.get("channels") or 1),
                 "bits_per_sample": int(state.get("bits_per_sample") or 16),
             }
@@ -315,7 +318,14 @@ def get_spy_state(call_id: str) -> dict[str, Any]:
         state = _TRUNK_SPY_STATE.get(call_id)
         if not state:
             return {}
-        return dict(state)
+        result = dict(state)
+    if result.get("active"):
+        sample_rate = int(result.get("sample_rate") or 0)
+        if sample_rate <= 0:
+            result["sample_rate"] = 8000
+        result["channels"] = int(result.get("channels") or 1)
+        result["bits_per_sample"] = int(result.get("bits_per_sample") or 16)
+    return result
 
 
 def _drop_spy_state(call_id: str) -> None:
@@ -2403,13 +2413,16 @@ class _CallCallbackHolder:
                     if metadata.get("sample_rate"):
                         break
                     time.sleep(0.02)
+                resolved_sample_rate = int(metadata.get("sample_rate") or 0)
+                if resolved_sample_rate <= 0:
+                    resolved_sample_rate = 8000
                 with _TRUNK_SPY_LOCK:
                     bucket = _TRUNK_SPY_STATE.setdefault(self._call_id, {})
                     bucket.update(
                         {
                             "active": True,
                             "wav_path": str(wav_path),
-                            "sample_rate": int(metadata.get("sample_rate") or 0),
+                            "sample_rate": resolved_sample_rate,
                             "channels": int(metadata.get("channels") or 1),
                             "bits_per_sample": int(metadata.get("bits_per_sample") or 16),
                             "error": "",

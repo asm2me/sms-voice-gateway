@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -446,8 +447,8 @@ class SMSGateway:
             if smpp_account and smpp_account.delivery_retry_interval_seconds is not None
             else self.settings.delivery_retry_interval_seconds
         )
-        max_attempts = 1 if sms.provider == "admin-test" else max(1, int(retry_count) + 1)
-        retry_interval_seconds = 0 if sms.provider == "admin-test" else max(0, int(retry_interval_value))
+        max_attempts = max(1, int(retry_count) + 1)
+        retry_interval_seconds = max(0, int(retry_interval_value))
         last_error = ""
         ami_action_id = ""
         sip_call_id = ""
@@ -550,7 +551,7 @@ class SMSGateway:
             pending_reason = _derive_pending_reason(stage="sip_trunk", detail=last_error)
             log.warning("Outbound voice attempt %d/%d failed for %s via %s: %s", attempt, max_attempts, phone, sip_account_id, last_error)
 
-            if "concurrency limit reached" in last_error.lower():
+            if "concurrency limit reached" in last_error.lower() and attempt >= max_attempts:
                 return GatewayResult(
                     success=False,
                     phone_number=phone,
@@ -577,7 +578,7 @@ class SMSGateway:
                     },
                 )
 
-            if "was not answered" in last_error.lower():
+            if "was not answered" in last_error.lower() and attempt >= max_attempts:
                 return GatewayResult(
                     success=False,
                     phone_number=phone,
@@ -604,29 +605,34 @@ class SMSGateway:
                     },
                 )
 
-            if attempt < max_attempts and queue_retries:
-                retry_snapshot = _queue_retry(
-                    self.settings,
-                    phone_number=phone,
-                    provider=sms.provider,
-                    body=sms.body,
-                    body_preview=spoken_text,
-                    attempts=attempt,
-                    max_attempts=max_attempts,
-                    retry_interval_seconds=retry_interval_seconds,
-                    last_error=pending_reason,
-                    sip_account_id=sip_account_id,
-                    smpp_username=sms.smpp_username or "",
-                    audio_path=audio_path,
-                )
-                log.info(
-                    "Retry scheduled for %s in %ss (attempt=%d/%d, queue_id=%s)",
-                    phone,
-                    retry_interval_seconds,
-                    attempt,
-                    max_attempts,
-                    retry_snapshot.get("id", ""),
-                )
+            if attempt < max_attempts:
+                if queue_retries:
+                    retry_snapshot = _queue_retry(
+                        self.settings,
+                        phone_number=phone,
+                        provider=sms.provider,
+                        body=sms.body,
+                        body_preview=spoken_text,
+                        attempts=attempt,
+                        max_attempts=max_attempts,
+                        retry_interval_seconds=retry_interval_seconds,
+                        last_error=pending_reason,
+                        sip_account_id=sip_account_id,
+                        smpp_username=sms.smpp_username or "",
+                        audio_path=audio_path,
+                    )
+                    log.info(
+                        "Retry scheduled for %s in %ss (attempt=%d/%d, queue_id=%s)",
+                        phone,
+                        retry_interval_seconds,
+                        attempt,
+                        max_attempts,
+                        retry_snapshot.get("id", ""),
+                    )
+                else:
+                    if retry_interval_seconds > 0:
+                        time.sleep(retry_interval_seconds)
+                    continue
 
         return GatewayResult(
             success=False,

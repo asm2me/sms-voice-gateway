@@ -252,6 +252,41 @@ def build_settings_data(settings: Settings) -> dict[str, Any]:
     return data
 
 
+def _sanitize_settings_payload(values: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(values)
+
+    def _coerce_min_int(field_name: str, minimum: int) -> None:
+        raw_value = sanitized.get(field_name)
+        if raw_value in (None, ""):
+            return
+        try:
+            numeric_value = int(raw_value)
+        except Exception:
+            log.warning("Ignoring invalid persisted setting %s=%r", field_name, raw_value)
+            sanitized.pop(field_name, None)
+            return
+        if numeric_value < minimum:
+            log.warning(
+                "Clamping invalid persisted setting %s=%r to minimum %s",
+                field_name,
+                raw_value,
+                minimum,
+            )
+            sanitized[field_name] = minimum
+        else:
+            sanitized[field_name] = numeric_value
+
+    _coerce_min_int("playback_repeats", 1)
+    _coerce_min_int("playback_pause_ms", 0)
+    _coerce_min_int("delivery_retry_count", 0)
+    _coerce_min_int("delivery_retry_interval_seconds", 0)
+    _coerce_min_int("delivery_report_max_items", 1)
+    _coerce_min_int("call_answer_timeout", 1)
+    _coerce_min_int("audio_cache_ttl", 1)
+
+    return sanitized
+
+
 def load_settings_from_store(path: Path | str = CONFIG_STORE_PATH) -> Settings:
     env_settings = Settings()
     data = load_persistent_config(path)
@@ -269,6 +304,7 @@ def load_settings_from_store(path: Path | str = CONFIG_STORE_PATH) -> Settings:
     merged["smpp_accounts"] = smpp_accounts
     merged["smpp_sip_assignments"] = smpp_sip_assignments
     merged["system_users"] = system_users
+    merged = _sanitize_settings_payload(merged)
 
     return Settings(**merged)
 
