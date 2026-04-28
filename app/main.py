@@ -4123,7 +4123,7 @@ async def admin_spy_stream(websocket: WebSocket, call_id: str) -> None:
 
     bytes_per_sample = max(1, bits_per_sample // 8)
     frame_bytes = bytes_per_sample * max(1, channels)
-    chunk_target_ms = 80
+    chunk_target_ms = 20
     target_frames = max(1, int(sample_rate * chunk_target_ms / 1000))
     target_bytes = target_frames * frame_bytes
 
@@ -4160,7 +4160,7 @@ async def admin_spy_stream(websocket: WebSocket, call_id: str) -> None:
                 # Tolerate up to ~10s of silence (file not growing) before exit.
                 if idle_ticks > 200:
                     break
-                await _asyncio.sleep(0.05)
+                await _asyncio.sleep(0.01)
                 continue
             idle_ticks = 0
             try:
