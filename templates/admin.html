@@ -403,7 +403,7 @@
             <td>{{ call.application or '—' }}</td>
             <td class="mono">{{ call.duration or '—' }}</td>
             <td>{% set _caller_levels = call.audio_levels_caller if call.audio_levels_caller else [] %}{% set _callee_levels = call.audio_levels_callee if call.audio_levels_callee else [] %}{% set _has_rtp = (_caller_levels|length) or (_callee_levels|length) %}<div class="audio-pulse audio-pulse-dual {% if call.answered and _has_rtp %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}" data-caller-levels="{{ _caller_levels|join(',') }}" data-callee-levels="{{ _callee_levels|join(',') }}"><svg class="audio-pulse-svg" viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><line class="audio-pulse-baseline" x1="0" y1="23" x2="80" y2="23"/><polyline class="audio-pulse-line audio-pulse-line-caller" fill="none" points="{% for i in range(11) %}{% set _cl = _caller_levels[i] if i < _caller_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _cl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/><polyline class="audio-pulse-line audio-pulse-line-callee" fill="none" points="{% for i in range(11) %}{% set _kl = _callee_levels[i] if i < _callee_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _kl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/></svg><span class="audio-pulse-label">{% if call.answered and _has_rtp %}<span class="audio-pulse-channel audio-pulse-channel-caller" title="Caller (gateway → trunk)">↑{{ "%.0f"|format((_caller_levels[-1] if _caller_levels else 0) * 100) }}%</span> <span class="audio-pulse-channel audio-pulse-channel-callee" title="Callee (trunk → gateway)">↓{{ "%.0f"|format((_callee_levels[-1] if _callee_levels else 0) * 100) }}%</span>{% elif call.answered %}awaiting RTP{% else %}—{% endif %}</span></div></td>
-            <td>{% set _spy_call_id = call.call_id or call.channel %}<button type="button" class="button button-secondary button-small spy-toggle-button" data-call-id="{{ _spy_call_id }}" data-state="idle" {% if not call.answered %}disabled aria-disabled="true" title="Spy is available once the call is answered"{% else %}onclick="window.__adminSpyToggle(this)"{% endif %}><span class="spy-button-label">Spy</span><span class="spy-button-status" aria-hidden="true"></span></button></td>
+            <td>{% set _spy_call_id = call.call_id or call.channel %}<button type="button" class="button button-secondary button-small spy-toggle-button" data-call-id="{{ _spy_call_id }}" data-state="idle" onclick="window.__adminSpyToggle(this)" title="{% if not call.answered %}Spy will activate automatically once the call is answered{% else %}Listen to live call audio{% endif %}"><span class="spy-button-label">Spy</span><span class="spy-button-status" aria-hidden="true"></span></button></td>
           </tr>
           {% endfor %}
         </tbody>
@@ -2998,7 +2998,7 @@
           !!(startInfo && (startInfo.pending || startInfo.queued || startInfo.message))
         ) {
           startAttempt += 1;
-          if (labelEl) labelEl.textContent = "Waiting...";
+          if (labelEl) labelEl.textContent = startAttempt < 4 ? "Starting..." : "Waiting for answer...";
           await wait(250);
           startInfo = await requestSpyStart();
         }
@@ -3019,7 +3019,7 @@
         button.setAttribute("data-state", "idle");
         alert(
           (startInfo && (startInfo.message || startInfo.error)) ||
-          "Spy start is still waiting for answered call media to become ready."
+          "Spy is queued. It will start automatically once the call is answered. Click Spy again to retry."
         );
         return;
       }
@@ -3622,8 +3622,9 @@
           const spyButtonState = existingSpyState === "active" ? "active" : "idle";
           const spyButtonLabel = spyButtonState === "active" ? "Stop" : "Spy";
           const spyButtonExtraClass = spyButtonState === "active" ? " is-active" : "";
-          const spyDisabled = answered ? "" : ' disabled aria-disabled="true" title="Spy is available once the call is answered"';
-          const spyOnclick = answered ? ' onclick="window.__adminSpyToggle(this)"' : "";
+          const spyDisabled = "";
+          const spyTitle = answered ? "Listen to live call audio" : "Spy will activate automatically once the call is answered";
+          const spyOnclick = ' onclick="window.__adminSpyToggle(this)" title="' + spyTitle + '"';
           const spyCell =
             '<button type="button" class="button button-secondary button-small spy-toggle-button' + spyButtonExtraClass +
             '" data-call-id="' + escapeHtml(spyCallIdRaw) +
