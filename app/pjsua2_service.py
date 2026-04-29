@@ -523,6 +523,7 @@ class PJSipUASession:
         self._registered = False
         self._last_call = None
         self._isolated = bool(isolated)
+        self._isolated_owns_endpoint = False
         self._thread_registration_token = object()
 
     @property
@@ -624,20 +625,23 @@ class PJSipUASession:
                 pj = self._pj
                 assert pj is not None
 
-                if not self._isolated:
-                    with _PJSUA_GLOBAL_LOCK:
-                        if _PJSUA_GLOBAL_ENDPOINT is not None:
-                            self._endpoint = _PJSUA_GLOBAL_ENDPOINT
-                            self._transport = _PJSUA_GLOBAL_TRANSPORT
-                            self._register_current_thread()
-                            return PJSUA2RegistrationResult(
-                                success=True,
-                                message="PJSUA2 endpoint already initialised",
-                                details={"already_initialised": True, "shared_global_endpoint": True, "isolated": False},
-                            )
+                # PJSUA2 Endpoint is a process-wide singleton; calling libCreate() a
+                # second time crashes with PJ_EEXISTS regardless of isolated flag.
+                # Always reuse the global endpoint if it already exists.
+                with _PJSUA_GLOBAL_LOCK:
+                    if _PJSUA_GLOBAL_ENDPOINT is not None:
+                        self._endpoint = _PJSUA_GLOBAL_ENDPOINT
+                        self._transport = _PJSUA_GLOBAL_TRANSPORT
+                        self._register_current_thread()
+                        return PJSUA2RegistrationResult(
+                            success=True,
+                            message="PJSUA2 endpoint already initialised",
+                            details={"already_initialised": True, "shared_global_endpoint": True, "isolated": self._isolated},
+                        )
 
                 ep = pj.Endpoint()
                 ep.libCreate()
+                self._isolated_owns_endpoint = self._isolated
 
                 ep_cfg = pj.EpConfig()
                 with suppress(Exception):
@@ -740,7 +744,7 @@ class PJSipUASession:
             self._endpoint = None
             self._transport = None
 
-            if self._isolated and endpoint is not None:
+            if self._isolated_owns_endpoint and endpoint is not None:
                 with suppress(Exception):
                     endpoint.libDestroy()
                 with _PJSUA_GLOBAL_LOCK:
@@ -1859,6 +1863,7 @@ class _CallCallbackHolder:
         self._call_obj = None
         self._spy_recorder = None
         self._spy_wav_path = ""
+        self._spy_audio_media = None
 
     def _set_runtime_state(
         self,
@@ -2386,6 +2391,12 @@ class _CallCallbackHolder:
             if self._spy_recorder is not None:
                 return
             call_audio_media = self._player_media
+            # _player_media is only set after playback starts (CONFIRMED state).
+            # For ringing / early-media calls the call object may already have
+            # live audio media (SIP 183 with RTP), so query it directly.
+            if call_audio_media is None and self._call_obj is not None and pj is not None:
+                with suppress(Exception):
+                    call_audio_media = self._call_obj.getAudioMedia(-1)
             if call_audio_media is None or pj is None:
                 with _TRUNK_SPY_LOCK:
                     bucket = _TRUNK_SPY_STATE.setdefault(self._call_id, {})
@@ -2421,6 +2432,7 @@ class _CallCallbackHolder:
                         self._player.startTransmit(recorder)
                 self._spy_recorder = recorder
                 self._spy_wav_path = str(wav_path)
+                self._spy_audio_media = call_audio_media
 
                 # Fall back to WAV header if getInfo() didn't give a rate.
                 if resolved_sample_rate <= 0:
@@ -2480,12 +2492,14 @@ class _CallCallbackHolder:
                     bucket["active"] = False
             return
         with suppress(Exception):
-            if self._player_media is not None and hasattr(self._player_media, "stopTransmit"):
-                self._player_media.stopTransmit(recorder)
+            spy_media = self._spy_audio_media or self._player_media
+            if spy_media is not None and hasattr(spy_media, "stopTransmit"):
+                spy_media.stopTransmit(recorder)
         with suppress(Exception):
             if self._player is not None and hasattr(self._player, "stopTransmit"):
                 self._player.stopTransmit(recorder)
         self._spy_recorder = None
+        self._spy_audio_media = None
         with _TRUNK_SPY_LOCK:
             bucket = _TRUNK_SPY_STATE.get(self._call_id)
             if bucket is not None:
