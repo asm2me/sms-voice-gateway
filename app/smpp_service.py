@@ -80,6 +80,7 @@ class SMPPService:
         self._last_error: str = ""
         self._active_clients: dict[socket.socket, SMPPSession] = {}
         self.sessions: dict[str, SMPPSession] = {}
+        self._lock = threading.RLock()
 
     @property
     def enabled(self) -> bool:
@@ -93,22 +94,45 @@ class SMPPService:
     def last_error(self) -> str:
         return self._last_error
 
-    def start(self) -> None:
+    def _close_socket_quietly(self, conn: socket.socket) -> None:
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def _drop_active_connections(self) -> None:
+        with self._lock:
+            active_clients = list(self._active_clients.items())
+            self._active_clients.clear()
+            self.sessions.clear()
+
+        for conn, session in active_clients:
+            try:
+                log.info("Dropping SMPP connection from %s", session.client_addr or "unknown")
+            except Exception:
+                pass
+            self._close_socket_quietly(conn)
+
+    def start(self, *, force: bool = False) -> None:
         self._last_error = ""
-        if not self.enabled:
+        if not self.enabled and not force:
             log.info("SMPP listener disabled")
             return
-        if self._server is not None:
+        if self._server is not None and not self._stop_event.is_set():
             return
 
         host = self.settings.smpp_host
         port = self.settings.smpp_port
         try:
+            self._stop_event.clear()
             self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self._server.bind((host, port))
             self._server.listen(5)
-            self._stop_event.clear()
             self._thread = threading.Thread(target=self._serve, name="smpp-listener", daemon=True)
             self._thread.start()
             log.info("SMPP listener started on %s:%s", host, port)
@@ -122,16 +146,21 @@ class SMPPService:
                 self._server = None
             raise
 
-    def stop(self) -> None:
+    def stop(self, *, drop_connections: bool = True) -> None:
         self._stop_event.set()
-        if self._server is not None:
+        if drop_connections:
+            self._drop_active_connections()
+        server = self._server
+        self._server = None
+        if server is not None:
             try:
-                self._server.close()
+                server.close()
             except Exception:
                 pass
-            self._server = None
+        thread = self._thread
         self._thread = None
-        self._active_clients.clear()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2)
         log.info("SMPP listener stopped")
 
     def _serve(self) -> None:

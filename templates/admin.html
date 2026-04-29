@@ -659,6 +659,8 @@
 {% set queue_total = queue_summary.total|default(0) %}
 {% set inbox_total = sms_inbox_summary.total|default(0) %}
 {% set activity_total = [queue_total, inbox_total, 1]|max %}
+{% set redis_item = (config_snapshot["items"] | selectattr("label", "equalto", "Redis URL") | list | first) %}
+{% set webhook_item = (config_snapshot["items"] | selectattr("label", "equalto", "Webhook Secret") | list | first) %}
 <section class="dashboard-grid dashboard-grid-overview">
   <article class="card dashboard-card">
     <div class="card-header">
@@ -679,12 +681,12 @@
         <strong class="mono">{{ config_snapshot["items"][1].display_value }}</strong>
       </div>
       <div class="metric">
-        <span class="metric-label">Redis</span>
-        <strong class="mono">{{ config_snapshot["items"][3].display_value }}</strong>
+        <span class="metric-label">Redis URL</span>
+        <strong class="mono">{{ redis_item.display_value if redis_item else '—' }}</strong>
       </div>
       <div class="metric">
         <span class="metric-label">Webhook</span>
-        <strong>{{ config_snapshot["items"][-1].display_value }}</strong>
+        <strong>{{ webhook_item.display_value if webhook_item else '—' }}</strong>
       </div>
     </div>
   </article>

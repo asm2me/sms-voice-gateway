@@ -2,102 +2,12 @@
   {
     "action": "admin.view",
     "actor": "admin",
-    "detail": "Viewed the 'reports' admin section.",
+    "detail": "Viewed the 'overview' admin section.",
     "metadata": {},
-    "section": "reports",
+    "section": "overview",
     "status": "success",
-    "target": "/admin/reports",
-    "timestamp": "2026-04-27T19:09:43.635267+00:00"
-  },
-  {
-    "action": "admin.view",
-    "actor": "admin",
-    "detail": "Viewed the 'reports' admin section.",
-    "metadata": {},
-    "section": "reports",
-    "status": "success",
-    "target": "/admin/reports",
-    "timestamp": "2026-04-29T21:53:17.048438+00:00"
-  },
-  {
-    "action": "admin.view",
-    "actor": "admin",
-    "detail": "Viewed the 'reports' admin section.",
-    "metadata": {},
-    "section": "reports",
-    "status": "success",
-    "target": "/admin/reports",
-    "timestamp": "2026-04-29T22:09:29.923017+00:00"
-  },
-  {
-    "action": "admin.view",
-    "actor": "admin",
-    "detail": "Viewed the 'reports' admin section.",
-    "metadata": {},
-    "section": "reports",
-    "status": "success",
-    "target": "/admin/reports",
-    "timestamp": "2026-04-29T22:10:03.971738+00:00"
-  },
-  {
-    "action": "admin.view",
-    "actor": "admin",
-    "detail": "Viewed the 'reports' admin section.",
-    "metadata": {},
-    "section": "reports",
-    "status": "success",
-    "target": "/admin/reports",
-    "timestamp": "2026-04-29T22:11:06.032785+00:00"
-  },
-  {
-    "action": "admin.view",
-    "actor": "admin",
-    "detail": "Viewed the 'reports' admin section.",
-    "metadata": {},
-    "section": "reports",
-    "status": "success",
-    "target": "/admin/reports",
-    "timestamp": "2026-04-29T22:24:00.060341+00:00"
-  },
-  {
-    "action": "admin.view",
-    "actor": "admin",
-    "detail": "Viewed the 'reports' admin section.",
-    "metadata": {},
-    "section": "reports",
-    "status": "success",
-    "target": "/admin/reports",
-    "timestamp": "2026-04-29T22:24:43.211897+00:00"
-  },
-  {
-    "action": "admin.view",
-    "actor": "admin",
-    "detail": "Viewed the 'reports' admin section.",
-    "metadata": {},
-    "section": "reports",
-    "status": "success",
-    "target": "/admin/reports",
-    "timestamp": "2026-04-29T22:25:04.057714+00:00"
-  },
-  {
-    "action": "admin.view",
-    "actor": "admin",
-    "detail": "Viewed the 'reports' admin section.",
-    "metadata": {},
-    "section": "reports",
-    "status": "success",
-    "target": "/admin/reports",
-    "timestamp": "2026-04-29T22:41:01.095942+00:00"
-  },
-  {
-    "action": "admin.view",
-    "actor": "admin",
-    "detail": "Viewed the 'reports' admin section.",
-    "metadata": {},
-    "section": "reports",
-    "status": "success",
-    "target": "/admin/reports",
-    "timestamp": "2026-04-29T22:41:50.898396+00:00"
+    "target": "/admin",
+    "timestamp": "2026-04-29T23:15:39.118838+00:00"
   },
   {
     "action": "admin.view",
@@ -107,6 +17,36 @@
     "section": "overview",
     "status": "success",
     "target": "/admin",
-    "timestamp": "2026-04-29T23:00:44.998321+00:00"
+    "timestamp": "2026-04-29T23:17:17.431713+00:00"
   },
-  
+  {
+    "action": "admin.view",
+    "actor": "admin",
+    "detail": "Viewed the 'overview' admin section.",
+    "metadata": {},
+    "section": "overview",
+    "status": "success",
+    "target": "/admin",
+    "timestamp": "2026-04-29T23:18:40.202020+00:00"
+  },
+  {
+    "action": "admin.view",
+    "actor": "admin",
+    "detail": "Viewed the 'overview' admin section.",
+    "metadata": {},
+    "section": "overview",
+    "status": "success",
+    "target": "/admin",
+    "timestamp": "2026-04-29T23:20:32.949715+00:00"
+  },
+  {
+    "action": "admin.view",
+    "actor": "admin",
+    "detail": "Viewed the 'overview' admin section.",
+    "metadata": {},
+    "section": "overview",
+    "status": "success",
+    "target": "/admin",
+    "timestamp": "2026-04-29T23:22:40.820136+00:00"
+  }
+]

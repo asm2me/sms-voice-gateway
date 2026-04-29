@@ -37,7 +37,7 @@ import base64
 import binascii
 
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, status
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -4163,6 +4163,16 @@ async def admin_reports_live(
     _: None = Depends(dep_admin_credentials),
     settings: Settings = Depends(dep_settings),
 ):
+    accept_header = request.headers.get("accept", "").lower()
+    xhr_header = request.headers.get("x-requested-with", "").lower()
+    is_json_client = "application/json" in accept_header or xhr_header == "xmlhttprequest"
+
+    if not is_json_client:
+        return RedirectResponse(
+            url=str(request.url.replace(path="/admin/reports")),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
     return _build_reports_live_payload(settings, request.query_params)
 
 
