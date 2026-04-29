@@ -1138,6 +1138,7 @@ class PJSipUASession:
                     destination_number=destination,
                     registered=True,
                     audio_path=request.audio_path,
+                    recording_path=str(call_outcome.get("recording_path") or ""),
                     error=playback_error if answered and not delivered and playback_error else "",
                     message=(
                         "Outbound SIP call answered and playback completed"
@@ -1153,6 +1154,7 @@ class PJSipUASession:
                     read=read,
                     playback_seconds=playback_seconds,
                     audio_duration_seconds=audio_duration_seconds,
+                    call_duration_seconds=float(call_outcome.get("call_duration_seconds") or 0.0),
                     details={
                         "playback": {
                             **(playback_result.details or {}),

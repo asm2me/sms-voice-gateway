@@ -298,6 +298,15 @@
 {% endif %}
 
 {% if active_section == 'reports' %}
+<style>
+.report-tabs{display:flex;gap:0;border-bottom:2px solid var(--border,#e5e7eb);margin:1.5rem 0 0}
+.report-tab{background:none;border:none;border-bottom:3px solid transparent;margin-bottom:-2px;padding:.625rem 1.25rem;cursor:pointer;font-size:.875rem;font-weight:500;color:var(--text-muted,#6b7280);transition:color .15s,border-color .15s}
+.report-tab:hover{color:var(--text,#111827)}
+.report-tab.active,.report-tab[aria-selected="true"]{color:var(--accent,#2563eb);border-bottom-color:var(--accent,#2563eb)}
+.report-tab-panel{display:none;padding-top:1.5rem}
+.report-tab-panel.active{display:block}
+</style>
+
 <section class="card reports-panel">
   <div class="card-header">
     <div>
@@ -347,402 +356,428 @@
     </div>
   </div>
 
-  {% if recent_reports %}
-  <div class="table-wrap">
-    <table class="data-table report-table">
-      <thead>
-        <tr>
-          <th>Timestamp</th>
-          <th>Phone Number</th>
-          <th>Status</th>
-          <th>Destination</th>
-          <th>Message Excerpt</th>
-          <th>SIP/Call Reference</th>
-          <th>Call Duration</th>
-          <th>Recording</th>
-          <th>Provider</th>
-          <th>Error</th>
-        </tr>
-      </thead>
-      <tbody id="live-reports-body">
-        {% for report in recent_reports %}
-        <tr>
-          <td class="mono">{{ report.timestamp }}</td>
-          <td class="mono">{{ report.phone_number }}</td>
-          <td>
-            {% set report_reason = report.error or 'No delivery reason recorded' %}
-            {% if report.status == 'error' %}
-            <span class="status-badge status-danger" title="{{ report_reason }}">failed</span>
-            {% else %}
-            <span class="status-badge status-{{ report.status_class }}">{{ report.status }}</span>
-            {% endif %}
-          </td>
-          <td class="mono">{{ report.destination }}</td>
-          <td>{{ report.message_excerpt }}</td>
-          <td class="mono">{{ report.sip_call_id or report.sip_account_id or report.ami_action_id or '—' }}</td>
-          <td class="mono">{% if report.call_duration_seconds %}{{ "%.2fs"|format(report.call_duration_seconds) }}{% else %}—{% endif %}</td>
-          <td>
-            {% if report.recording_path %}
-            <button
-              type="button"
-              class="button button-secondary button-small"
-              title="Play call recording"
-              aria-label="Play call recording for delivery report"
-              onclick="window.__adminPlayQueueAudio('/admin/reports/recording?path={{ report.recording_path|urlencode }}', this)"
-            >▶</button>
-            {% else %}
-            <span class="muted">—</span>
-            {% endif %}
-          </td>
-          <td>{{ report.source }}</td>
-          <td>{{ report.error or '—' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% else %}
-  <div class="empty-state">
-    <h3>No delivery reports yet</h3>
-    <p>Reports will appear here once SMS messages are processed and calls are initiated.</p>
-  </div>
-  {% endif %}
-</section>
+  <nav class="report-tabs" role="tablist" aria-label="Report sections">
+    <button class="report-tab active" role="tab" data-tab="live-calls" aria-selected="true" aria-controls="tab-live-calls">Live Calls</button>
+    <button class="report-tab" role="tab" data-tab="delivery-reports" aria-selected="false" aria-controls="tab-delivery-reports">Delivery Reports</button>
+    <button class="report-tab" role="tab" data-tab="queue" aria-selected="false" aria-controls="tab-queue">Delivery Queue</button>
+    <button class="report-tab" role="tab" data-tab="inbox" aria-selected="false" aria-controls="tab-inbox">SMS Inbox</button>
+  </nav>
 
-<section class="card inbox-queue-panel">
-  <div class="card-header">
-    <div>
-      <p class="eyebrow">Delivery Queue</p>
-      <h2>Outbound voice delivery queue and status</h2>
-      <p class="muted">Track queued jobs, retry state, SIP call references, and current delivery outcome from the reports page.</p>
-    </div>
-    <div class="page-actions">
-      <span class="pill">{{ queue_summary.active_label or 'Monitoring' }}</span>
-    </div>
-  </div>
-
-  <div class="status-grid report-summary-grid" id="live-queue-summary">
-    <div class="stat-card">
-      <span class="stat-label">Queue Total</span>
-      <strong id="live-queue-total">{{ queue_summary.total }}</strong>
-    </div>
-    <div class="stat-card">
-      <span class="stat-label">Active</span>
-      <strong id="live-queue-active">{{ queue_summary.active_label or '0 active' }}</strong>
-    </div>
-    <div class="stat-card">
-      <span class="stat-label">Inbox Total</span>
-      <strong id="live-inbox-total">{{ sms_inbox_summary.total }}</strong>
-    </div>
-    <div class="stat-card">
-      <span class="stat-label">Latest Inbox</span>
-      <strong class="mono" id="live-inbox-latest">{{ sms_inbox_summary.latest_timestamp or '—' }}</strong>
-    </div>
-  </div>
-
-  <div class="dockable-filter-grid">
-    <div class="table-filter-shell">
-      <button type="button" class="table-filter-button" data-table-filter-toggle="queue-filters">Queue filters</button>
-      <div class="dockable-filter-panel" id="queue-filters" data-table-filter-panel>
-        <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
-          <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
-          <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
-          <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
-          <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
-          <input type="hidden" name="inbox_page_size" value="{{ inbox_pagination.page_size }}" />
-          <label class="field-group">
-            <span class="field-label">Queue Search</span>
-            <input type="text" name="search" value="{{ queue_filters.search }}" placeholder="Search queue items" />
-          </label>
-          <label class="field-group">
-            <span class="field-label">Status</span>
-            <input type="text" name="status" value="{{ queue_filters.status }}" placeholder="queued, delivered, failed" />
-          </label>
-          <label class="field-group">
-            <span class="field-label">Provider</span>
-            <input type="text" name="provider" value="{{ queue_filters.provider }}" placeholder="twilio, generic, admin-test" />
-          </label>
-          <label class="field-group">
-            <span class="field-label">Queue Page Size</span>
-            <select name="queue_page_size">
-              <option value="10" {% if queue_pagination.page_size == 10 %}selected{% endif %}>10</option>
-              <option value="20" {% if queue_pagination.page_size == 20 %}selected{% endif %}>20</option>
-              <option value="50" {% if queue_pagination.page_size == 50 %}selected{% endif %}>50</option>
-              <option value="100" {% if queue_pagination.page_size == 100 %}selected{% endif %}>100</option>
-            </select>
-          </label>
-          <div class="form-actions">
-            <button type="submit" class="button button-secondary">Apply Queue Filters</button>
-          </div>
-        </form>
+  <!-- Tab: Live Calls (shown first) -->
+  <div class="report-tab-panel active" id="tab-live-calls" role="tabpanel">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem">
+      <div>
+        <p class="eyebrow">Live Call Tracking</p>
+        <h3 style="margin:0">Current outbound SIP activity</h3>
+        <p class="muted">This section auto-refreshes and shows current outbound SIP runtime activity from the gateway process.</p>
+      </div>
+      <div class="page-actions">
+        <span class="pill realtime-pill realtime-pill-unknown" data-realtime-transport>—</span>
+        <span class="pill" id="live-calls-count">{{ live_calls.active_count }} active</span>
+        <span class="pill" id="live-updated-at">{{ live_calls.updated_at }}</span>
       </div>
     </div>
-
-    <div class="table-filter-shell">
-      <button type="button" class="table-filter-button" data-table-filter-toggle="inbox-filters">Inbox filters</button>
-      <div class="dockable-filter-panel" id="inbox-filters" data-table-filter-panel>
-        <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
-          <input type="hidden" name="search" value="{{ queue_filters.search }}" />
-          <input type="hidden" name="status" value="{{ queue_filters.status }}" />
-          <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
-          <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
-          <input type="hidden" name="queue_page_size" value="{{ queue_pagination.page_size }}" />
-          <label class="field-group">
-            <span class="field-label">Inbox Search</span>
-            <input type="text" name="inbox_search" value="{{ inbox_filters.search }}" placeholder="Search inbox messages" />
-          </label>
-          <label class="field-group">
-            <span class="field-label">Inbox Status</span>
-            <input type="text" name="inbox_status" value="{{ inbox_filters.status }}" placeholder="received" />
-          </label>
-          <label class="field-group">
-            <span class="field-label">Inbox Provider</span>
-            <input type="text" name="inbox_provider" value="{{ inbox_filters.provider }}" placeholder="smpp, twilio, generic" />
-          </label>
-          <label class="field-group">
-            <span class="field-label">Inbox Page Size</span>
-            <select name="inbox_page_size">
-              <option value="10" {% if inbox_pagination.page_size == 10 %}selected{% endif %}>10</option>
-              <option value="20" {% if inbox_pagination.page_size == 20 %}selected{% endif %}>20</option>
-              <option value="50" {% if inbox_pagination.page_size == 50 %}selected{% endif %}>50</option>
-              <option value="100" {% if inbox_pagination.page_size == 100 %}selected{% endif %}>100</option>
-            </select>
-          </label>
-          <div class="form-actions">
-            <button type="submit" class="button button-secondary">Apply Inbox Filters</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  {% if recent_queue_items %}
-  <form method="post" action="/admin/queue/batch-delete" class="admin-form" id="live-queue-form">
-    <div class="form-actions">
-      <button type="submit" class="button button-danger button-small">Delete Selected Queue Items</button>
-      <button type="submit" formaction="/admin/queue/batch-status" class="button button-secondary button-small">Mark Selected as Processed</button>
-    </div>
-    <div class="table-wrap">
-      <table class="data-table queue-table" id="live-queue-table">
-      <thead>
-        <tr>
-          <th><label class="table-select-all"><input type="checkbox" class="js-select-all" data-select-all="live-queue-table" data-select-all-target="live-queue-table" /> Select all</label></th>
-          <th>Created</th>
-          <th>Phone</th>
-          <th>Provider</th>
-          <th>Status</th>
-          <th>Attempts</th>
-          <th>Retry Interval</th>
-          <th>Next Attempt</th>
-          <th>SIP/Call Reference</th>
-          <th>Audio</th>
-          <th>Recording</th>
-          <th>Call Duration</th>
-          <th>Message</th>
-          <th>Last Error</th>
-        </tr>
-      </thead>
-      <tbody id="live-queue-body">
-        {% for item in recent_queue_items %}
-        <tr>
-          <td><input type="checkbox" name="item_ids" value="{{ item.id }}" /></td>
-          <td class="mono">{{ item.created_at }}</td>
-          <td class="mono">{{ item.phone_number or '—' }}</td>
-          <td>{{ item.provider or '—' }}</td>
-          <td>
-            <span class="status-badge status-{{ item.status_class }}">{{ item.status }}</span>
-          </td>
-          <td class="mono">{{ item.attempts }}/{{ item.max_attempts }}</td>
-          <td class="mono">{{ item.retry_interval_seconds }}s</td>
-          <td class="mono">{{ item.next_attempt_at or '—' }}</td>
-          <td class="mono">{{ item.sip_call_id or item.sip_account_id or item.ami_action_id or '—' }}</td>
-          <td>
-            {% if item.audio_path %}
-            <button
-              type="button"
-              class="button button-secondary button-small"
-              title="Play generated audio"
-              aria-label="Play generated audio for queued message"
-              onclick="window.__adminPlayQueueAudio('/admin/queue/audio/{{ item.id }}', this)"
-            >▶</button>
-            {% else %}
-            <span class="muted">—</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if item.recording_path %}
-            <button
-              type="button"
-              class="button button-secondary button-small"
-              title="Play call recording"
-              aria-label="Play call recording for queued message"
-              onclick="window.__adminPlayQueueAudio('/admin/queue/recording/{{ item.id }}', this)"
-            >▶</button>
-            {% else %}
-            <span class="muted">—</span>
-            {% endif %}
-          </td>
-          <td class="mono">{% if item.call_duration_seconds %}{{ "%.2fs"|format(item.call_duration_seconds) }}{% else %}—{% endif %}</td>
-          <td class="message-preview">{{ item.body_preview or item.body or '—' }}</td>
-          <td>{{ item.last_error or '—' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
+    <div class="table-wrap" id="live-calls-table-wrap" {% if not live_calls["items"] %}style="display: none;"{% endif %}>
+      <table class="data-table live-calls-table">
+        <thead>
+          <tr>
+            <th>Channel</th>
+            <th>Caller ID</th>
+            <th>Connected Line</th>
+            <th>State</th>
+            <th>Destination</th>
+            <th>Application</th>
+            <th>Duration</th>
+            <th>Audio</th>
+            <th>Spy</th>
+          </tr>
+        </thead>
+        <tbody id="live-calls-body">
+          {% for call in live_calls["items"] %}
+          <tr>
+            <td class="mono">{{ call.channel or '—' }}</td>
+            <td class="mono">{{ call.caller_id_num or call.caller_id_name or '—' }}</td>
+            <td class="mono">{{ call.connected_line_num or call.connected_line_name or '—' }}</td>
+            <td><span class="status-badge status-{{ call.state_class or 'unknown' }}">{{ call.state_label or call.state or 'unknown' }}</span></td>
+            <td class="mono">{{ call.destination_number or call.connected_line_num or call.connected_line_name or '—' }}</td>
+            <td>{{ call.application or '—' }}</td>
+            <td class="mono">{{ call.duration or '—' }}</td>
+            <td>{% set _caller_levels = call.audio_levels_caller if call.audio_levels_caller else [] %}{% set _callee_levels = call.audio_levels_callee if call.audio_levels_callee else [] %}{% set _has_rtp = (_caller_levels|length) or (_callee_levels|length) %}<div class="audio-pulse audio-pulse-dual {% if call.answered and _has_rtp %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}" data-caller-levels="{{ _caller_levels|join(',') }}" data-callee-levels="{{ _callee_levels|join(',') }}"><svg class="audio-pulse-svg" viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><line class="audio-pulse-baseline" x1="0" y1="23" x2="80" y2="23"/><polyline class="audio-pulse-line audio-pulse-line-caller" fill="none" points="{% for i in range(11) %}{% set _cl = _caller_levels[i] if i < _caller_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _cl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/><polyline class="audio-pulse-line audio-pulse-line-callee" fill="none" points="{% for i in range(11) %}{% set _kl = _callee_levels[i] if i < _callee_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _kl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/></svg><span class="audio-pulse-label">{% if call.answered and _has_rtp %}<span class="audio-pulse-channel audio-pulse-channel-caller" title="Caller (gateway → trunk)">↑{{ "%.0f"|format((_caller_levels[-1] if _caller_levels else 0) * 100) }}%</span> <span class="audio-pulse-channel audio-pulse-channel-callee" title="Callee (trunk → gateway)">↓{{ "%.0f"|format((_callee_levels[-1] if _callee_levels else 0) * 100) }}%</span>{% elif call.answered %}awaiting RTP{% else %}—{% endif %}</span></div></td>
+            <td>{% set _spy_call_id = call.call_id or call.channel %}<button type="button" class="button button-secondary button-small spy-toggle-button" data-call-id="{{ _spy_call_id }}" data-state="idle" {% if not call.answered %}disabled aria-disabled="true" title="Spy is available once the call is answered"{% else %}onclick="window.__adminSpyToggle(this)"{% endif %}><span class="spy-button-label">Spy</span><span class="spy-button-status" aria-hidden="true"></span></button></td>
+          </tr>
+          {% endfor %}
+        </tbody>
       </table>
     </div>
-  </form>
-  <div class="empty-state" id="live-queue-empty" style="display: none;">
-    <h3>No delivery queue items yet</h3>
-    <p>Queued voice delivery jobs and their statuses will appear here once traffic is processed.</p>
-  </div>
-  <div class="pagination-row">
-    <span class="muted">Page {{ queue_pagination.page }} of {{ queue_pagination.total_pages }} · {{ queue_pagination.page_size }} per page</span>
-    <div class="page-actions">
-      {% if queue_pagination.has_previous %}
-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.previous_page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Previous</a>
-      {% endif %}
-      {% if queue_pagination.has_next %}
-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.next_page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Next</a>
-      {% endif %}
-    </div>
-  </div>
-  {% else %}
-  <div class="empty-state" id="live-queue-empty">
-    <h3>No delivery queue items yet</h3>
-    <p>Queued voice delivery jobs and their statuses will appear here once traffic is processed.</p>
-  </div>
-  {% endif %}
-</section>
-
-<section class="card inbox-queue-panel live-calls-panel">
-  <div class="card-header">
-    <div>
-      <p class="eyebrow">Live Call Tracking</p>
-      <h2>Current outbound SIP activity</h2>
-      <p class="muted">This section auto-refreshes and shows current outbound SIP runtime activity from the gateway process.</p>
-    </div>
-    <div class="page-actions">
-      <span class="pill realtime-pill realtime-pill-unknown" data-realtime-transport>—</span>
-      <span class="pill" id="live-calls-count">{{ live_calls.active_count }} active</span>
-      <span class="pill" id="live-updated-at">{{ live_calls.updated_at }}</span>
+    <div class="empty-state" id="live-calls-empty" {% if live_calls["items"] %}style="display: none;"{% endif %}>
+      <h3>No active calls right now</h3>
+      <p>Active outbound SIP sessions will appear here automatically while calls are in progress.</p>
     </div>
   </div>
 
-  <div class="table-wrap" id="live-calls-table-wrap" {% if not live_calls["items"] %}style="display: none;"{% endif %}>
-    <table class="data-table live-calls-table">
-      <thead>
-        <tr>
-          <th>Channel</th>
-          <th>Caller ID</th>
-          <th>Connected Line</th>
-          <th>State</th>
-          <th>Destination</th>
-          <th>Application</th>
-          <th>Duration</th>
-          <th>Audio</th>
-          <th>Spy</th>
-        </tr>
-      </thead>
-      <tbody id="live-calls-body">
-        {% for call in live_calls["items"] %}
-        <tr>
-          <td class="mono">{{ call.channel or '—' }}</td>
-          <td class="mono">{{ call.caller_id_num or call.caller_id_name or '—' }}</td>
-          <td class="mono">{{ call.connected_line_num or call.connected_line_name or '—' }}</td>
-          <td><span class="status-badge status-{{ call.state_class or 'unknown' }}">{{ call.state_label or call.state or 'unknown' }}</span></td>
-          <td class="mono">{{ call.destination_number or call.connected_line_num or call.connected_line_name or '—' }}</td>
-          <td>{{ call.application or '—' }}</td>
-          <td class="mono">{{ call.duration or '—' }}</td>
-          <td>{% set _caller_levels = call.audio_levels_caller if call.audio_levels_caller else [] %}{% set _callee_levels = call.audio_levels_callee if call.audio_levels_callee else [] %}{% set _has_rtp = (_caller_levels|length) or (_callee_levels|length) %}<div class="audio-pulse audio-pulse-dual {% if call.answered and _has_rtp %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}" data-caller-levels="{{ _caller_levels|join(',') }}" data-callee-levels="{{ _callee_levels|join(',') }}"><svg class="audio-pulse-svg" viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><line class="audio-pulse-baseline" x1="0" y1="23" x2="80" y2="23"/><polyline class="audio-pulse-line audio-pulse-line-caller" fill="none" points="{% for i in range(11) %}{% set _cl = _caller_levels[i] if i < _caller_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _cl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/><polyline class="audio-pulse-line audio-pulse-line-callee" fill="none" points="{% for i in range(11) %}{% set _kl = _callee_levels[i] if i < _callee_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _kl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/></svg><span class="audio-pulse-label">{% if call.answered and _has_rtp %}<span class="audio-pulse-channel audio-pulse-channel-caller" title="Caller (gateway → trunk)">↑{{ "%.0f"|format((_caller_levels[-1] if _caller_levels else 0) * 100) }}%</span> <span class="audio-pulse-channel audio-pulse-channel-callee" title="Callee (trunk → gateway)">↓{{ "%.0f"|format((_callee_levels[-1] if _callee_levels else 0) * 100) }}%</span>{% elif call.answered %}awaiting RTP{% else %}—{% endif %}</span></div></td>
-          <td>{% set _spy_call_id = call.call_id or call.channel %}<button type="button" class="button button-secondary button-small spy-toggle-button" data-call-id="{{ _spy_call_id }}" data-state="idle" {% if not call.answered %}disabled aria-disabled="true" title="Spy is available once the call is answered"{% else %}onclick="window.__adminSpyToggle(this)"{% endif %}><span class="spy-button-label">Spy</span><span class="spy-button-status" aria-hidden="true"></span></button></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  <div class="empty-state" id="live-calls-empty" {% if live_calls["items"] %}style="display: none;"{% endif %}>
-    <h3>No active calls right now</h3>
-    <p>Active outbound SIP sessions will appear here automatically while calls are in progress.</p>
-  </div>
-</section>
-
-<section class="card inbox-queue-panel">
-  <div class="card-header">
-    <div>
-      <p class="eyebrow">SMS Inbox</p>
-      <h2>Received messages from SMPP and webhook sources</h2>
-      <p class="muted">Review inbound messages alongside delivery reports from the same admin reports page.</p>
-    </div>
-    <div class="page-actions">
-      <span class="pill realtime-pill realtime-pill-unknown" data-realtime-transport>—</span>
-      <span class="pill">{{ sms_inbox_summary.unread_label or 'Recent' }}</span>
-    </div>
-  </div>
-
-  {% if recent_inbox_messages %}
-  <form method="post" action="/admin/inbox/batch-delete" class="admin-form">
-    <div class="table-filter-shell">
-      <button type="button" class="table-filter-button" data-table-filter-toggle="inbox-table-filters">Inbox filters</button>
-      <div class="dockable-filter-panel" id="inbox-table-filters" data-table-filter-panel>
-        <div class="muted">Filters for this table remain docked here and hidden by default.</div>
-      </div>
-    </div>
+  <!-- Tab: Delivery Reports -->
+  <div class="report-tab-panel" id="tab-delivery-reports" role="tabpanel">
+    {% if recent_reports %}
     <div class="table-wrap">
-    <table class="data-table inbox-table" id="inbox-table">
-      <thead>
-        <tr>
-          <th><label class="table-select-all"><input type="checkbox" class="js-select-all" data-select-all="inbox-table" data-select-all-target="inbox-table" /> Select all</label></th>
-          <th>Received</th>
-          <th>From</th>
-          <th>Destination</th>
-          <th>Provider</th>
-          <th>Status</th>
-          <th>Source</th>
-          <th>Message</th>
-          <th>Last Error</th>
-        </tr>
-      </thead>
-      <tbody id="live-inbox-body">
-        {% for message in recent_inbox_messages %}
-        <tr>
-          <td><input type="checkbox" name="item_ids" value="{{ message.id }}" /></td>
-          <td class="mono">{{ message.created_at }}</td>
-          <td class="mono">{{ message.phone_number or '—' }}</td>
-          <td class="mono">{{ message.destination or '—' }}</td>
-          <td>{{ message.provider or '—' }}</td>
-          <td>
-            <span class="status-badge status-{{ message.status_class }}">{{ message.status }}</span>
-          </td>
-          <td>{{ message.source or '—' }}</td>
-          <td class="message-preview">{{ message.body_preview or message.body or '—' }}</td>
-          <td>{{ message.last_error or '—' }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
+      <table class="data-table report-table">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Phone Number</th>
+            <th>Status</th>
+            <th>Destination</th>
+            <th>Message Excerpt</th>
+            <th>SIP/Call Reference</th>
+            <th>Call Duration</th>
+            <th>Recording</th>
+            <th>Provider</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody id="live-reports-body">
+          {% for report in recent_reports %}
+          <tr>
+            <td class="mono">{{ report.timestamp }}</td>
+            <td class="mono">{{ report.phone_number }}</td>
+            <td>
+              {% set report_reason = report.error or 'No delivery reason recorded' %}
+              {% if report.status == 'error' %}
+              <span class="status-badge status-danger" title="{{ report_reason }}">failed</span>
+              {% else %}
+              <span class="status-badge status-{{ report.status_class }}">{{ report.status }}</span>
+              {% endif %}
+            </td>
+            <td class="mono">{{ report.destination }}</td>
+            <td>{{ report.message_excerpt }}</td>
+            <td class="mono">{{ report.sip_call_id or report.sip_account_id or report.ami_action_id or '—' }}</td>
+            <td class="mono">{% if report.call_duration_seconds %}{{ "%.2fs"|format(report.call_duration_seconds) }}{% else %}—{% endif %}</td>
+            <td>
+              {% if report.recording_path %}
+              <button
+                type="button"
+                class="button button-secondary button-small"
+                title="Play call recording"
+                aria-label="Play call recording for delivery report"
+                onclick="window.__adminPlayQueueAudio('/admin/reports/recording?path={{ report.recording_path|urlencode }}', this)"
+              >▶</button>
+              {% else %}
+              <span class="muted">—</span>
+              {% endif %}
+            </td>
+            <td>{{ report.source }}</td>
+            <td>{{ report.error or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
       </table>
     </div>
-    <div class="form-actions">
-      <button type="submit" class="button button-danger button-small">Delete Selected Inbox Messages</button>
-  </div>
-  </form>
-  <div class="pagination-row">
-    <span class="muted">Page {{ inbox_pagination.page }} of {{ inbox_pagination.total_pages }} · {{ inbox_pagination.page_size }} per page</span>
-    <div class="page-actions">
-      {% if inbox_pagination.has_previous %}
-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.previous_page }}&inbox_page_size={{ inbox_pagination.page_size }}">Previous</a>
-      {% endif %}
-      {% if inbox_pagination.has_next %}
-      <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.next_page }}&inbox_page_size={{ inbox_pagination.page_size }}">Next</a>
-      {% endif %}
+    {% else %}
+    <div class="empty-state">
+      <h3>No delivery reports yet</h3>
+      <p>Reports will appear here once SMS messages are processed and calls are initiated.</p>
     </div>
+    {% endif %}
   </div>
-  {% else %}
-  <div class="empty-state">
-    <h3>No inbox messages yet</h3>
-    <p>Inbound SMPP and webhook messages will appear here once they are recorded.</p>
+
+  <!-- Tab: Delivery Queue -->
+  <div class="report-tab-panel" id="tab-queue" role="tabpanel">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem">
+      <div>
+        <p class="eyebrow">Delivery Queue</p>
+        <h3 style="margin:0">Outbound voice delivery queue and status</h3>
+        <p class="muted">Track queued jobs, retry state, SIP call references, and current delivery outcome from the reports page.</p>
+      </div>
+      <div class="page-actions">
+        <span class="pill">{{ queue_summary.active_label or 'Monitoring' }}</span>
+      </div>
+    </div>
+
+    <div class="status-grid report-summary-grid" id="live-queue-summary">
+      <div class="stat-card">
+        <span class="stat-label">Queue Total</span>
+        <strong id="live-queue-total">{{ queue_summary.total }}</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Active</span>
+        <strong id="live-queue-active">{{ queue_summary.active_label or '0 active' }}</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Inbox Total</span>
+        <strong id="live-inbox-total">{{ sms_inbox_summary.total }}</strong>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Latest Inbox</span>
+        <strong class="mono" id="live-inbox-latest">{{ sms_inbox_summary.latest_timestamp or '—' }}</strong>
+      </div>
+    </div>
+
+    <div class="dockable-filter-grid">
+      <div class="table-filter-shell">
+        <button type="button" class="table-filter-button" data-table-filter-toggle="queue-filters">Queue filters</button>
+        <div class="dockable-filter-panel" id="queue-filters" data-table-filter-panel>
+          <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
+            <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
+            <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
+            <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
+            <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
+            <input type="hidden" name="inbox_page_size" value="{{ inbox_pagination.page_size }}" />
+            <label class="field-group">
+              <span class="field-label">Queue Search</span>
+              <input type="text" name="search" value="{{ queue_filters.search }}" placeholder="Search queue items" />
+            </label>
+            <label class="field-group">
+              <span class="field-label">Status</span>
+              <input type="text" name="status" value="{{ queue_filters.status }}" placeholder="queued, delivered, failed" />
+            </label>
+            <label class="field-group">
+              <span class="field-label">Provider</span>
+              <input type="text" name="provider" value="{{ queue_filters.provider }}" placeholder="twilio, generic, admin-test" />
+            </label>
+            <label class="field-group">
+              <span class="field-label">Queue Page Size</span>
+              <select name="queue_page_size">
+                <option value="10" {% if queue_pagination.page_size == 10 %}selected{% endif %}>10</option>
+                <option value="20" {% if queue_pagination.page_size == 20 %}selected{% endif %}>20</option>
+                <option value="50" {% if queue_pagination.page_size == 50 %}selected{% endif %}>50</option>
+                <option value="100" {% if queue_pagination.page_size == 100 %}selected{% endif %}>100</option>
+              </select>
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="button button-secondary">Apply Queue Filters</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="table-filter-shell">
+        <button type="button" class="table-filter-button" data-table-filter-toggle="inbox-filters">Inbox filters</button>
+        <div class="dockable-filter-panel" id="inbox-filters" data-table-filter-panel>
+          <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
+            <input type="hidden" name="search" value="{{ queue_filters.search }}" />
+            <input type="hidden" name="status" value="{{ queue_filters.status }}" />
+            <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
+            <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
+            <input type="hidden" name="queue_page_size" value="{{ queue_pagination.page_size }}" />
+            <label class="field-group">
+              <span class="field-label">Inbox Search</span>
+              <input type="text" name="inbox_search" value="{{ inbox_filters.search }}" placeholder="Search inbox messages" />
+            </label>
+            <label class="field-group">
+              <span class="field-label">Inbox Status</span>
+              <input type="text" name="inbox_status" value="{{ inbox_filters.status }}" placeholder="received" />
+            </label>
+            <label class="field-group">
+              <span class="field-label">Inbox Provider</span>
+              <input type="text" name="inbox_provider" value="{{ inbox_filters.provider }}" placeholder="smpp, twilio, generic" />
+            </label>
+            <label class="field-group">
+              <span class="field-label">Inbox Page Size</span>
+              <select name="inbox_page_size">
+                <option value="10" {% if inbox_pagination.page_size == 10 %}selected{% endif %}>10</option>
+                <option value="20" {% if inbox_pagination.page_size == 20 %}selected{% endif %}>20</option>
+                <option value="50" {% if inbox_pagination.page_size == 50 %}selected{% endif %}>50</option>
+                <option value="100" {% if inbox_pagination.page_size == 100 %}selected{% endif %}>100</option>
+              </select>
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="button button-secondary">Apply Inbox Filters</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    {% if recent_queue_items %}
+    <form method="post" action="/admin/queue/batch-delete" class="admin-form" id="live-queue-form">
+      <div class="form-actions">
+        <button type="submit" class="button button-danger button-small">Delete Selected Queue Items</button>
+        <button type="submit" formaction="/admin/queue/batch-status" class="button button-secondary button-small">Mark Selected as Processed</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table queue-table" id="live-queue-table">
+        <thead>
+          <tr>
+            <th><label class="table-select-all"><input type="checkbox" class="js-select-all" data-select-all="live-queue-table" data-select-all-target="live-queue-table" /> Select all</label></th>
+            <th>Created</th>
+            <th>Phone</th>
+            <th>Provider</th>
+            <th>Status</th>
+            <th>Attempts</th>
+            <th>Retry Interval</th>
+            <th>Next Attempt</th>
+            <th>SIP/Call Reference</th>
+            <th>Audio</th>
+            <th>Recording</th>
+            <th>Call Duration</th>
+            <th>Message</th>
+            <th>Last Error</th>
+          </tr>
+        </thead>
+        <tbody id="live-queue-body">
+          {% for item in recent_queue_items %}
+          <tr>
+            <td><input type="checkbox" name="item_ids" value="{{ item.id }}" /></td>
+            <td class="mono">{{ item.created_at }}</td>
+            <td class="mono">{{ item.phone_number or '—' }}</td>
+            <td>{{ item.provider or '—' }}</td>
+            <td>
+              <span class="status-badge status-{{ item.status_class }}">{{ item.status }}</span>
+            </td>
+            <td class="mono">{{ item.attempts }}/{{ item.max_attempts }}</td>
+            <td class="mono">{{ item.retry_interval_seconds }}s</td>
+            <td class="mono">{{ item.next_attempt_at or '—' }}</td>
+            <td class="mono">{{ item.sip_call_id or item.sip_account_id or item.ami_action_id or '—' }}</td>
+            <td>
+              {% if item.audio_path %}
+              <button
+                type="button"
+                class="button button-secondary button-small"
+                title="Play generated audio"
+                aria-label="Play generated audio for queued message"
+                onclick="window.__adminPlayQueueAudio('/admin/queue/audio/{{ item.id }}', this)"
+              >▶</button>
+              {% else %}
+              <span class="muted">—</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if item.recording_path %}
+              <button
+                type="button"
+                class="button button-secondary button-small"
+                title="Play call recording"
+                aria-label="Play call recording for queued message"
+                onclick="window.__adminPlayQueueAudio('/admin/queue/recording/{{ item.id }}', this)"
+              >▶</button>
+              {% else %}
+              <span class="muted">—</span>
+              {% endif %}
+            </td>
+            <td class="mono">{% if item.call_duration_seconds %}{{ "%.2fs"|format(item.call_duration_seconds) }}{% else %}—{% endif %}</td>
+            <td class="message-preview">{{ item.body_preview or item.body or '—' }}</td>
+            <td>{{ item.last_error or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        </table>
+      </div>
+    </form>
+    <div class="empty-state" id="live-queue-empty" style="display: none;">
+      <h3>No delivery queue items yet</h3>
+      <p>Queued voice delivery jobs and their statuses will appear here once traffic is processed.</p>
+    </div>
+    <div class="pagination-row">
+      <span class="muted">Page {{ queue_pagination.page }} of {{ queue_pagination.total_pages }} · {{ queue_pagination.page_size }} per page</span>
+      <div class="page-actions">
+        {% if queue_pagination.has_previous %}
+        <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.previous_page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Previous</a>
+        {% endif %}
+        {% if queue_pagination.has_next %}
+        <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.next_page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Next</a>
+        {% endif %}
+      </div>
+    </div>
+    {% else %}
+    <div class="empty-state" id="live-queue-empty">
+      <h3>No delivery queue items yet</h3>
+      <p>Queued voice delivery jobs and their statuses will appear here once traffic is processed.</p>
+    </div>
+    {% endif %}
   </div>
-  {% endif %}
+
+  <!-- Tab: SMS Inbox -->
+  <div class="report-tab-panel" id="tab-inbox" role="tabpanel">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem">
+      <div>
+        <p class="eyebrow">SMS Inbox</p>
+        <h3 style="margin:0">Received messages from SMPP and webhook sources</h3>
+        <p class="muted">Review inbound messages alongside delivery reports from the same admin reports page.</p>
+      </div>
+      <div class="page-actions">
+        <span class="pill realtime-pill realtime-pill-unknown" data-realtime-transport>—</span>
+        <span class="pill">{{ sms_inbox_summary.unread_label or 'Recent' }}</span>
+      </div>
+    </div>
+    {% if recent_inbox_messages %}
+    <form method="post" action="/admin/inbox/batch-delete" class="admin-form">
+      <div class="table-filter-shell">
+        <button type="button" class="table-filter-button" data-table-filter-toggle="inbox-table-filters">Inbox filters</button>
+        <div class="dockable-filter-panel" id="inbox-table-filters" data-table-filter-panel>
+          <div class="muted">Filters for this table remain docked here and hidden by default.</div>
+        </div>
+      </div>
+      <div class="table-wrap">
+      <table class="data-table inbox-table" id="inbox-table">
+        <thead>
+          <tr>
+            <th><label class="table-select-all"><input type="checkbox" class="js-select-all" data-select-all="inbox-table" data-select-all-target="inbox-table" /> Select all</label></th>
+            <th>Received</th>
+            <th>From</th>
+            <th>Destination</th>
+            <th>Provider</th>
+            <th>Status</th>
+            <th>Source</th>
+            <th>Message</th>
+            <th>Last Error</th>
+          </tr>
+        </thead>
+        <tbody id="live-inbox-body">
+          {% for message in recent_inbox_messages %}
+          <tr>
+            <td><input type="checkbox" name="item_ids" value="{{ message.id }}" /></td>
+            <td class="mono">{{ message.created_at }}</td>
+            <td class="mono">{{ message.phone_number or '—' }}</td>
+            <td class="mono">{{ message.destination or '—' }}</td>
+            <td>{{ message.provider or '—' }}</td>
+            <td>
+              <span class="status-badge status-{{ message.status_class }}">{{ message.status }}</span>
+            </td>
+            <td>{{ message.source or '—' }}</td>
+            <td class="message-preview">{{ message.body_preview or message.body or '—' }}</td>
+            <td>{{ message.last_error or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+        </table>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="button button-danger button-small">Delete Selected Inbox Messages</button>
+      </div>
+    </form>
+    <div class="pagination-row">
+      <span class="muted">Page {{ inbox_pagination.page }} of {{ inbox_pagination.total_pages }} · {{ inbox_pagination.page_size }} per page</span>
+      <div class="page-actions">
+        {% if inbox_pagination.has_previous %}
+        <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.previous_page }}&inbox_page_size={{ inbox_pagination.page_size }}">Previous</a>
+        {% endif %}
+        {% if inbox_pagination.has_next %}
+        <a class="button button-secondary button-small" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.next_page }}&inbox_page_size={{ inbox_pagination.page_size }}">Next</a>
+        {% endif %}
+      </div>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <h3>No inbox messages yet</h3>
+      <p>Inbound SMPP and webhook messages will appear here once they are recorded.</p>
+    </div>
+    {% endif %}
+  </div>
 </section>
+<script>
+(function () {
+  var tabs = document.querySelectorAll('.report-tab');
+  var panels = document.querySelectorAll('.report-tab-panel');
+  function activate(tab) {
+    tabs.forEach(function (t) { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
+    panels.forEach(function (p) { p.classList.remove('active'); });
+    tab.classList.add('active');
+    tab.setAttribute('aria-selected', 'true');
+    var panel = document.getElementById('tab-' + tab.dataset.tab);
+    if (panel) panel.classList.add('active');
+  }
+  tabs.forEach(function (tab) { tab.addEventListener('click', function () { activate(tab); }); });
+}());
+</script>
 {% endif %}
 
 {% if active_section == 'overview' %}
@@ -2937,14 +2972,36 @@
       const labelEl = button.querySelector(".spy-button-label");
       if (labelEl) labelEl.textContent = "Starting...";
 
-      let startInfo;
-      try {
+      const requestSpyStart = async function () {
         const resp = await fetch("/admin/spy/" + encodeURIComponent(callId) + "/start", { method: "POST" });
         if (!resp.ok) {
           const text = await resp.text().catch(() => "");
           throw new Error("Spy start failed (" + resp.status + "): " + text);
         }
-        startInfo = await resp.json();
+        return await resp.json();
+      };
+
+      const wait = function (ms) {
+        return new Promise(function (resolve) {
+          window.setTimeout(resolve, ms);
+        });
+      };
+
+      let startInfo;
+      try {
+        startInfo = await requestSpyStart();
+        const maxStartAttempts = 40;
+        let startAttempt = 0;
+        while (
+          startAttempt < maxStartAttempts &&
+          !(Number(startInfo && startInfo.sample_rate) > 0) &&
+          !!(startInfo && (startInfo.pending || startInfo.queued || startInfo.message))
+        ) {
+          startAttempt += 1;
+          if (labelEl) labelEl.textContent = "Waiting...";
+          await wait(250);
+          startInfo = await requestSpyStart();
+        }
       } catch (err) {
         button.disabled = false;
         if (labelEl) labelEl.textContent = "Spy";
@@ -2960,7 +3017,10 @@
         button.disabled = false;
         if (labelEl) labelEl.textContent = "Spy";
         button.setAttribute("data-state", "idle");
-        alert("Spy: gateway returned an invalid sample rate.");
+        alert(
+          (startInfo && (startInfo.message || startInfo.error)) ||
+          "Spy start is still waiting for answered call media to become ready."
+        );
         return;
       }
 

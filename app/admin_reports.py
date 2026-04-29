@@ -100,11 +100,21 @@ class DeliveryReport:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
+        details = self.details if isinstance(self.details, dict) else {}
         payload["timestamp"] = self.timestamp
         payload["status_class"] = _status_class(self.status)
         payload["message_excerpt"] = _clean_preview(self.message)
         payload["destination"] = self.phone_number
         payload["source"] = self.provider
+        payload["recording_path"] = _coerce_text(
+            self.recording_path or details.get("recording_path")
+        )
+        payload["call_duration_seconds"] = (
+            _coerce_float(self.call_duration_seconds)
+            or _coerce_float(details.get("call_duration_seconds"))
+            or _coerce_float(details.get("playback_seconds"))
+            or _coerce_float(details.get("audio_duration_seconds"))
+        )
         return payload
 
 
