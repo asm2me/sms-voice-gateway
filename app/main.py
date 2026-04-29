@@ -60,10 +60,12 @@ from .admin_reports import (
     get_queue_item,
     get_queue_store,
     paginate_items,
+    query_delivery_reports,
     query_inbox_messages,
     query_queue_items,
     record_delivery_report,
     record_queue_item,
+    summarize_delivery_reports,
 )
 from .cache import AudioCache, get_redis
 from .config import SIPAccount, SMPPAccount, Settings, SystemUser, get_system_user_permissions
@@ -467,21 +469,57 @@ def _build_setting_items(settings: Settings, field_specs: list[tuple[str, str]])
     return items
 
 
-def _report_context(settings: Settings) -> tuple[dict, list[dict]]:
-    collector = get_delivery_report_collector(settings)
-    summary = collector.summary()
-    recent_reports = collector.list_reports(limit=10)
-    status_counts = {item["status"]: item["count"] for item in summary.get("status_counts", [])}
+def _report_context(
+    settings: Settings,
+    *,
+    search: str = "",
+    status_filter: str = "",
+    provider_filter: str = "",
+    page: int = 1,
+    page_size: int = 10,
+) -> tuple[dict, list[dict], dict, dict]:
+    filtered_reports = query_delivery_reports(
+        settings,
+        search=search,
+        status=status_filter,
+        provider=provider_filter,
+        limit=getattr(settings, "delivery_report_max_items", 1000),
+    )
+    summary = summarize_delivery_reports(
+        settings,
+        search=search,
+        status=status_filter,
+        provider=provider_filter,
+    )
+    recent_reports = paginate_items(filtered_reports, page=page, page_size=page_size)
+    report_filters = {
+        "search": search,
+        "status": status_filter,
+        "provider": provider_filter,
+        "page": recent_reports["page"],
+        "page_size": recent_reports["page_size"],
+        "total_items": summary.get("total", len(filtered_reports)),
+        "total_pages": recent_reports["total_pages"],
+        "has_filters": bool(search.strip() or status_filter.strip() or provider_filter.strip()),
+    }
+    report_pagination = {
+        key: recent_reports[key]
+        for key in (
+            "page",
+            "page_size",
+            "total_items",
+            "total_pages",
+            "has_previous",
+            "has_next",
+            "previous_page",
+            "next_page",
+        )
+    }
     report_summary = {
         "total": summary.get("total", 0),
-        "status_counts": [
-            {"status": "success", "count": status_counts.get("success", 0)},
-            {"status": "error", "count": status_counts.get("error", 0)},
-            {"status": "pending", "count": status_counts.get("pending", 0)},
-            {"status": "unknown", "count": status_counts.get("unknown", 0)},
-        ],
+        "status_counts": summary.get("status_counts", []),
     }
-    return report_summary, recent_reports
+    return report_summary, recent_reports["items"], report_filters, report_pagination
 
 
 def _config_items(settings: Settings) -> list[dict[str, str]]:
@@ -1792,7 +1830,19 @@ def _admin_context(
     health_context: dict | None = None,
     tools_form_values: dict | None = None,
 ) -> dict:
-    report_summary, recent_reports = _report_context(settings)
+    report_search = str(request.query_params.get("report_search", "")).strip()
+    report_status = str(request.query_params.get("report_status", "")).strip()
+    report_provider = str(request.query_params.get("report_provider", "")).strip()
+    report_page = int(request.query_params.get("report_page", "1") or "1")
+    report_page_size = _coerce_page_size(request.query_params.get("report_page_size"), default=10)
+    report_summary, recent_reports, report_filters, report_pagination = _report_context(
+        settings,
+        search=report_search,
+        status_filter=report_status,
+        provider_filter=report_provider,
+        page=report_page,
+        page_size=report_page_size,
+    )
     queue_search = str(request.query_params.get("search", "")).strip()
     queue_status = str(request.query_params.get("status", "")).strip()
     queue_provider = str(request.query_params.get("provider", "")).strip()
@@ -1824,6 +1874,8 @@ def _admin_context(
         "config_snapshot": {"source": "saved settings" if success_message else "runtime settings", "items": _config_items(settings)},
         "report_summary": report_summary,
         "recent_reports": recent_reports,
+        "report_filters": report_filters,
+        "report_pagination": report_pagination,
         "sms_inbox_summary": sms_inbox_summary,
         "recent_inbox_messages": recent_inbox_messages["items"],
         "queue_summary": queue_summary,
@@ -3983,7 +4035,19 @@ async def admin_tools_test_send_status(
 
 
 def _build_reports_live_payload(settings: Settings, query_params) -> dict:
-    report_summary, recent_reports = _report_context(settings)
+    report_search = str(query_params.get("report_search", "")).strip()
+    report_status = str(query_params.get("report_status", "")).strip()
+    report_provider = str(query_params.get("report_provider", "")).strip()
+    report_page = int(query_params.get("report_page", "1") or "1")
+    report_page_size = _coerce_page_size(query_params.get("report_page_size"), default=10)
+    report_summary, recent_reports, report_filters, report_pagination = _report_context(
+        settings,
+        search=report_search,
+        status_filter=report_status,
+        provider_filter=report_provider,
+        page=report_page,
+        page_size=report_page_size,
+    )
     queue_search = str(query_params.get("search", "")).strip()
     queue_status = str(query_params.get("status", "")).strip()
     queue_provider = str(query_params.get("provider", "")).strip()
@@ -4023,6 +4087,8 @@ def _build_reports_live_payload(settings: Settings, query_params) -> dict:
     return {
         "report_summary": report_summary,
         "recent_reports": recent_reports,
+        "report_filters": report_filters,
+        "report_pagination": report_pagination,
         "sms_inbox_summary": sms_inbox_summary,
         "recent_inbox_messages": recent_inbox_messages,
         "queue_summary": queue_summary,

@@ -832,6 +832,84 @@ def export_delivery_reports_xlsx(settings: Settings) -> bytes:
     workbook.save(output)
     return output.getvalue()
 
+
+def _delivery_report_haystack(report: dict[str, Any]) -> str:
+    return " ".join(
+        [
+            _coerce_text(report.get("timestamp")),
+            _coerce_text(report.get("status")),
+            _coerce_text(report.get("status_class")),
+            _coerce_text(report.get("provider") or report.get("source")),
+            _coerce_text(report.get("phone_number")),
+            _coerce_text(report.get("destination")),
+            _coerce_text(report.get("message")),
+            _coerce_text(report.get("message_excerpt")),
+            _coerce_text(report.get("ami_action_id")),
+            _coerce_text(report.get("sip_call_id")),
+            _coerce_text(report.get("sip_account_id")),
+            _coerce_text(report.get("error")),
+            _coerce_text(report.get("recording_path")),
+        ]
+    ).lower()
+
+
+def query_delivery_reports(
+    settings: Settings,
+    *,
+    search: str = "",
+    status: str = "",
+    provider: str = "",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    search_term = search.strip().lower()
+    status_term = status.strip().lower()
+    provider_term = provider.strip().lower()
+    reports = get_delivery_report_collector(settings).list_reports(limit=getattr(settings, "delivery_report_max_items", 1000))
+    filtered: list[dict[str, Any]] = []
+    for report in reports:
+        if search_term and search_term not in _delivery_report_haystack(report):
+            continue
+        if status_term and _coerce_text(report.get("status")).lower() != status_term:
+            continue
+        report_provider = _coerce_text(report.get("provider") or report.get("source")).lower()
+        if provider_term and report_provider != provider_term:
+            continue
+        filtered.append(report)
+        if limit > 0 and len(filtered) >= limit:
+            break
+    return filtered
+
+
+def summarize_delivery_reports(
+    settings: Settings,
+    *,
+    search: str = "",
+    status: str = "",
+    provider: str = "",
+) -> dict[str, Any]:
+    reports = query_delivery_reports(
+        settings,
+        search=search,
+        status=status,
+        provider=provider,
+        limit=getattr(settings, "delivery_report_max_items", 1000),
+    )
+    counts = Counter(_coerce_text(report.get("status")).lower() or "unknown" for report in reports)
+    return {
+        "total": len(reports),
+        "status_counts": [
+            {"status": "success", "count": counts.get("success", 0)},
+            {"status": "error", "count": counts.get("error", 0)},
+            {"status": "pending", "count": counts.get("pending", 0)},
+            {"status": "unknown", "count": counts.get("unknown", 0)},
+        ],
+        "latest_timestamp": reports[0].get("timestamp") if reports else None,
+    }
+
+
+def paginate_reports(reports: list[dict[str, Any]], *, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+    return paginate_items(reports, page=page, page_size=page_size)
+
 def export_inbox_messages_csv(settings: Settings) -> bytes:
     messages = list_inbox_messages(settings, limit=getattr(settings, "delivery_report_max_items", 1000))
     buffer = io.StringIO()

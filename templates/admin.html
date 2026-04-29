@@ -316,7 +316,7 @@
     </div>
     <div class="page-actions">
       <span class="pill live-indicator"><span class="live-dot"></span> Live auto-refresh</span>
-      <a class="button button-secondary" href="/admin/reports?search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Refresh</a>
+      <a class="button button-secondary" href="/admin/reports?report_search={{ report_filters.search|urlencode }}&report_status={{ report_filters.status|urlencode }}&report_provider={{ report_filters.provider|urlencode }}&report_page={{ report_pagination.page }}&report_page_size={{ report_pagination.page_size }}&search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Refresh</a>
       <a class="button button-secondary" href="/admin/reports/export/reports.csv">Export Reports CSV</a>
       <a class="button button-secondary" href="/admin/reports/export/reports.xls">Export Reports XLS</a>
       <a class="button button-secondary" href="/admin/reports/export/inbox.csv">Export Inbox CSV</a>
@@ -417,6 +417,54 @@
 
   <!-- Tab: Delivery Reports -->
   <div class="report-tab-panel" id="tab-delivery-reports" role="tabpanel">
+    <div class="report-filter-bar" style="margin: 1rem 0 1.5rem;">
+      <div class="card-header compact-header" style="margin-bottom: 0.75rem;">
+        <div>
+          <p class="eyebrow">Filters</p>
+          <h3 class="settings-group-title">Search delivery reports</h3>
+          <p class="muted">{{ report_filters.total_items }} matching report{{ '' if report_filters.total_items == 1 else 's' }}{% if report_filters.has_filters %} · filters active{% endif %}</p>
+        </div>
+        <span class="pill">Page {{ report_pagination.page }} of {{ report_pagination.total_pages }}</span>
+      </div>
+      <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
+        <input type="hidden" name="search" value="{{ queue_filters.search }}" />
+        <input type="hidden" name="status" value="{{ queue_filters.status }}" />
+        <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
+        <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
+        <input type="hidden" name="queue_page_size" value="{{ queue_pagination.page_size }}" />
+        <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
+        <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
+        <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
+        <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
+        <input type="hidden" name="inbox_page_size" value="{{ inbox_pagination.page_size }}" />
+        <div class="form-grid">
+          <label class="field-group field-span-2">
+            <span class="field-label">Report Search</span>
+            <input type="text" name="report_search" value="{{ report_filters.search }}" placeholder="Search phone, provider, status, error" />
+          </label>
+          <label class="field-group">
+            <span class="field-label">Status</span>
+            <input type="text" name="report_status" value="{{ report_filters.status }}" placeholder="success, error, pending" />
+          </label>
+          <label class="field-group">
+            <span class="field-label">Provider</span>
+            <input type="text" name="report_provider" value="{{ report_filters.provider }}" placeholder="twilio, generic, admin-test" />
+          </label>
+          <label class="field-group">
+            <span class="field-label">Page Size</span>
+            <select name="report_page_size">
+              <option value="10" {% if report_pagination.page_size == 10 %}selected{% endif %}>10</option>
+              <option value="20" {% if report_pagination.page_size == 20 %}selected{% endif %}>20</option>
+              <option value="50" {% if report_pagination.page_size == 50 %}selected{% endif %}>50</option>
+              <option value="100" {% if report_pagination.page_size == 100 %}selected{% endif %}>100</option>
+            </select>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="button button-secondary">Apply Report Filters</button>
+        </div>
+      </form>
+    </div>
     {% if recent_reports %}
     <div class="table-wrap">
       <table class="data-table report-table">
@@ -470,6 +518,17 @@
           {% endfor %}
         </tbody>
       </table>
+    </div>
+    <div class="pagination-row">
+      <span class="muted">Page {{ report_pagination.page }} of {{ report_pagination.total_pages }} · {{ report_pagination.page_size }} per page</span>
+      <div class="page-actions">
+        {% if report_pagination.has_previous %}
+        <a class="button button-secondary button-small" href="/admin/reports?report_search={{ report_filters.search|urlencode }}&report_status={{ report_filters.status|urlencode }}&report_provider={{ report_filters.provider|urlencode }}&report_page={{ report_pagination.previous_page }}&report_page_size={{ report_pagination.page_size }}&search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Previous</a>
+        {% endif %}
+        {% if report_pagination.has_next %}
+        <a class="button button-secondary button-small" href="/admin/reports?report_search={{ report_filters.search|urlencode }}&report_status={{ report_filters.status|urlencode }}&report_provider={{ report_filters.provider|urlencode }}&report_page={{ report_pagination.next_page }}&report_page_size={{ report_pagination.page_size }}&search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Next</a>
+        {% endif %}
+      </div>
     </div>
     {% else %}
     <div class="empty-state">

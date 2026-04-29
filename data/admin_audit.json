@@ -8,5 +8,15 @@
     "status": "success",
     "target": "/admin/reports",
     "timestamp": "2026-04-27T19:09:43.635267+00:00"
+  },
+  {
+    "action": "admin.view",
+    "actor": "admin",
+    "detail": "Viewed the 'reports' admin section.",
+    "metadata": {},
+    "section": "reports",
+    "status": "success",
+    "target": "/admin/reports",
+    "timestamp": "2026-04-29T21:53:17.048438+00:00"
   }
 ]
