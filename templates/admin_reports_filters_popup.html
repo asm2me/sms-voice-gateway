@@ -69,8 +69,8 @@
       <p class="muted">{{ popup_description }}</p>
     </div>
     <div class="page-actions">
-      <span class="pill">Popup window</span>
-      <button type="button" class="button button-secondary" onclick="window.__closeFilterPopup()">Close</button>
+      <span class="pill">Form page</span>
+      <a class="button button-secondary" href="{{ popup_close_url }}">Close</a>
     </div>
   </div>
 
@@ -127,7 +127,7 @@
   </div>
 
   <div class="filter-popup-help">
-    <p><strong>How this works:</strong> apply the filters here and the opener window will be updated to the matching reports page automatically.</p>
+    <p><strong>How this works:</strong> apply the filters here and you’ll return to the main reports page in the same tab with the selected filters applied.</p>
   </div>
 
   {% if popup_kind == 'reports' %}
@@ -264,45 +264,11 @@
 
 <script>
 (function () {
-  function buildTargetUrl(form) {
-    const target = new URL(form.action, window.location.origin);
-    const data = new FormData(form);
-    data.forEach(function (value, key) {
-      const text = String(value == null ? "" : value).trim();
-      if (text) {
-        target.searchParams.set(key, text);
-      } else {
-        target.searchParams.delete(key);
-      }
-    });
-    return target.toString();
-  }
-
   window.__closeFilterPopup =
     window.__closeFilterPopup ||
     function () {
-      try {
-        window.close();
-      } catch (_) {}
-      if (!window.closed && window.opener && !window.opener.closed) {
-        window.opener.focus();
-      }
+      window.location.href = "{{ popup_close_url }}";
     };
-
-  document.querySelectorAll("[data-filter-popup-form]").forEach(function (form) {
-    form.addEventListener("submit", function (event) {
-      event.preventDefault();
-      const targetUrl = buildTargetUrl(form);
-      try {
-        if (window.opener && !window.opener.closed) {
-          window.opener.location.href = targetUrl;
-          window.close();
-          return;
-        }
-      } catch (_) {}
-      window.location.href = targetUrl;
-    });
-  });
 }());
 </script>
 {% endblock %}

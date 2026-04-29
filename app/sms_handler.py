@@ -480,6 +480,8 @@ class SMSGateway:
                     account_id=sip_account.id,
                     display_name=sip_account.display_name or sip_account.label,
                     caller_id=sip_account.from_user or self.settings.outbound_caller_id,
+                    smpp_message=sms.body,
+                    redial_count=max(0, attempt - 1),
                     timeout_seconds=self.settings.call_answer_timeout,
                     playback_repeats=max(1, int(getattr(self.settings, "playback_repeats", 1) or 1)),
                     playback_pause_ms=max(0, int(getattr(self.settings, "playback_pause_ms", 0) or 0)),

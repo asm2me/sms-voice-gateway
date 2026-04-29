@@ -31,6 +31,7 @@ from pathlib import Path
 from threading import Event, Thread
 import threading
 from typing import Annotated, Any, Optional
+from urllib.parse import urlencode
 
 import base64
 import binascii
@@ -696,6 +697,8 @@ def _build_live_call_context(settings: Settings) -> dict:
                     "state_class": status_meta["class"],
                     "extension": extension,
                     "destination_number": destination_number,
+                    "smpp_message": str(item.get("smpp_message", "") or ""),
+                    "redial_count": int(item.get("redial_count", 0) or 0),
                     "application": "direct-sip-ua",
                     "duration": str(duration_seconds),
                     "call_id": str(item.get("call_id", "")).strip(),
@@ -724,6 +727,8 @@ def _build_live_call_context(settings: Settings) -> dict:
                         "state_label": status_meta["label"],
                         "state_class": status_meta["class"],
                         "extension": "",
+                        "smpp_message": "",
+                        "redial_count": 0,
                         "application": "direct-sip-ua",
                         "duration": "",
                     }
@@ -742,6 +747,8 @@ def _build_live_call_context(settings: Settings) -> dict:
                     "state_label": status_meta["label"],
                     "state_class": status_meta["class"],
                     "extension": "",
+                    "smpp_message": "",
+                    "redial_count": 0,
                     "application": "direct-sip-ua",
                     "duration": "",
                 }
@@ -2018,26 +2025,32 @@ def _report_filter_popup_meta(kind: str) -> dict[str, str]:
         "reports": {
             "popup_title": "Report Filters",
             "popup_eyebrow": "Delivery Reports",
-            "popup_description": "Open and apply delivery report filters in a dedicated popup window.",
+            "popup_description": "Open and apply delivery report filters in a dedicated form page.",
             "popup_submit_label": "Apply Report Filters",
             "popup_button_label": "Open report filters",
         },
         "queue": {
             "popup_title": "Queue Filters",
             "popup_eyebrow": "Delivery Queue",
-            "popup_description": "Open and apply delivery queue filters in a dedicated popup window.",
+            "popup_description": "Open and apply delivery queue filters in a dedicated form page.",
             "popup_submit_label": "Apply Queue Filters",
             "popup_button_label": "Open queue filters",
         },
         "inbox": {
             "popup_title": "Inbox Filters",
             "popup_eyebrow": "SMS Inbox",
-            "popup_description": "Open and apply SMS inbox filters in a dedicated popup window.",
+            "popup_description": "Open and apply SMS inbox filters in a dedicated form page.",
             "popup_submit_label": "Apply Inbox Filters",
             "popup_button_label": "Open inbox filters",
         },
     }
     return {"popup_kind": normalized_kind, **metadata[normalized_kind]}
+
+
+def _build_reports_filters_return_url(request: Request) -> str:
+    filtered_items = [(key, value) for key, value in request.query_params.multi_items() if key != "kind"]
+    base_url = str(request.base_url).rstrip("/")
+    return base_url + "/admin/reports" + ("?" + urlencode(filtered_items, doseq=True) if filtered_items else "")
 
 
 @app.get("/admin/reports/filters", response_class=HTMLResponse)
@@ -2049,6 +2062,7 @@ async def admin_reports_filters_popup(
 ):
     context = _admin_context(request, settings, active_section="reports")
     context.update(_report_filter_popup_meta(kind))
+    context["popup_close_url"] = _build_reports_filters_return_url(request)
     return templates.TemplateResponse(request, "admin_reports_filters_popup.html", context)
 
 

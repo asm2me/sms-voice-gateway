@@ -140,6 +140,8 @@ class SipCallRequest:
     account_id: str = ""
     display_name: str = ""
     caller_id: str = ""
+    smpp_message: str = ""
+    redial_count: int = 0
     timeout_seconds: int = 30
     playback_repeats: int = 1
     playback_pause_ms: int = 0
@@ -939,6 +941,8 @@ class PJSipUASession:
                 account_id=str(request.get("account_id", "")),
                 display_name=str(request.get("display_name", "")),
                 caller_id=str(request.get("caller_id", "")),
+                smpp_message=str(request.get("smpp_message", "")),
+                redial_count=int(request.get("redial_count", 0) or 0),
                 timeout_seconds=int(request.get("timeout_seconds", 30) or 30),
                 playback_repeats=int(request.get("playback_repeats", 1) or 1),
                 playback_pause_ms=int(request.get("playback_pause_ms", 0) or 0),
@@ -1041,6 +1045,8 @@ class PJSipUASession:
                         "state_label": "dialing",
                         "last_status_code": 0,
                         "destination_number": destination,
+                        "smpp_message": str(request.smpp_message or ""),
+                        "redial_count": max(0, int(request.redial_count or 0)),
                         "answered": False,
                         "updated_at": now,
                         "connected_at": None,

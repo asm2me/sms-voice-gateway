@@ -19,7 +19,6 @@
   <a href="/admin" class="{% if active_section == 'overview' %}active{% endif %}">Overview</a>
   <a href="/admin/health" class="{% if active_section == 'health' %}active{% endif %}">Health</a>
   <a href="/admin/config" class="{% if active_section == 'config' %}active{% endif %}">Configuration</a>
-  <a href="/admin/reports" class="{% if active_section == 'reports' %}active{% endif %}">Delivery Reports</a>
   <a href="/admin/tools" class="{% if active_section == 'tools' %}active{% endif %}">Tools</a>
 </nav>
 
@@ -358,7 +357,6 @@
 
   <nav class="report-tabs" role="tablist" aria-label="Report sections">
     <button class="report-tab active" role="tab" data-tab="live-calls" aria-selected="true" aria-controls="tab-live-calls">Live Calls</button>
-    <button class="report-tab" role="tab" data-tab="delivery-reports" aria-selected="false" aria-controls="tab-delivery-reports">Delivery Reports</button>
     <button class="report-tab" role="tab" data-tab="queue" aria-selected="false" aria-controls="tab-queue">Delivery Queue</button>
     <button class="report-tab" role="tab" data-tab="inbox" aria-selected="false" aria-controls="tab-inbox">SMS Inbox</button>
   </nav>
@@ -386,6 +384,8 @@
             <th>Connected Line</th>
             <th>State</th>
             <th>Destination</th>
+            <th>SMPP Message</th>
+            <th>Redial Count</th>
             <th>Application</th>
             <th>Duration</th>
             <th>Audio</th>
@@ -400,6 +400,8 @@
             <td class="mono">{{ call.connected_line_num or call.connected_line_name or '—' }}</td>
             <td><span class="status-badge status-{{ call.state_class or 'unknown' }}">{{ call.state_label or call.state or 'unknown' }}</span></td>
             <td class="mono">{{ call.destination_number or call.connected_line_num or call.connected_line_name or '—' }}</td>
+            <td class="message-preview">{{ call.smpp_message or '—' }}</td>
+            <td class="mono">{{ call.redial_count if call.redial_count is not none else 0 }}</td>
             <td>{{ call.application or '—' }}</td>
             <td class="mono">{{ call.duration or '—' }}</td>
             <td>{% set _caller_levels = call.audio_levels_caller if call.audio_levels_caller else [] %}{% set _callee_levels = call.audio_levels_callee if call.audio_levels_callee else [] %}{% set _has_rtp = (_caller_levels|length) or (_callee_levels|length) %}<div class="audio-pulse audio-pulse-dual {% if call.answered and _has_rtp %}is-active{% endif %}" data-call-id="{{ call.call_id or call.channel }}" data-answered="{{ '1' if call.answered else '0' }}" data-caller-levels="{{ _caller_levels|join(',') }}" data-callee-levels="{{ _callee_levels|join(',') }}"><svg class="audio-pulse-svg" viewBox="0 0 80 24" preserveAspectRatio="none" aria-hidden="true"><line class="audio-pulse-baseline" x1="0" y1="23" x2="80" y2="23"/><polyline class="audio-pulse-line audio-pulse-line-caller" fill="none" points="{% for i in range(11) %}{% set _cl = _caller_levels[i] if i < _caller_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _cl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/><polyline class="audio-pulse-line audio-pulse-line-callee" fill="none" points="{% for i in range(11) %}{% set _kl = _callee_levels[i] if i < _callee_levels|length else 0 %}{{ (2 + i * 7.6)|round(2) }},{{ (23 - _kl * 22)|round(2) }}{% if not loop.last %} {% endif %}{% endfor %}"/></svg><span class="audio-pulse-label">{% if call.answered and _has_rtp %}<span class="audio-pulse-channel audio-pulse-channel-caller" title="Caller (gateway → trunk)">↑{{ "%.0f"|format((_caller_levels[-1] if _caller_levels else 0) * 100) }}%</span> <span class="audio-pulse-channel audio-pulse-channel-callee" title="Callee (trunk → gateway)">↓{{ "%.0f"|format((_callee_levels[-1] if _callee_levels else 0) * 100) }}%</span>{% elif call.answered %}awaiting RTP{% else %}—{% endif %}</span></div></td>
@@ -415,96 +417,6 @@
     </div>
   </div>
 
-  <!-- Tab: Delivery Reports -->
-  <div class="report-tab-panel" id="tab-delivery-reports" role="tabpanel">
-    <div class="report-filter-bar" style="margin: 1rem 0 1.5rem;">
-      <div class="card-header compact-header" style="margin-bottom: 0.75rem;">
-        <div>
-          <p class="eyebrow">Filters</p>
-          <h3 class="settings-group-title">Search delivery reports</h3>
-          <p class="muted">{{ report_filters.total_items }} matching report{{ '' if report_filters.total_items == 1 else 's' }}{% if report_filters.has_filters %} · filters active{% endif %}</p>
-        </div>
-        <div class="page-actions">
-          <span class="pill">Page {{ report_pagination.page }} of {{ report_pagination.total_pages }}</span>
-          <button type="button" class="button button-secondary js-open-filter-popup" data-filter-popup-kind="reports">Open report filters</button>
-        </div>
-      </div>
-      <div class="notice notice-warning" style="margin-bottom: 0;">
-        <strong>Filters open in a popup window.</strong> Adjust delivery report filters there, then apply them to refresh this page.
-      </div>
-    </div>
-    {% if recent_reports %}
-    <div class="table-wrap">
-      <table class="data-table report-table">
-        <thead>
-          <tr>
-            <th>Timestamp</th>
-            <th>Phone Number</th>
-            <th>Status</th>
-            <th>Destination</th>
-            <th>Message Excerpt</th>
-            <th>SIP/Call Reference</th>
-            <th>Call Duration</th>
-            <th>Recording</th>
-            <th>Provider</th>
-            <th>Error</th>
-          </tr>
-        </thead>
-        <tbody id="live-reports-body">
-          {% for report in recent_reports %}
-          <tr>
-            <td class="mono">{{ report.timestamp }}</td>
-            <td class="mono">{{ report.phone_number }}</td>
-            <td>
-              {% set report_reason = report.error or 'No delivery reason recorded' %}
-              {% if report.status == 'error' %}
-              <span class="status-badge status-danger" title="{{ report_reason }}">failed</span>
-              {% else %}
-              <span class="status-badge status-{{ report.status_class }}">{{ report.status }}</span>
-              {% endif %}
-            </td>
-            <td class="mono">{{ report.destination }}</td>
-            <td>{{ report.message_excerpt }}</td>
-            <td class="mono">{{ report.sip_call_id or report.sip_account_id or report.ami_action_id or '—' }}</td>
-            <td class="mono">{% if report.call_duration_seconds %}{{ "%.2fs"|format(report.call_duration_seconds) }}{% else %}—{% endif %}</td>
-            <td>
-              {% if report.recording_path %}
-              <button
-                type="button"
-                class="button button-secondary button-small"
-                title="Play call recording"
-                aria-label="Play call recording for delivery report"
-                onclick="window.__adminPlayQueueAudio('/admin/reports/recording?path={{ report.recording_path|urlencode }}', this)"
-              >▶</button>
-              {% else %}
-              <span class="muted">—</span>
-              {% endif %}
-            </td>
-            <td>{{ report.source }}</td>
-            <td>{{ report.error or '—' }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    <div class="pagination-row">
-      <span class="muted">Page {{ report_pagination.page }} of {{ report_pagination.total_pages }} · {{ report_pagination.page_size }} per page</span>
-      <div class="page-actions">
-        {% if report_pagination.has_previous %}
-        <a class="button button-secondary button-small" href="/admin/reports?report_search={{ report_filters.search|urlencode }}&report_status={{ report_filters.status|urlencode }}&report_provider={{ report_filters.provider|urlencode }}&report_page={{ report_pagination.previous_page }}&report_page_size={{ report_pagination.page_size }}&search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Previous</a>
-        {% endif %}
-        {% if report_pagination.has_next %}
-        <a class="button button-secondary button-small" href="/admin/reports?report_search={{ report_filters.search|urlencode }}&report_status={{ report_filters.status|urlencode }}&report_provider={{ report_filters.provider|urlencode }}&report_page={{ report_pagination.next_page }}&report_page_size={{ report_pagination.page_size }}&search={{ queue_filters.search|urlencode }}&status={{ queue_filters.status|urlencode }}&provider={{ queue_filters.provider|urlencode }}&queue_page={{ queue_pagination.page }}&queue_page_size={{ queue_pagination.page_size }}&inbox_search={{ inbox_filters.search|urlencode }}&inbox_status={{ inbox_filters.status|urlencode }}&inbox_provider={{ inbox_filters.provider|urlencode }}&inbox_page={{ inbox_pagination.page }}&inbox_page_size={{ inbox_pagination.page_size }}">Next</a>
-        {% endif %}
-      </div>
-    </div>
-    {% else %}
-    <div class="empty-state">
-      <h3>No delivery reports yet</h3>
-      <p>Reports will appear here once SMS messages are processed and calls are initiated.</p>
-    </div>
-    {% endif %}
-  </div>
 
   <!-- Tab: Delivery Queue -->
   <div class="report-tab-panel" id="tab-queue" role="tabpanel">
@@ -539,7 +451,7 @@
     </div>
 
     <div class="notice notice-warning" style="margin: 1rem 0;">
-      <strong>Popup filters.</strong> Queue and inbox filters now open in separate windows so the report table stays visible while you adjust filters.
+      <strong>Filter forms.</strong> Queue and inbox filters open on a dedicated page so the report table stays visible while you adjust filters.
     </div>
     <div class="page-actions" style="margin-bottom: 1rem;">
       <button type="button" class="button button-secondary js-open-filter-popup" data-filter-popup-kind="queue">Open queue filters</button>
@@ -3509,6 +3421,8 @@
           const destination = escapeHtml(
             (call && (call.destination_number || call.connected_line_num || call.connected_line_name)) || "—"
           );
+          const smppMessage = escapeHtml((call && call.smpp_message) || "—");
+          const redialCount = escapeHtml(String(call && call.redial_count != null ? call.redial_count : 0));
           const application = escapeHtml(call && call.application ? call.application : "—");
           const duration = escapeHtml(call && call.duration ? call.duration : "—");
 
@@ -3597,6 +3511,8 @@
             '<td class="mono">' + connectedLine + "</td>" +
             '<td><span class="status-badge status-' + stateClass + '">' + state + "</span></td>" +
             '<td class="mono">' + destination + "</td>" +
+            '<td class="message-preview">' + smppMessage + "</td>" +
+            '<td class="mono">' + redialCount + "</td>" +
             "<td>" + application + "</td>" +
             '<td class="mono">' + duration + "</td>" +
             "<td>" + audioCell + "</td>" +
@@ -4234,16 +4150,7 @@
           popupUrl.searchParams.set(key, value);
         });
         popupUrl.searchParams.set("kind", popupKind);
-        const popup = window.open(
-          popupUrl.toString(),
-          "admin-report-filters-" + popupKind,
-          "popup=yes,width=980,height=920,resizable=yes,scrollbars=yes"
-        );
-        if (popup) {
-          popup.focus();
-        } else {
-          window.location.href = popupUrl.toString();
-        }
+        window.location.href = popupUrl.toString();
       };
 
     document.querySelectorAll("[data-filter-popup-kind]").forEach((button) => {
