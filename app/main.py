@@ -2066,9 +2066,6 @@ async def admin_reports_filters_popup(
     return templates.TemplateResponse(request, "admin_reports_filters_popup.html", context)
 
 
-@app.get("/admin", response_class=HTMLResponse)
-
-
 def _build_health_context(settings: Settings) -> dict:
     checked_at = time.time()
     services: list[dict] = []
