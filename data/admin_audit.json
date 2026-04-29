@@ -98,5 +98,15 @@
     "status": "success",
     "target": "/admin/reports",
     "timestamp": "2026-04-29T22:41:50.898396+00:00"
-  }
-]
+  },
+  {
+    "action": "admin.view",
+    "actor": "admin",
+    "detail": "Viewed the 'overview' admin section.",
+    "metadata": {},
+    "section": "overview",
+    "status": "success",
+    "target": "/admin",
+    "timestamp": "2026-04-29T23:00:44.998321+00:00"
+  },
+  
