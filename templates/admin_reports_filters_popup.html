@@ -1,0 +1,308 @@
+{% extends "base.html" %}
+{% block title %}{{ popup_title }} · SMS Voice Gateway{% endblock %}
+{% block content %}
+<style>
+  .filter-popup-card {
+    max-width: 980px;
+    margin: 0 auto;
+  }
+
+  .filter-popup-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+    margin: 1rem 0 1.25rem;
+  }
+
+  .filter-popup-summary .stat-card {
+    min-height: 100%;
+  }
+
+  .filter-popup-form {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .filter-popup-help {
+    border-radius: 14px;
+    border: 1px solid var(--panel-border, #dbe4f0);
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    padding: 1rem 1.1rem;
+  }
+
+  .filter-popup-help p {
+    margin: 0;
+  }
+
+  .filter-popup-form .form-actions {
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  .filter-popup-grid {
+    display: grid;
+    gap: 1rem;
+  }
+
+  @media (max-width: 720px) {
+    .filter-popup-summary {
+      grid-template-columns: 1fr;
+    }
+
+    .filter-popup-form .form-actions {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .filter-popup-form .form-actions .button {
+      width: 100%;
+    }
+  }
+</style>
+
+<section class="card filter-popup-card">
+  <div class="card-header">
+    <div>
+      <p class="eyebrow">{{ popup_eyebrow }}</p>
+      <h1 style="margin: 0;">{{ popup_title }}</h1>
+      <p class="muted">{{ popup_description }}</p>
+    </div>
+    <div class="page-actions">
+      <span class="pill">Popup window</span>
+      <button type="button" class="button button-secondary" onclick="window.__closeFilterPopup()">Close</button>
+    </div>
+  </div>
+
+  <div class="filter-popup-summary">
+    {% if popup_kind == 'reports' %}
+    <div class="stat-card">
+      <span class="stat-label">Matching reports</span>
+      <strong>{{ report_filters.total_items }}</strong>
+      <p class="muted">Filtered delivery activity in the main reports page.</p>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Current page</span>
+      <strong>{{ report_pagination.page }} / {{ report_pagination.total_pages }}</strong>
+      <p class="muted">Report pagination remains controlled from the main page.</p>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Active filters</span>
+      <strong>{% if report_filters.has_filters %}Yes{% else %}No{% endif %}</strong>
+      <p class="muted">Search, status, and provider filters are preserved.</p>
+    </div>
+    {% elif popup_kind == 'queue' %}
+    <div class="stat-card">
+      <span class="stat-label">Queue items</span>
+      <strong>{{ queue_filters.total_items }}</strong>
+      <p class="muted">Queued voice delivery jobs matching the current criteria.</p>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Current page</span>
+      <strong>{{ queue_pagination.page }} / {{ queue_pagination.total_pages }}</strong>
+      <p class="muted">Queue pagination updates back on the main reports page.</p>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Active filters</span>
+      <strong>{% if queue_filters.has_filters %}Yes{% else %}No{% endif %}</strong>
+      <p class="muted">Search, status, and provider filters are preserved.</p>
+    </div>
+    {% else %}
+    <div class="stat-card">
+      <span class="stat-label">Inbox items</span>
+      <strong>{{ inbox_filters.total_items }}</strong>
+      <p class="muted">Inbound SMS messages matching the current criteria.</p>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Current page</span>
+      <strong>{{ inbox_pagination.page }} / {{ inbox_pagination.total_pages }}</strong>
+      <p class="muted">Inbox pagination updates back on the main reports page.</p>
+    </div>
+    <div class="stat-card">
+      <span class="stat-label">Active filters</span>
+      <strong>{% if inbox_filters.has_filters %}Yes{% else %}No{% endif %}</strong>
+      <p class="muted">Search, status, and provider filters are preserved.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="filter-popup-help">
+    <p><strong>How this works:</strong> apply the filters here and the opener window will be updated to the matching reports page automatically.</p>
+  </div>
+
+  {% if popup_kind == 'reports' %}
+  <form method="get" action="/admin/reports" class="admin-form filter-popup-form" data-filter-popup-form data-filter-popup-kind="reports">
+    <input type="hidden" name="report_page" value="1" />
+    <input type="hidden" name="search" value="{{ queue_filters.search }}" />
+    <input type="hidden" name="status" value="{{ queue_filters.status }}" />
+    <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
+    <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
+    <input type="hidden" name="queue_page_size" value="{{ queue_pagination.page_size }}" />
+    <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
+    <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
+    <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
+    <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
+    <input type="hidden" name="inbox_page_size" value="{{ inbox_pagination.page_size }}" />
+
+    <div class="filter-popup-grid">
+      <label class="field-group">
+        <span class="field-label">Report Search</span>
+        <input type="text" name="report_search" value="{{ report_filters.search }}" placeholder="Search phone, provider, status, error" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Status</span>
+        <input type="text" name="report_status" value="{{ report_filters.status }}" placeholder="success, error, pending" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Provider</span>
+        <input type="text" name="report_provider" value="{{ report_filters.provider }}" placeholder="twilio, generic, admin-test" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Page Size</span>
+        <select name="report_page_size">
+          <option value="10" {% if report_pagination.page_size == 10 %}selected{% endif %}>10</option>
+          <option value="20" {% if report_pagination.page_size == 20 %}selected{% endif %}>20</option>
+          <option value="50" {% if report_pagination.page_size == 50 %}selected{% endif %}>50</option>
+          <option value="100" {% if report_pagination.page_size == 100 %}selected{% endif %}>100</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="button button-secondary" onclick="window.__closeFilterPopup()">Cancel</button>
+      <button type="submit" class="button">{{ popup_submit_label }}</button>
+    </div>
+  </form>
+  {% elif popup_kind == 'queue' %}
+  <form method="get" action="/admin/reports" class="admin-form filter-popup-form" data-filter-popup-form data-filter-popup-kind="queue">
+    <input type="hidden" name="queue_page" value="1" />
+    <input type="hidden" name="report_search" value="{{ report_filters.search }}" />
+    <input type="hidden" name="report_status" value="{{ report_filters.status }}" />
+    <input type="hidden" name="report_provider" value="{{ report_filters.provider }}" />
+    <input type="hidden" name="report_page" value="{{ report_pagination.page }}" />
+    <input type="hidden" name="report_page_size" value="{{ report_pagination.page_size }}" />
+    <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
+    <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
+    <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
+    <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
+    <input type="hidden" name="inbox_page_size" value="{{ inbox_pagination.page_size }}" />
+
+    <div class="filter-popup-grid">
+      <label class="field-group">
+        <span class="field-label">Queue Search</span>
+        <input type="text" name="search" value="{{ queue_filters.search }}" placeholder="Search queue items" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Status</span>
+        <input type="text" name="status" value="{{ queue_filters.status }}" placeholder="queued, delivered, failed" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Provider</span>
+        <input type="text" name="provider" value="{{ queue_filters.provider }}" placeholder="twilio, generic, admin-test" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Page Size</span>
+        <select name="queue_page_size">
+          <option value="10" {% if queue_pagination.page_size == 10 %}selected{% endif %}>10</option>
+          <option value="20" {% if queue_pagination.page_size == 20 %}selected{% endif %}>20</option>
+          <option value="50" {% if queue_pagination.page_size == 50 %}selected{% endif %}>50</option>
+          <option value="100" {% if queue_pagination.page_size == 100 %}selected{% endif %}>100</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="button button-secondary" onclick="window.__closeFilterPopup()">Cancel</button>
+      <button type="submit" class="button">{{ popup_submit_label }}</button>
+    </div>
+  </form>
+  {% else %}
+  <form method="get" action="/admin/reports" class="admin-form filter-popup-form" data-filter-popup-form data-filter-popup-kind="inbox">
+    <input type="hidden" name="inbox_page" value="1" />
+    <input type="hidden" name="report_search" value="{{ report_filters.search }}" />
+    <input type="hidden" name="report_status" value="{{ report_filters.status }}" />
+    <input type="hidden" name="report_provider" value="{{ report_filters.provider }}" />
+    <input type="hidden" name="report_page" value="{{ report_pagination.page }}" />
+    <input type="hidden" name="report_page_size" value="{{ report_pagination.page_size }}" />
+    <input type="hidden" name="search" value="{{ queue_filters.search }}" />
+    <input type="hidden" name="status" value="{{ queue_filters.status }}" />
+    <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
+    <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
+    <input type="hidden" name="queue_page_size" value="{{ queue_pagination.page_size }}" />
+
+    <div class="filter-popup-grid">
+      <label class="field-group">
+        <span class="field-label">Inbox Search</span>
+        <input type="text" name="inbox_search" value="{{ inbox_filters.search }}" placeholder="Search inbox messages" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Inbox Status</span>
+        <input type="text" name="inbox_status" value="{{ inbox_filters.status }}" placeholder="received" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Inbox Provider</span>
+        <input type="text" name="inbox_provider" value="{{ inbox_filters.provider }}" placeholder="smpp, twilio, generic" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">Page Size</span>
+        <select name="inbox_page_size">
+          <option value="10" {% if inbox_pagination.page_size == 10 %}selected{% endif %}>10</option>
+          <option value="20" {% if inbox_pagination.page_size == 20 %}selected{% endif %}>20</option>
+          <option value="50" {% if inbox_pagination.page_size == 50 %}selected{% endif %}>50</option>
+          <option value="100" {% if inbox_pagination.page_size == 100 %}selected{% endif %}>100</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="button button-secondary" onclick="window.__closeFilterPopup()">Cancel</button>
+      <button type="submit" class="button">{{ popup_submit_label }}</button>
+    </div>
+  </form>
+  {% endif %}
+</section>
+
+<script>
+(function () {
+  function buildTargetUrl(form) {
+    const target = new URL(form.action, window.location.origin);
+    const data = new FormData(form);
+    data.forEach(function (value, key) {
+      const text = String(value == null ? "" : value).trim();
+      if (text) {
+        target.searchParams.set(key, text);
+      } else {
+        target.searchParams.delete(key);
+      }
+    });
+    return target.toString();
+  }
+
+  window.__closeFilterPopup =
+    window.__closeFilterPopup ||
+    function () {
+      try {
+        window.close();
+      } catch (_) {}
+      if (!window.closed && window.opener && !window.opener.closed) {
+        window.opener.focus();
+      }
+    };
+
+  document.querySelectorAll("[data-filter-popup-form]").forEach(function (form) {
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      const targetUrl = buildTargetUrl(form);
+      try {
+        if (window.opener && !window.opener.closed) {
+          window.opener.location.href = targetUrl;
+          window.close();
+          return;
+        }
+      } catch (_) {}
+      window.location.href = targetUrl;
+    });
+  });
+}());
+</script>
+{% endblock %}

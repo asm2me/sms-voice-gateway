@@ -35,7 +35,7 @@ from typing import Annotated, Any, Optional
 import base64
 import binascii
 
-from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, status
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
@@ -2007,6 +2007,52 @@ def _admin_context(
         context["success_message"] = success_message
         context["message_level"] = _normalize_message_level(message_level)
     return context
+
+
+def _report_filter_popup_meta(kind: str) -> dict[str, str]:
+    normalized_kind = (kind or "").strip().lower()
+    if normalized_kind not in {"reports", "queue", "inbox"}:
+        normalized_kind = "reports"
+
+    metadata = {
+        "reports": {
+            "popup_title": "Report Filters",
+            "popup_eyebrow": "Delivery Reports",
+            "popup_description": "Open and apply delivery report filters in a dedicated popup window.",
+            "popup_submit_label": "Apply Report Filters",
+            "popup_button_label": "Open report filters",
+        },
+        "queue": {
+            "popup_title": "Queue Filters",
+            "popup_eyebrow": "Delivery Queue",
+            "popup_description": "Open and apply delivery queue filters in a dedicated popup window.",
+            "popup_submit_label": "Apply Queue Filters",
+            "popup_button_label": "Open queue filters",
+        },
+        "inbox": {
+            "popup_title": "Inbox Filters",
+            "popup_eyebrow": "SMS Inbox",
+            "popup_description": "Open and apply SMS inbox filters in a dedicated popup window.",
+            "popup_submit_label": "Apply Inbox Filters",
+            "popup_button_label": "Open inbox filters",
+        },
+    }
+    return {"popup_kind": normalized_kind, **metadata[normalized_kind]}
+
+
+@app.get("/admin/reports/filters", response_class=HTMLResponse)
+async def admin_reports_filters_popup(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+    kind: str = Query(default="reports"),
+):
+    context = _admin_context(request, settings, active_section="reports")
+    context.update(_report_filter_popup_meta(kind))
+    return templates.TemplateResponse(request, "admin_reports_filters_popup.html", context)
+
+
+@app.get("/admin", response_class=HTMLResponse)
 
 
 def _build_health_context(settings: Settings) -> dict:

@@ -424,46 +424,14 @@
           <h3 class="settings-group-title">Search delivery reports</h3>
           <p class="muted">{{ report_filters.total_items }} matching report{{ '' if report_filters.total_items == 1 else 's' }}{% if report_filters.has_filters %} · filters active{% endif %}</p>
         </div>
-        <span class="pill">Page {{ report_pagination.page }} of {{ report_pagination.total_pages }}</span>
+        <div class="page-actions">
+          <span class="pill">Page {{ report_pagination.page }} of {{ report_pagination.total_pages }}</span>
+          <button type="button" class="button button-secondary js-open-filter-popup" data-filter-popup-kind="reports">Open report filters</button>
+        </div>
       </div>
-      <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
-        <input type="hidden" name="search" value="{{ queue_filters.search }}" />
-        <input type="hidden" name="status" value="{{ queue_filters.status }}" />
-        <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
-        <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
-        <input type="hidden" name="queue_page_size" value="{{ queue_pagination.page_size }}" />
-        <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
-        <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
-        <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
-        <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
-        <input type="hidden" name="inbox_page_size" value="{{ inbox_pagination.page_size }}" />
-        <div class="form-grid">
-          <label class="field-group field-span-2">
-            <span class="field-label">Report Search</span>
-            <input type="text" name="report_search" value="{{ report_filters.search }}" placeholder="Search phone, provider, status, error" />
-          </label>
-          <label class="field-group">
-            <span class="field-label">Status</span>
-            <input type="text" name="report_status" value="{{ report_filters.status }}" placeholder="success, error, pending" />
-          </label>
-          <label class="field-group">
-            <span class="field-label">Provider</span>
-            <input type="text" name="report_provider" value="{{ report_filters.provider }}" placeholder="twilio, generic, admin-test" />
-          </label>
-          <label class="field-group">
-            <span class="field-label">Page Size</span>
-            <select name="report_page_size">
-              <option value="10" {% if report_pagination.page_size == 10 %}selected{% endif %}>10</option>
-              <option value="20" {% if report_pagination.page_size == 20 %}selected{% endif %}>20</option>
-              <option value="50" {% if report_pagination.page_size == 50 %}selected{% endif %}>50</option>
-              <option value="100" {% if report_pagination.page_size == 100 %}selected{% endif %}>100</option>
-            </select>
-          </label>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="button button-secondary">Apply Report Filters</button>
-        </div>
-      </form>
+      <div class="notice notice-warning" style="margin-bottom: 0;">
+        <strong>Filters open in a popup window.</strong> Adjust delivery report filters there, then apply them to refresh this page.
+      </div>
     </div>
     {% if recent_reports %}
     <div class="table-wrap">
@@ -570,80 +538,12 @@
       </div>
     </div>
 
-    <div class="dockable-filter-grid">
-      <div class="table-filter-shell">
-        <button type="button" class="table-filter-button" data-table-filter-toggle="queue-filters">Queue filters</button>
-        <div class="dockable-filter-panel" id="queue-filters" data-table-filter-panel>
-          <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
-            <input type="hidden" name="inbox_search" value="{{ inbox_filters.search }}" />
-            <input type="hidden" name="inbox_status" value="{{ inbox_filters.status }}" />
-            <input type="hidden" name="inbox_provider" value="{{ inbox_filters.provider }}" />
-            <input type="hidden" name="inbox_page" value="{{ inbox_pagination.page }}" />
-            <input type="hidden" name="inbox_page_size" value="{{ inbox_pagination.page_size }}" />
-            <label class="field-group">
-              <span class="field-label">Queue Search</span>
-              <input type="text" name="search" value="{{ queue_filters.search }}" placeholder="Search queue items" />
-            </label>
-            <label class="field-group">
-              <span class="field-label">Status</span>
-              <input type="text" name="status" value="{{ queue_filters.status }}" placeholder="queued, delivered, failed" />
-            </label>
-            <label class="field-group">
-              <span class="field-label">Provider</span>
-              <input type="text" name="provider" value="{{ queue_filters.provider }}" placeholder="twilio, generic, admin-test" />
-            </label>
-            <label class="field-group">
-              <span class="field-label">Queue Page Size</span>
-              <select name="queue_page_size">
-                <option value="10" {% if queue_pagination.page_size == 10 %}selected{% endif %}>10</option>
-                <option value="20" {% if queue_pagination.page_size == 20 %}selected{% endif %}>20</option>
-                <option value="50" {% if queue_pagination.page_size == 50 %}selected{% endif %}>50</option>
-                <option value="100" {% if queue_pagination.page_size == 100 %}selected{% endif %}>100</option>
-              </select>
-            </label>
-            <div class="form-actions">
-              <button type="submit" class="button button-secondary">Apply Queue Filters</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <div class="table-filter-shell">
-        <button type="button" class="table-filter-button" data-table-filter-toggle="inbox-filters">Inbox filters</button>
-        <div class="dockable-filter-panel" id="inbox-filters" data-table-filter-panel>
-          <form method="get" action="/admin/reports" class="admin-form filter-form dockable-search-form">
-            <input type="hidden" name="search" value="{{ queue_filters.search }}" />
-            <input type="hidden" name="status" value="{{ queue_filters.status }}" />
-            <input type="hidden" name="provider" value="{{ queue_filters.provider }}" />
-            <input type="hidden" name="queue_page" value="{{ queue_pagination.page }}" />
-            <input type="hidden" name="queue_page_size" value="{{ queue_pagination.page_size }}" />
-            <label class="field-group">
-              <span class="field-label">Inbox Search</span>
-              <input type="text" name="inbox_search" value="{{ inbox_filters.search }}" placeholder="Search inbox messages" />
-            </label>
-            <label class="field-group">
-              <span class="field-label">Inbox Status</span>
-              <input type="text" name="inbox_status" value="{{ inbox_filters.status }}" placeholder="received" />
-            </label>
-            <label class="field-group">
-              <span class="field-label">Inbox Provider</span>
-              <input type="text" name="inbox_provider" value="{{ inbox_filters.provider }}" placeholder="smpp, twilio, generic" />
-            </label>
-            <label class="field-group">
-              <span class="field-label">Inbox Page Size</span>
-              <select name="inbox_page_size">
-                <option value="10" {% if inbox_pagination.page_size == 10 %}selected{% endif %}>10</option>
-                <option value="20" {% if inbox_pagination.page_size == 20 %}selected{% endif %}>20</option>
-                <option value="50" {% if inbox_pagination.page_size == 50 %}selected{% endif %}>50</option>
-                <option value="100" {% if inbox_pagination.page_size == 100 %}selected{% endif %}>100</option>
-              </select>
-            </label>
-            <div class="form-actions">
-              <button type="submit" class="button button-secondary">Apply Inbox Filters</button>
-            </div>
-          </form>
-        </div>
-      </div>
+    <div class="notice notice-warning" style="margin: 1rem 0;">
+      <strong>Popup filters.</strong> Queue and inbox filters now open in separate windows so the report table stays visible while you adjust filters.
+    </div>
+    <div class="page-actions" style="margin-bottom: 1rem;">
+      <button type="button" class="button button-secondary js-open-filter-popup" data-filter-popup-kind="queue">Open queue filters</button>
+      <button type="button" class="button button-secondary js-open-filter-popup" data-filter-popup-kind="inbox">Open inbox filters</button>
     </div>
 
     {% if recent_queue_items %}
@@ -759,11 +659,9 @@
     </div>
     {% if recent_inbox_messages %}
     <form method="post" action="/admin/inbox/batch-delete" class="admin-form">
-      <div class="table-filter-shell">
-        <button type="button" class="table-filter-button" data-table-filter-toggle="inbox-table-filters">Inbox filters</button>
-        <div class="dockable-filter-panel" id="inbox-table-filters" data-table-filter-panel>
-          <div class="muted">Filters for this table remain docked here and hidden by default.</div>
-        </div>
+      <div class="table-filter-shell" style="margin-bottom: 1rem;">
+        <button type="button" class="button button-secondary js-open-filter-popup" data-filter-popup-kind="inbox">Open inbox filters</button>
+        <div class="muted" style="margin-top: 0.5rem;">Use the popup to refine inbox results without losing the table layout.</div>
       </div>
       <div class="table-wrap">
       <table class="data-table inbox-table" id="inbox-table">
@@ -4326,13 +4224,31 @@
       }
     }
 
-    document.querySelectorAll("[data-table-filter-toggle]").forEach((button) => {
+    window.__adminOpenFilterPopup =
+      window.__adminOpenFilterPopup ||
+      function (kind) {
+        const popupKind = String(kind || "reports").trim().toLowerCase() || "reports";
+        const popupUrl = new URL("/admin/reports/filters", window.location.origin);
+        const currentParams = new URLSearchParams(window.location.search || "");
+        currentParams.forEach(function (value, key) {
+          popupUrl.searchParams.set(key, value);
+        });
+        popupUrl.searchParams.set("kind", popupKind);
+        const popup = window.open(
+          popupUrl.toString(),
+          "admin-report-filters-" + popupKind,
+          "popup=yes,width=980,height=920,resizable=yes,scrollbars=yes"
+        );
+        if (popup) {
+          popup.focus();
+        } else {
+          window.location.href = popupUrl.toString();
+        }
+      };
+
+    document.querySelectorAll("[data-filter-popup-kind]").forEach((button) => {
       button.addEventListener("click", function () {
-        const targetId = button.getAttribute("data-table-filter-toggle");
-        const panel = targetId ? document.getElementById(targetId) : null;
-        if (!panel) return;
-        const isOpen = panel.classList.toggle("is-open");
-        button.setAttribute("aria-expanded", isOpen ? "true" : "false");
+        window.__adminOpenFilterPopup(button.getAttribute("data-filter-popup-kind"));
       });
     });
 

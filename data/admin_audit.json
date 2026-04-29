@@ -18,5 +18,35 @@
     "status": "success",
     "target": "/admin/reports",
     "timestamp": "2026-04-29T21:53:17.048438+00:00"
+  },
+  {
+    "action": "admin.view",
+    "actor": "admin",
+    "detail": "Viewed the 'reports' admin section.",
+    "metadata": {},
+    "section": "reports",
+    "status": "success",
+    "target": "/admin/reports",
+    "timestamp": "2026-04-29T22:09:29.923017+00:00"
+  },
+  {
+    "action": "admin.view",
+    "actor": "admin",
+    "detail": "Viewed the 'reports' admin section.",
+    "metadata": {},
+    "section": "reports",
+    "status": "success",
+    "target": "/admin/reports",
+    "timestamp": "2026-04-29T22:10:03.971738+00:00"
+  },
+  {
+    "action": "admin.view",
+    "actor": "admin",
+    "detail": "Viewed the 'reports' admin section.",
+    "metadata": {},
+    "section": "reports",
+    "status": "success",
+    "target": "/admin/reports",
+    "timestamp": "2026-04-29T22:11:06.032785+00:00"
   }
 ]
