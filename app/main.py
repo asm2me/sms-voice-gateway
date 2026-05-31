@@ -69,7 +69,14 @@ from .admin_reports import (
     summarize_delivery_reports,
 )
 from .cache import AudioCache, get_redis
-from .config import SIPAccount, SMPPAccount, Settings, SystemUser, get_system_user_permissions
+from .config import (
+    SIPAccount,
+    SMPPAccount,
+    SMPPStaticMessageTemplate,
+    Settings,
+    SystemUser,
+    get_system_user_permissions,
+)
 from .config_store import (
     ADMIN_MANAGED_FIELDS,
     ensure_default_accounts,
@@ -1204,6 +1211,7 @@ async def _apply_smpp_account_audio_updates(
     form,
     account_id: str | None = None,
     existing_account: SMPPAccount | None = None,
+    draft_templates: list[SMPPStaticMessageTemplate] | None = None,
 ) -> dict[str, object]:
     account_id = str(account_id or form.get("account_id", "")).strip()
     log.info("[audio-upload] _apply_smpp_account_audio_updates start account_id=%r", account_id)
@@ -1218,7 +1226,9 @@ async def _apply_smpp_account_audio_updates(
     log.info("[audio-upload] form keys=%s", form_keys)
 
     audio_field_names = {"uploaded_audio_file"} | {k for k in form_keys if isinstance(k, str) and (
-        k.startswith("static_message_part_audio_file_") or k.startswith("static_message_digit_audio_file_")
+        k.startswith("static_message_part_audio_file_")
+        or k.startswith("static_message_digit_audio_file_")
+        or k.startswith("static_message_template_part_audio_file_")
     )}
     for fname in audio_field_names:
         try:
@@ -1246,6 +1256,23 @@ async def _apply_smpp_account_audio_updates(
     updates: dict[str, object] = {}
     part_audio = dict(existing_account.static_message_part_audio or {}) if existing_account else {}
     digit_audio = dict(existing_account.static_message_digit_audio or {}) if existing_account else {}
+
+    existing_template_audio: dict[str, dict[str, dict[str, str]]] = {}
+    if existing_account is not None:
+        for entry in existing_account.static_default_message_templates or []:
+            existing_template_audio[entry.id] = {
+                str(ord_key): dict(info) if isinstance(info, dict) else {}
+                for ord_key, info in (entry.static_message_part_audio or {}).items()
+            }
+
+    template_audio: dict[str, dict[str, dict[str, str]]] = {
+        tid: {ord_key: dict(info) for ord_key, info in audio_map.items()}
+        for tid, audio_map in existing_template_audio.items()
+    }
+    if draft_templates is not None:
+        for entry in draft_templates:
+            template_audio.setdefault(entry.id, {})
+    template_audio_changed = False
 
     current_uploaded_audio_path = str(existing_account.uploaded_audio_path or "").strip() if existing_account else ""
     uploaded_audio_file = form.get("uploaded_audio_file")
@@ -1299,6 +1326,49 @@ async def _apply_smpp_account_audio_updates(
                     part_audio_changed = True
                 continue
 
+            template_part_match = re.fullmatch(
+                r"static_message_template_part_audio_file_(tpl-\d+)_(\d+)",
+                str(field_name),
+            )
+            if template_part_match:
+                template_id = template_part_match.group(1)
+                ordinal = template_part_match.group(2)
+                template_map = template_audio.setdefault(template_id, {})
+                current_audio_info = template_map.get(ordinal, {})
+                if not isinstance(current_audio_info, dict):
+                    current_audio_info = {}
+                current_audio_path = str(current_audio_info.get("path", "")).strip()
+
+                if _form_bool(
+                    form,
+                    f"remove_static_message_template_part_audio_{template_id}_{ordinal}",
+                ):
+                    if current_audio_path:
+                        _delete_file_if_exists(current_audio_path)
+                    if ordinal in template_map:
+                        template_map.pop(ordinal, None)
+                        template_audio_changed = True
+                    continue
+
+                template_part_upload = form.get(field_name)
+                if (
+                    isinstance(template_part_upload, StarletteUploadFile)
+                    and template_part_upload.filename
+                ):
+                    if current_audio_path:
+                        _delete_file_if_exists(current_audio_path)
+                    stored_path, original_name = await _store_smpp_audio_upload(
+                        account_id,
+                        template_part_upload,
+                        stem=f"{template_id}-part-{ordinal}",
+                    )
+                    template_map[ordinal] = {
+                        "path": stored_path,
+                        "original_name": original_name,
+                    }
+                    template_audio_changed = True
+                continue
+
             digit_match = re.fullmatch(r"static_message_digit_audio_file_(\d+)", str(field_name))
             if digit_match:
                 digit = digit_match.group(1)
@@ -1328,38 +1398,95 @@ async def _apply_smpp_account_audio_updates(
     if digit_audio_changed:
         updates["static_message_digit_audio"] = digit_audio
 
+    if draft_templates is not None:
+        merged_templates: list[SMPPStaticMessageTemplate] = []
+        for entry in draft_templates:
+            merged_templates.append(
+                entry.model_copy(
+                    update={
+                        "static_message_part_audio": template_audio.get(entry.id, {}),
+                    }
+                )
+            )
+        retained_ids = {entry.id for entry in merged_templates}
+        for orphan_id, orphan_audio in existing_template_audio.items():
+            if orphan_id in retained_ids:
+                continue
+            for info in orphan_audio.values():
+                if not isinstance(info, dict):
+                    continue
+                orphan_path = str(info.get("path", "")).strip()
+                if orphan_path:
+                    _delete_file_if_exists(orphan_path)
+                    template_audio_changed = True
+        updates["static_default_message_templates"] = merged_templates
+    elif template_audio_changed and existing_account is not None:
+        merged_templates = []
+        for entry in existing_account.static_default_message_templates or []:
+            merged_templates.append(
+                entry.model_copy(
+                    update={
+                        "static_message_part_audio": template_audio.get(entry.id, {}),
+                    }
+                )
+            )
+        updates["static_default_message_templates"] = merged_templates
+
     return updates
 
 
 def _build_smpp_account_admin_context(account: SMPPAccount) -> dict[str, object]:
-    description = describe_static_message_template(account.static_default_message_template)
-    part_audio_map = dict(account.static_message_part_audio or {})
-    enriched_parts: list[dict[str, object]] = []
-    for part in description.get("parts", []):
-        if not isinstance(part, dict):
-            continue
-        ordinal = str(part.get("ordinal", "")).strip()
-        audio_info = part_audio_map.get(ordinal, {})
-        if not isinstance(audio_info, dict):
-            audio_info = {}
-        uploaded_audio_path = str(audio_info.get("path", "")).strip()
-        enriched_parts.append(
+    def _enrich_parts(template_text: str, part_audio_map: dict) -> tuple[dict, list]:
+        description = describe_static_message_template(template_text)
+        audio_map = dict(part_audio_map or {})
+        enriched_parts: list[dict[str, object]] = []
+        for part in description.get("parts", []):
+            if not isinstance(part, dict):
+                continue
+            ordinal = str(part.get("ordinal", "")).strip()
+            audio_info = audio_map.get(ordinal, {})
+            if not isinstance(audio_info, dict):
+                audio_info = {}
+            uploaded_audio_path = str(audio_info.get("path", "")).strip()
+            enriched_parts.append(
+                {
+                    **part,
+                    "has_uploaded_audio": bool(uploaded_audio_path),
+                    "uploaded_audio_path": uploaded_audio_path,
+                    "uploaded_audio_original_name": str(audio_info.get("original_name", "")).strip(),
+                }
+            )
+
+        description["parts"] = enriched_parts
+        description["spoken_parts"] = [part for part in enriched_parts if part.get("spoken")]
+        description["parameter_parts"] = [part for part in enriched_parts if part.get("kind") == "parameter"]
+        return description, enriched_parts
+
+    template_entries = list(account.static_default_message_templates or [])
+
+    template_views: list[dict[str, object]] = []
+    aggregate_parts: list[dict[str, object]] = []
+    for index, entry in enumerate(template_entries, start=1):
+        description, parts = _enrich_parts(entry.template, entry.static_message_part_audio)
+        template_views.append(
             {
-                **part,
-                "has_uploaded_audio": bool(uploaded_audio_path),
-                "uploaded_audio_path": uploaded_audio_path,
-                "uploaded_audio_original_name": str(audio_info.get("original_name", "")).strip(),
+                "index": index,
+                "id": entry.id or f"tpl-{index}",
+                "template": entry.template,
+                "description": description,
+                "parts": parts,
             }
         )
+        for part in parts:
+            aggregate_parts.append({**part, "template_id": entry.id, "template_index": index})
 
-    description["parts"] = enriched_parts
-    description["spoken_parts"] = [part for part in enriched_parts if part.get("spoken")]
-    description["parameter_parts"] = [part for part in enriched_parts if part.get("kind") == "parameter"]
+    primary_description = template_views[0]["description"] if template_views else describe_static_message_template("")
 
     return {
         **account.model_dump(),
-        "static_message_template_description": description,
-        "static_message_parts": enriched_parts,
+        "static_message_template_description": primary_description,
+        "static_message_parts": aggregate_parts,
+        "static_message_template_views": template_views,
     }
 
 
@@ -1496,6 +1623,57 @@ def _build_sip_account_from_form(form) -> SIPAccount:
     )
 
 
+def _parse_static_message_templates_from_form(form) -> list[SMPPStaticMessageTemplate]:
+    """Read the dynamic list of static message templates posted by the SMPP modal.
+
+    The Add/Edit SMPP user form posts one row per template segment using a
+    1-based index appended to the field name. A row is kept whenever it has a
+    non-empty text body OR a stable id (so callers can preserve audio uploads
+    that were saved against an existing template id even if the text is being
+    cleared in the same submission).
+    """
+
+    count_raw = str(form.get("static_message_template_count", "")).strip()
+    try:
+        declared_count = int(count_raw) if count_raw else 0
+    except ValueError:
+        declared_count = 0
+
+    seen_indices: set[int] = set()
+    if hasattr(form, "keys"):
+        for key in list(form.keys()):
+            text = str(key)
+            for prefix in (
+                "static_message_template_text_",
+                "static_message_template_id_",
+            ):
+                if text.startswith(prefix):
+                    suffix = text[len(prefix):]
+                    if suffix.isdigit():
+                        seen_indices.add(int(suffix))
+
+    upper = max(declared_count, *(seen_indices or {0}))
+
+    templates: list[SMPPStaticMessageTemplate] = []
+    next_auto_id = 1
+    for index in range(1, upper + 1):
+        template_text = str(form.get(f"static_message_template_text_{index}", "")).strip()
+        template_id = str(form.get(f"static_message_template_id_{index}", "")).strip()
+        if not template_text and not template_id:
+            continue
+        if not template_id:
+            existing_ids = {item.id for item in templates}
+            while f"tpl-{next_auto_id}" in existing_ids:
+                next_auto_id += 1
+            template_id = f"tpl-{next_auto_id}"
+            next_auto_id += 1
+        templates.append(
+            SMPPStaticMessageTemplate(id=template_id, template=template_text)
+        )
+
+    return templates
+
+
 def _build_smpp_account_from_form(form) -> SMPPAccount:
     label = str(form.get("label", "")).strip()
     username = str(form.get("username", "")).strip()
@@ -1504,7 +1682,12 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
     delivery_retry_count_raw = str(form.get("delivery_retry_count", "")).strip()
     delivery_retry_interval_raw = str(form.get("delivery_retry_interval_seconds", "")).strip()
     static_default_message_enabled = _form_bool(form, "static_default_message_enabled")
-    static_default_message_template = str(form.get("static_default_message_template", "")).strip()
+    templates = _parse_static_message_templates_from_form(form)
+    legacy_template_text = str(form.get("static_default_message_template", "")).strip()
+    if not templates and legacy_template_text:
+        templates = [
+            SMPPStaticMessageTemplate(id="tpl-1", template=legacy_template_text)
+        ]
 
     return SMPPAccount(
         id=account_id,
@@ -1517,7 +1700,7 @@ def _build_smpp_account_from_form(form) -> SMPPAccount:
         delivery_retry_count=int(delivery_retry_count_raw) if delivery_retry_count_raw != "" else None,
         delivery_retry_interval_seconds=int(delivery_retry_interval_raw) if delivery_retry_interval_raw != "" else None,
         static_default_message_enabled=static_default_message_enabled,
-        static_default_message_template=static_default_message_template,
+        static_default_message_templates=templates,
     )
 
 
@@ -3241,6 +3424,7 @@ async def admin_add_smpp_account(
         "uploaded_audio_original_name",
         "static_message_part_audio",
         "static_message_digit_audio",
+        "static_default_message_templates",
         "extra",
     }
     account_data = draft_account.model_dump(exclude=preserved_fields)
@@ -3253,6 +3437,7 @@ async def admin_add_smpp_account(
         form,
         account_id=new_account.id,
         existing_account=existing_account,
+        draft_templates=list(draft_account.static_default_message_templates or []),
     )
     new_account = new_account.model_copy(update=audio_updates)
 
@@ -3607,8 +3792,49 @@ async def admin_smpp_part_audio(
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
 
-    part_audio = dict(account.static_message_part_audio or {})
-    audio_info = part_audio.get(str(part_ordinal).strip(), {})
+    ordinal_key = str(part_ordinal).strip()
+    raw_audio_path = ""
+    for template in account.static_default_message_templates or []:
+        audio_info = (template.static_message_part_audio or {}).get(ordinal_key, {})
+        if isinstance(audio_info, dict):
+            candidate = str(audio_info.get("path", "")).strip()
+            if candidate:
+                raw_audio_path = candidate
+                break
+
+    if not raw_audio_path:
+        part_audio = dict(account.static_message_part_audio or {})
+        audio_info = part_audio.get(ordinal_key, {})
+        if isinstance(audio_info, dict):
+            raw_audio_path = str(audio_info.get("path", "")).strip()
+
+    if not raw_audio_path:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP template part has no uploaded audio")
+
+    return _serve_smpp_audio_response(settings, raw_audio_path)
+
+
+@app.get("/admin/config/smpp-template-part-audio/{account_id}/{template_id}/{part_ordinal}")
+async def admin_smpp_template_part_audio(
+    account_id: str,
+    template_id: str,
+    part_ordinal: str,
+    _: None = Depends(dep_admin_credentials),
+    settings: Settings = Depends(dep_settings),
+):
+    account = next((item for item in settings.smpp_accounts if item.id == account_id), None)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP account not found")
+
+    target_id = str(template_id).strip()
+    template = next(
+        (item for item in (account.static_default_message_templates or []) if item.id == target_id),
+        None,
+    )
+    if template is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "SMPP static message template not found")
+
+    audio_info = (template.static_message_part_audio or {}).get(str(part_ordinal).strip(), {})
     if not isinstance(audio_info, dict):
         audio_info = {}
     raw_audio_path = str(audio_info.get("path", "")).strip()

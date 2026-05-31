@@ -141,6 +141,25 @@ class SIPAccount(BaseModel):
         return _normalize_codec_list(value)
 
 
+class SMPPStaticMessageTemplate(BaseModel):
+    """One spoken segment of a multi-part static message.
+
+    A multilingual static message (e.g. English then Arabic) is modeled as an
+    ordered list of these entries. Each entry has its own template text and its
+    own per-spoken-part uploaded audio map. Parameter placeholders (%1, %2, …)
+    inside a template are still resolved from the same inbound SMPP body.
+    """
+
+    id: str = ""
+    template: str = ""
+    static_message_part_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+    @field_validator("id", "template", mode="before")
+    @classmethod
+    def _strip_text_fields(cls, value: Any) -> str:
+        return _strip_text(value)
+
+
 class SMPPAccount(BaseModel):
     id: str
     label: str = ""
@@ -152,10 +171,16 @@ class SMPPAccount(BaseModel):
     delivery_retry_count: int | None = None
     delivery_retry_interval_seconds: int | None = None
     static_default_message_enabled: bool = False
+    # Legacy single-template fields. Retained so existing config.json loads
+    # without errors; migrated into static_default_message_templates[0] by
+    # config_store._coerce_smpp_account on load.
     static_default_message_template: str = ""
+    static_message_part_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # Ordered list of message segments. Played back-to-back in order, allowing
+    # e.g. an English template followed by an Arabic template.
+    static_default_message_templates: list[SMPPStaticMessageTemplate] = Field(default_factory=list)
     uploaded_audio_path: str = ""
     uploaded_audio_original_name: str = ""
-    static_message_part_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
     static_message_digit_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
     extra: dict[str, Any] = Field(default_factory=dict)
 

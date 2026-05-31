@@ -7,7 +7,13 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .config import SIPAccount, SMPPAccount, Settings, SystemUser
+from .config import (
+    SIPAccount,
+    SMPPAccount,
+    SMPPStaticMessageTemplate,
+    Settings,
+    SystemUser,
+)
 
 log = logging.getLogger(__name__)
 
@@ -95,7 +101,7 @@ def _coerce_sip_account(raw: Any) -> SIPAccount | None:
 
 def _coerce_smpp_account(raw: Any) -> SMPPAccount | None:
     if isinstance(raw, SMPPAccount):
-        return raw
+        return _migrate_smpp_static_templates(raw)
     if not isinstance(raw, dict):
         return None
     data = dict(raw)
@@ -107,10 +113,58 @@ def _coerce_smpp_account(raw: Any) -> SMPPAccount | None:
         log.warning("Skipping SMPP account with empty username in config store: %r", data)
         return None
     try:
-        return SMPPAccount(**data)
+        return _migrate_smpp_static_templates(SMPPAccount(**data))
     except ValidationError as exc:
         log.warning("Skipping invalid SMPP account in config store: %s", exc)
         return None
+
+
+def _migrate_smpp_static_templates(account: SMPPAccount) -> SMPPAccount:
+    """Fold legacy single-template fields into static_default_message_templates.
+
+    Older config.json files store the static message as
+    static_default_message_template (str) plus static_message_part_audio (dict).
+    The multi-part feature stores the same data as the first entry of
+    static_default_message_templates. This helper normalizes both shapes to the
+    list representation so the rest of the app only deals with the list.
+    """
+
+    templates = list(account.static_default_message_templates or [])
+    legacy_template_text = (account.static_default_message_template or "").strip()
+    legacy_part_audio = dict(account.static_message_part_audio or {})
+
+    if not templates and (legacy_template_text or legacy_part_audio):
+        templates = [
+            SMPPStaticMessageTemplate(
+                id="tpl-1",
+                template=legacy_template_text,
+                static_message_part_audio=legacy_part_audio,
+            )
+        ]
+
+    normalized: list[SMPPStaticMessageTemplate] = []
+    for index, entry in enumerate(templates, start=1):
+        if not isinstance(entry, SMPPStaticMessageTemplate):
+            continue
+        if not (entry.id or "").strip():
+            entry = entry.model_copy(update={"id": f"tpl-{index}"})
+        normalized.append(entry)
+
+    if (
+        normalized
+        and normalized == templates
+        and not legacy_template_text
+        and not legacy_part_audio
+    ):
+        return account
+
+    return account.model_copy(
+        update={
+            "static_default_message_templates": normalized,
+            "static_default_message_template": "",
+            "static_message_part_audio": {},
+        }
+    )
 
 
 def _coerce_system_user(raw: Any) -> SystemUser | None:

@@ -1962,31 +1962,39 @@
                   </td>
                   <td class="mono">{{ account.default_sip_account_id or '—' }}</td>
                   <td>
-                    {% if account.static_message_parts %}
+                    {% if account.static_message_template_views %}
                     <div class="permission-summary">
-                      {% for part in account.static_message_parts %}
-                      <div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">
-                        <strong>Part {{ part.ordinal }}</strong>
-                        {% if part.kind == 'parameter' %}
-                        <span class="mono">{{ part.display_value }}</span>
-                        <span class="muted">unspoken parameter</span>
+                      {% for template_view in account.static_message_template_views %}
+                      <div style="margin-bottom:0.55rem;">
+                        <div class="muted" style="font-size:0.78rem; margin-bottom:0.25rem;">Template {{ template_view.index }}</div>
+                        {% for part in template_view.parts %}
+                        <div class="pill" style="display:block; margin-bottom:0.35rem; white-space:normal;">
+                          <strong>Part {{ part.ordinal }}</strong>
+                          {% if part.kind == 'parameter' %}
+                          <span class="mono">{{ part.display_value }}</span>
+                          <span class="muted">unspoken parameter</span>
+                          {% else %}
+                          <span class="mono">{{ part.display_value or '&mdash;' }}</span>
+                          {% if part.spoken %}
+                          <button
+                            type="button"
+                            class="button button-secondary button-small"
+                            title="Play static message part {{ part.ordinal }}"
+                            aria-label="Play static message part {{ part.ordinal }}"
+                            data-account-id="{{ account.id }}"
+                            data-template-id="{{ template_view.id }}"
+                            data-part-ordinal="{{ part.ordinal }}"
+                            data-part-text="{{ part.value }}"
+                            onclick="window.__adminPreviewSmppTemplatePart(this)"
+                          >&#9654;</button>
+                          {% else %}
+                          <span class="muted">unspoken</span>
+                          {% endif %}
+                          {% endif %}
+                        </div>
                         {% else %}
-                        <span class="mono">{{ part.display_value or '—' }}</span>
-                        {% if part.spoken %}
-                        <button
-                          type="button"
-                          class="button button-secondary button-small"
-                          title="Play static message part {{ part.ordinal }}"
-                          aria-label="Play static message part {{ part.ordinal }}"
-                          data-account-id="{{ account.id }}"
-                          data-part-ordinal="{{ part.ordinal }}"
-                          data-part-text="{{ part.value }}"
-                          onclick="window.__adminPreviewSmppTemplatePart(this)"
-                        >▶</button>
-                        {% else %}
-                        <span class="muted">unspoken</span>
-                        {% endif %}
-                        {% endif %}
+                        <div class="muted" style="font-size:0.8rem;">No spoken parts.</div>
+                        {% endfor %}
                       </div>
                       {% endfor %}
                     </div>
@@ -2086,24 +2094,46 @@
                     </select>
                     <small class="muted">When enabled, the inbound SMPP text is treated as parameters for the static template below.</small>
                   </label>
-                  <label class="field-group field-span-2">
-                    <span class="field-label">Static Default Message Template</span>
-                    <textarea id="smpp-add-static-default-message-template" name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 Ø±Ù…Ø² Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„ØØ§Øµ Ø¨Ùƒ Ù‡Ùˆ %2"></textarea>
-                    <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
-                  </label>
+                  <div class="field-group field-span-2">
+                    <span class="field-label">Static Message Templates</span>
+                    <small class="muted">
+                      Add one section per spoken language. Each section's text plays back-to-back in
+                      order, so you can read an English message followed by an Arabic one (or any
+                      other sequence). Use placeholders like <span class="mono">%1</span>,
+                      <span class="mono">%2</span>, <span class="mono">%3</span> &mdash; they map to the
+                      first, second, third parts of the inbound SMPP message after splitting by
+                      spaces. The backend also accepts <span class="mono">&#123;%1&#125;</span> if
+                      entered manually.
+                    </small>
+                    <input
+                      type="hidden"
+                      name="static_message_template_count"
+                      id="smpp-add-static-message-template-count"
+                      value="1"
+                    />
+                    <div
+                      class="smpp-template-list"
+                      id="smpp-add-static-message-templates"
+                      data-mode="add"
+                      data-account-id=""
+                      style="display:grid; gap:1rem;"
+                    >
+                    </div>
+                    <div class="form-actions" style="justify-content:flex-start; margin-top:0.5rem;">
+                      <button
+                        type="button"
+                        class="button button-secondary button-small"
+                        data-smpp-template-add="smpp-add-static-message-templates"
+                      >+ Add Template</button>
+                    </div>
+                  </div>
                   <label class="field-group field-span-2 uploaded-audio-group">
                     <span class="field-label">Account Audio</span>
                     <input type="file" name="uploaded_audio_file" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
                     <small class="muted">Optional. Upload a single audio file for this SMPP user. This audio overrides generated speech for the account when present.</small>
                     <div class="uploaded-audio-status"></div>
                   </label>
-                  <div class="field-group field-span-2">
-                    <span class="field-label">Split Static Message Parts</span>
-                    <small class="muted">Upload audio files for each spoken part. Parameter placeholders like <span class="mono">%1</span> remain unspoken and cannot receive audio.</small>
-                    <div class="smpp-part-list" id="smpp-add-template-parts" style="display:grid; gap:0.75rem;">
-                      <div class="muted">Enter a template above to see split parts and upload slots here.</div>
-                    </div>
-                  </div>
+                  
 
                   <div class="field-group field-span-2">
                     <span class="field-label">Digit Audio (0-9)</span>
@@ -2222,11 +2252,108 @@
                     </select>
                     <small class="muted">When enabled, the inbound SMPP text is treated as parameters for the static template below.</small>
                   </label>
-                  <label class="field-group field-span-2">
-                    <span class="field-label">Static Default Message Template</span>
-                    <textarea name="static_default_message_template" rows="4" placeholder="Your OTP number is %1 Ø±Ù…Ø² Ø§Ù„ØªÙØ¹ÙŠÙ„ Ø§Ù„Ø®Ø§Øµ Ø¨Ùƒ Ù‡Ùˆ %2">{{ account.static_default_message_template or '' }}</textarea>
-                    <small class="muted">Use parameter placeholders like %1, %2, %3. They map to the first, second, third parts of the inbound SMPP message after splitting by spaces. The backend also accepts &#123;%1&#125;, &#123;%2&#125;, &#123;%3&#125; if entered manually.</small>
-                  </label>
+                  <div class="field-group field-span-2">
+                    <span class="field-label">Static Message Templates</span>
+                    <small class="muted">
+                      Add one section per spoken language. Each section's text plays back-to-back in
+                      order, so you can read an English message followed by an Arabic one (or any
+                      other sequence). Use placeholders like <span class="mono">%1</span>,
+                      <span class="mono">%2</span>, <span class="mono">%3</span> &mdash; they map to the
+                      first, second, third parts of the inbound SMPP message after splitting by
+                      spaces.
+                    </small>
+                    <input
+                      type="hidden"
+                      name="static_message_template_count"
+                      value="{{ account.static_message_template_views|length if account.static_message_template_views else 0 }}"
+                    />
+                    <div
+                      class="smpp-template-list"
+                      id="smpp-edit-static-message-templates-{{ account.id }}"
+                      data-mode="edit"
+                      data-account-id="{{ account.id }}"
+                      style="display:grid; gap:1rem;"
+                    >
+                      {% for template_view in account.static_message_template_views %}
+                      <div class="smpp-template-card" data-template-index="{{ template_view.index }}" data-template-id="{{ template_view.id }}" style="display:grid; gap:0.55rem; padding:0.95rem; border:1px solid #c5d2e6; border-radius:18px; background:#f7f9fd;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                          <strong class="smpp-template-card__title">Template {{ template_view.index }}</strong>
+                          <button
+                            type="button"
+                            class="button button-secondary button-small button-danger"
+                            data-smpp-template-remove="1"
+                            title="Remove this template"
+                            aria-label="Remove this template"
+                          >&#x2715; Remove</button>
+                        </div>
+                        <input type="hidden" name="static_message_template_id_{{ template_view.index }}" value="{{ template_view.id }}" />
+                        <label class="field-group">
+                          <span class="field-label">Template Text</span>
+                          <textarea
+                            name="static_message_template_text_{{ template_view.index }}"
+                            rows="3"
+                            placeholder="e.g. Your OTP is %1"
+                            data-smpp-template-textarea="1"
+                          >{{ template_view.template or '' }}</textarea>
+                        </label>
+                        <div class="smpp-part-list" data-smpp-template-parts="1" style="display:grid; gap:0.6rem;">
+                          {% for part in template_view.parts %}
+                          <div class="smpp-part-card" style="display:grid; gap:0.45rem; padding:0.75rem; border:1px solid #dbe4f0; border-radius:14px; background:#fff;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                              <strong>Part {{ part.ordinal }}</strong>
+                              {% if part.kind != 'parameter' and part.has_uploaded_audio %}
+                              <button
+                                type="button"
+                                class="button button-secondary button-small button-danger"
+                                title="Remove uploaded audio for part {{ part.ordinal }}"
+                                aria-label="Remove uploaded audio for part {{ part.ordinal }}"
+                                onclick="this.closest('.smpp-part-card').querySelector('.audio-cancel-hidden-input').checked = true; this.closest('.smpp-part-card').style.display='none';"
+                              >&#x2715; Cancel Audio</button>
+                              {% endif %}
+                            </div>
+                            {% if part.kind == 'parameter' %}
+                            <span class="mono">{{ part.display_value }}</span>
+                            <span class="muted">unspoken parameter</span>
+                            {% else %}
+                            <span class="mono">{{ part.display_value or '&mdash;' }}</span>
+                            {% if part.has_uploaded_audio %}
+                            <div class="notice notice-success" style="margin:0; padding:0.5rem 0.7rem; font-size:0.85rem;">
+                              Audio uploaded: {{ part.uploaded_audio_original_name or part.uploaded_audio_path }}
+                            </div>
+                            {% endif %}
+                            <input type="file" name="static_message_template_part_audio_file_{{ template_view.id }}_{{ part.ordinal }}" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
+                            <small class="muted">Optional. Uploading replaces audio for this spoken part.</small>
+                            <input type="checkbox" name="remove_static_message_template_part_audio_{{ template_view.id }}_{{ part.ordinal }}" class="audio-cancel-hidden-input" style="display:none;" />
+                            {% if part.spoken %}
+                            <button
+                              type="button"
+                              class="button button-secondary button-small"
+                              title="Play static message part {{ part.ordinal }}"
+                              aria-label="Play static message part {{ part.ordinal }}"
+                              data-account-id="{{ account.id }}"
+                              data-template-id="{{ template_view.id }}"
+                              data-part-ordinal="{{ part.ordinal }}"
+                              data-part-text="{{ part.value }}"
+                              data-has-uploaded-audio="{% if part.has_uploaded_audio %}true{% else %}false{% endif %}"
+                              onclick="window.__adminPreviewSmppTemplatePart(this)"
+                            >&#9654;</button>
+                            {% endif %}
+                            {% endif %}
+                          </div>
+                          {% endfor %}
+                        </div>
+                      </div>
+                      {% endfor %}
+                    </div>
+                    <div class="form-actions" style="justify-content:flex-start; margin-top:0.5rem;">
+                      <button
+                        type="button"
+                        class="button button-secondary button-small"
+                        data-smpp-template-add="smpp-edit-static-message-templates-{{ account.id }}"
+                      >+ Add Template</button>
+                    </div>
+                    <div id="smpp-template-part-status-modal-{{ account.id }}" class="inline-test-status" aria-live="polite"></div>
+                  </div>
                   <label class="field-group field-span-2 uploaded-audio-group">
                     <span class="field-label">Account Audio</span>
                     {% if account.uploaded_audio_path %}
@@ -2257,61 +2384,7 @@
                     {% endif %}
                     <div class="uploaded-audio-status"></div>
                   </label>
-                  <div class="field-group field-span-2">
-                    <span class="field-label">Split Static Message Parts</span>
-                    <small class="muted">Upload audio files per spoken part. Parameter placeholders like <span class="mono">%1</span> remain unspoken and cannot receive audio.</small>
-                    {% if account.static_message_parts %}
-                    <div class="smpp-part-list" style="display:grid; gap:0.75rem;">
-                      {% for part in account.static_message_parts %}
-                      <div class="smpp-part-card" style="display:grid; gap:0.55rem; padding:0.95rem; border:1px solid #dbe4f0; border-radius:16px; background:#fff; margin-bottom:0.35rem;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
-                          <strong>Part {{ part.ordinal }}</strong>
-                          {% if part.kind != 'parameter' and part.has_uploaded_audio %}
-                          <button
-                            type="button"
-                            class="button button-secondary button-small button-danger"
-                            title="Remove uploaded audio for part {{ part.ordinal }}"
-                            aria-label="Remove uploaded audio for part {{ part.ordinal }}"
-                            data-part-ordinal="{{ part.ordinal }}"
-                            onclick="this.closest('.smpp-part-card').querySelector('.audio-cancel-hidden-input').checked = true; this.closest('.smpp-part-card').style.display='none';"
-                          >✕ Cancel Audio</button>
-                          {% endif %}
-                        </div>
-                        {% if part.kind == 'parameter' %}
-                        <span class="mono">{{ part.display_value }}</span>
-                        <span class="muted">unspoken parameter</span>
-                        {% else %}
-                        <span class="mono">{{ part.display_value or '—' }}</span>
-                        {% if part.has_uploaded_audio %}
-                        <div class="notice notice-success" style="margin:0; padding:0.6rem 0.8rem; font-size:0.85rem;">
-                          Audio uploaded: {{ part.uploaded_audio_original_name or part.uploaded_audio_path }}
-                        </div>
-                        {% endif %}
-                        <input type="file" name="static_message_part_audio_file_{{ part.ordinal }}" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />
-                        <small class="muted">Optional. Uploading a new file replaces audio for this spoken part.</small>
-                        <input type="checkbox" name="remove_static_message_part_audio_{{ part.ordinal }}" class="audio-cancel-hidden-input" style="display:none;" />
-                        {% if part.spoken %}
-                        <button
-                          type="button"
-                          class="button button-secondary button-small"
-                          title="Play static message part {{ part.ordinal }}"
-                          aria-label="Play static message part {{ part.ordinal }}"
-                          data-account-id="{{ account.id }}"
-                          data-part-ordinal="{{ part.ordinal }}"
-                          data-part-text="{{ part.value }}"
-                          data-has-uploaded-audio="{% if part.has_uploaded_audio %}true{% else %}false{% endif %}"
-                          onclick="window.__adminPreviewSmppTemplatePart(this)"
-                        >▶</button>
-                        {% endif %}
-                        {% endif %}
-                      </div>
-                      {% endfor %}
-                    </div>
-                    {% else %}
-                    <div class="muted">No split parts yet. Save a template with text and placeholders like <span class="mono">%1</span>.</div>
-                    {% endif %}
-                    <div id="smpp-template-part-status-modal-{{ account.id }}" class="inline-test-status" aria-live="polite"></div>
-                  </div>
+                  
 
                   <div class="field-group field-span-2">
                     <span class="field-label">Digit Audio (0-9)</span>
@@ -2583,26 +2656,25 @@
     return parts;
   }
 
-  function renderSmppAddTemplateParts() {
-    const textarea = document.getElementById("smpp-add-static-default-message-template");
-    const container = document.getElementById("smpp-add-template-parts");
-    if (!textarea || !container) return;
+  function renderSmppTemplatePartList(card, templateId) {
+    const partsContainer = card.querySelector('[data-smpp-template-parts="1"]');
+    const textarea = card.querySelector('[data-smpp-template-textarea="1"]');
+    if (!partsContainer || !textarea) return;
 
     const parts = splitStaticMessageTemplate(textarea.value || "");
     if (!parts.length) {
-      container.innerHTML =
-        '<div class="muted">Enter a template above to see split parts and upload slots here.</div>';
+      partsContainer.innerHTML =
+        '<div class="muted" style="font-size:0.85rem;">Enter template text above to see split parts and upload slots.</div>';
       return;
     }
 
-    container.innerHTML = parts
+    partsContainer.innerHTML = parts
       .map(function (part) {
         const ordinal = escapeHtml(part && part.ordinal != null ? part.ordinal : "");
         const displayValue = escapeHtml((part && (part.display_value || part.value)) || "—");
-        const partName = part && part.ordinal != null ? String(part.ordinal) : "";
         if (part && part.kind === "parameter") {
           return (
-            '<div class="smpp-part-card" style="display:grid; gap:0.55rem; padding:0.95rem; border:1px solid #dbe4f0; border-radius:16px; background:#fff;">' +
+            '<div class="smpp-part-card" style="display:grid; gap:0.45rem; padding:0.75rem; border:1px solid #dbe4f0; border-radius:14px; background:#fff;">' +
             "<strong>Part " +
             ordinal +
             "</strong>" +
@@ -2615,8 +2687,14 @@
         }
 
         const spoken = Boolean(part && part.spoken);
+        const ordinalText = part && part.ordinal != null ? String(part.ordinal) : "";
+        const inputName =
+          "static_message_template_part_audio_file_" +
+          escapeHtml(templateId) +
+          "_" +
+          escapeHtml(ordinalText);
         return (
-          '<div class="smpp-part-card" style="display:grid; gap:0.55rem; padding:0.95rem; border:1px solid #dbe4f0; border-radius:16px; background:#fff;">' +
+          '<div class="smpp-part-card" style="display:grid; gap:0.45rem; padding:0.75rem; border:1px solid #dbe4f0; border-radius:14px; background:#fff;">' +
           "<strong>Part " +
           ordinal +
           "</strong>" +
@@ -2624,15 +2702,148 @@
           displayValue +
           "</span>" +
           (spoken
-            ? '<input type="file" name="static_message_part_audio_file_' +
-              escapeHtml(partName) +
+            ? '<input type="file" name="' +
+              inputName +
               '" accept=".wav,.mp3,.ogg,.m4a,.aac,.flac,.opus,audio/*" />' +
-              '<small class="muted">Optional. Uploading a new file stores audio for this spoken part.</small>'
+              '<small class="muted">Optional. Uploading saves audio for this spoken part.</small>'
             : '<span class="muted">unspoken</span>') +
           "</div>"
         );
       })
       .join("");
+  }
+
+  function buildSmppTemplateCard(templateId) {
+    const safeId = escapeHtml(templateId);
+    const card = document.createElement("div");
+    card.className = "smpp-template-card";
+    card.setAttribute("data-template-id", templateId);
+    card.style.display = "grid";
+    card.style.gap = "0.55rem";
+    card.style.padding = "0.95rem";
+    card.style.border = "1px solid #c5d2e6";
+    card.style.borderRadius = "18px";
+    card.style.background = "#f7f9fd";
+    card.innerHTML =
+      '<div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">' +
+      '<strong class="smpp-template-card__title">Template ?</strong>' +
+      '<button type="button" class="button button-secondary button-small button-danger" data-smpp-template-remove="1" title="Remove this template" aria-label="Remove this template">&#x2715; Remove</button>' +
+      "</div>" +
+      '<input type="hidden" data-smpp-template-id-input="1" value="' + safeId + '" />' +
+      '<label class="field-group">' +
+      '<span class="field-label">Template Text</span>' +
+      '<textarea data-smpp-template-textarea="1" rows="3" placeholder="e.g. Your OTP is %1"></textarea>' +
+      "</label>" +
+      '<div class="smpp-part-list" data-smpp-template-parts="1" style="display:grid; gap:0.6rem;">' +
+      '<div class="muted" style="font-size:0.85rem;">Enter template text above to see split parts and upload slots.</div>' +
+      "</div>";
+    return card;
+  }
+
+  function reindexSmppTemplateList(container) {
+    if (!container) return;
+    const cards = container.querySelectorAll(".smpp-template-card");
+    cards.forEach(function (card, index) {
+      const ordinal = index + 1;
+      card.setAttribute("data-template-index", String(ordinal));
+      const title = card.querySelector(".smpp-template-card__title");
+      if (title) title.textContent = "Template " + ordinal;
+      const idInput = card.querySelector('[data-smpp-template-id-input="1"]');
+      if (idInput) {
+        idInput.setAttribute("name", "static_message_template_id_" + ordinal);
+      }
+      const textarea = card.querySelector('[data-smpp-template-textarea="1"]');
+      if (textarea) {
+        textarea.setAttribute("name", "static_message_template_text_" + ordinal);
+      }
+    });
+
+    const countInputId =
+      container.getAttribute("data-mode") === "add"
+        ? "smpp-add-static-message-template-count"
+        : null;
+    if (countInputId) {
+      const countInput = document.getElementById(countInputId);
+      if (countInput) countInput.value = String(cards.length);
+    } else {
+      const form = container.closest("form");
+      const countInput = form ? form.querySelector('input[name="static_message_template_count"]') : null;
+      if (countInput) countInput.value = String(cards.length);
+    }
+  }
+
+  function nextSmppTemplateId(container) {
+    const used = new Set();
+    container.querySelectorAll(".smpp-template-card").forEach(function (card) {
+      const tid = card.getAttribute("data-template-id") || "";
+      if (tid) used.add(tid);
+    });
+    let candidate = 1;
+    while (used.has("tpl-" + candidate)) candidate += 1;
+    return "tpl-" + candidate;
+  }
+
+  function attachSmppTemplateCardHandlers(card, container) {
+    const textarea = card.querySelector('[data-smpp-template-textarea="1"]');
+    if (textarea) {
+      const handler = function () {
+        const templateId = card.getAttribute("data-template-id") || "";
+        renderSmppTemplatePartList(card, templateId);
+      };
+      textarea.addEventListener("input", handler);
+      textarea.addEventListener("change", handler);
+    }
+    const removeButton = card.querySelector('[data-smpp-template-remove="1"]');
+    if (removeButton) {
+      removeButton.addEventListener("click", function () {
+        card.parentNode && card.parentNode.removeChild(card);
+        reindexSmppTemplateList(container);
+      });
+    }
+  }
+
+  function initSmppTemplateList(container) {
+    if (!container || container.__smppTemplateInited) return;
+    container.__smppTemplateInited = true;
+
+    const mode = container.getAttribute("data-mode") || "edit";
+    if (mode === "add" && !container.querySelector(".smpp-template-card")) {
+      const card = buildSmppTemplateCard("tpl-1");
+      container.appendChild(card);
+    }
+
+    container.querySelectorAll(".smpp-template-card").forEach(function (card) {
+      attachSmppTemplateCardHandlers(card, container);
+    });
+    reindexSmppTemplateList(container);
+
+    // In Add mode there are no server-rendered audio cards yet, so do a fresh
+    // render. In Edit mode we leave the server-rendered split parts in place so
+    // the "Audio uploaded: …" notices stay visible until the user changes the
+    // template text.
+    if (mode === "add") {
+      container.querySelectorAll(".smpp-template-card").forEach(function (card) {
+        const templateId = card.getAttribute("data-template-id") || "";
+        renderSmppTemplatePartList(card, templateId);
+      });
+    }
+  }
+
+  function handleSmppTemplateAddClick(event) {
+    const button = event.target.closest("[data-smpp-template-add]");
+    if (!button) return;
+    const targetId = button.getAttribute("data-smpp-template-add");
+    const container = targetId ? document.getElementById(targetId) : null;
+    if (!container) return;
+    event.preventDefault();
+    const templateId = nextSmppTemplateId(container);
+    const card = buildSmppTemplateCard(templateId);
+    container.appendChild(card);
+    attachSmppTemplateCardHandlers(card, container);
+    reindexSmppTemplateList(container);
+    renderSmppTemplatePartList(card, templateId);
+    const textarea = card.querySelector('[data-smpp-template-textarea="1"]');
+    if (textarea) textarea.focus();
   }
 
   function ensureTopNotice(message, level) {
@@ -2667,6 +2878,7 @@
       const accountId = button.getAttribute("data-account-id") || "";
       const partOrdinal = button.getAttribute("data-part-ordinal") || "";
       const partText = button.getAttribute("data-part-text") || "";
+      const templateId = button.getAttribute("data-template-id") || "";
       const hasUploadedAudio = button.getAttribute("data-has-uploaded-audio") === "true";
       const statusTargets = [
         document.getElementById("smpp-template-part-status-" + accountId),
@@ -2695,7 +2907,17 @@
         let audioUrl = null;
 
         if (hasUploadedAudio) {
-          audioUrl = "/admin/config/smpp-part-audio/" + encodeURIComponent(accountId) + "/" + encodeURIComponent(partOrdinal);
+          audioUrl = templateId
+            ? "/admin/config/smpp-template-part-audio/" +
+              encodeURIComponent(accountId) +
+              "/" +
+              encodeURIComponent(templateId) +
+              "/" +
+              encodeURIComponent(partOrdinal)
+            : "/admin/config/smpp-part-audio/" +
+              encodeURIComponent(accountId) +
+              "/" +
+              encodeURIComponent(partOrdinal);
         } else {
           const formData = new FormData();
           formData.set("account_id", accountId);
@@ -3749,13 +3971,10 @@
     const modalAsyncForms = document.querySelectorAll(".js-modal-async-form");
     const toolsForm = document.querySelector('form[action="/admin/tools/test-send"]');
     const bulkSendForm = document.getElementById("bulk-send-form");
-    const smppAddTemplateTextarea = document.getElementById("smpp-add-static-default-message-template");
-
-    if (smppAddTemplateTextarea) {
-      smppAddTemplateTextarea.addEventListener("input", renderSmppAddTemplateParts);
-      smppAddTemplateTextarea.addEventListener("change", renderSmppAddTemplateParts);
-      renderSmppAddTemplateParts();
-    }
+    document.querySelectorAll(".smpp-template-list").forEach(function (container) {
+      initSmppTemplateList(container);
+    });
+    document.addEventListener("click", handleSmppTemplateAddClick);
 
     function syncSelectAllState(tableId) {
       const table = document.getElementById(tableId);

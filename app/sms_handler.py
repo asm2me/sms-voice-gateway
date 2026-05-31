@@ -227,30 +227,21 @@ class SMSGateway:
             None,
         )
 
-    def _resolve_static_template_audio(
+    def _collect_template_audio_segments(
         self,
         *,
+        template_text: str,
+        part_audio_map: dict,
+        digit_audio_map: dict,
         inbound_text: str,
-        rendered_text: str,
-        template: str,
-        smpp_account: Optional[SMPPAccount] = None,
-    ) -> tuple[str, bool]:
-        if smpp_account is not None:
-            uploaded_account_path = _resolve_uploaded_audio_abs_path(
-                str(smpp_account.uploaded_audio_path or "")
-            )
-            if uploaded_account_path is not None:
-                log.info(
-                    "Using account-wide uploaded audio for SMPP user %s: %s",
-                    smpp_account.username or smpp_account.id,
-                    uploaded_account_path,
-                )
-                return str(uploaded_account_path), True
+    ) -> tuple[list[bytes], list[Path], list[str]]:
+        """Build the per-segment WAV bytes for a single static template.
 
-        part_audio_map = dict((smpp_account.static_message_part_audio or {}) if smpp_account else {})
-        digit_audio_map = dict((smpp_account.static_message_digit_audio or {}) if smpp_account else {})
+        Returns (wav_parts, used_uploaded_files, used_tts_segments). Used uploaded
+        files are returned so the caller can fingerprint them into the cache key.
+        """
 
-        resolved_parts = resolve_static_message_parts(template, inbound_text)
+        resolved_parts = resolve_static_message_parts(template_text, inbound_text)
         spoken_resolved_parts: list[dict] = []
         for part in resolved_parts:
             if part.get("kind") == "parameter":
@@ -259,31 +250,12 @@ class SMSGateway:
             elif part.get("spoken") and str(part.get("spoken_value", "")).strip():
                 spoken_resolved_parts.append(part)
 
-        if not spoken_resolved_parts:
-            return self.tts.get_or_create_audio(rendered_text)
-
-        if not part_audio_map and not digit_audio_map:
-            if len(spoken_resolved_parts) <= 1:
-                return self.tts.get_or_create_audio(rendered_text)
-            merged_hash = self.tts.hash_for(rendered_text)
-            cached = self.audio_cache.get_audio_path(merged_hash)
-            if cached:
-                return cached, True
-            wavs: list[bytes] = []
-            for part in spoken_resolved_parts:
-                segment_text = (
-                    str(part.get("resolved_value", ""))
-                    if part.get("kind") == "parameter"
-                    else str(part.get("spoken_value", ""))
-                )
-                segment_audio_path, _ = self.tts.get_or_create_audio(segment_text)
-                wavs.append(Path(segment_audio_path).read_bytes())
-            merged = _ensure_wav_format(_concat_wavs([_ensure_wav_format(w) for w in wavs]))
-            return self.audio_cache.store_audio(merged_hash, merged), False
-
         wav_parts: list[bytes] = []
         used_uploaded_files: list[Path] = []
         used_tts_segments: list[str] = []
+
+        if not spoken_resolved_parts:
+            return wav_parts, used_uploaded_files, used_tts_segments
 
         for part in spoken_resolved_parts:
             ordinal = str(part.get("ordinal", "")).strip()
@@ -317,7 +289,7 @@ class SMSGateway:
                         used_tts_segments.append(resolved_value)
                 continue
 
-            part_info = part_audio_map.get(ordinal)
+            part_info = part_audio_map.get(ordinal) if isinstance(part_audio_map, dict) else None
             uploaded_part_path = None
             if isinstance(part_info, dict):
                 uploaded_part_path = _resolve_uploaded_audio_abs_path(str(part_info.get("path", "")))
@@ -330,21 +302,80 @@ class SMSGateway:
                     wav_parts.append(Path(seg_path).read_bytes())
                     used_tts_segments.append(spoken_value)
 
-        if not wav_parts:
+        return wav_parts, used_uploaded_files, used_tts_segments
+
+    def _resolve_static_template_audio(
+        self,
+        *,
+        inbound_text: str,
+        rendered_text: str,
+        smpp_account: Optional[SMPPAccount] = None,
+    ) -> tuple[str, bool]:
+        if smpp_account is not None:
+            uploaded_account_path = _resolve_uploaded_audio_abs_path(
+                str(smpp_account.uploaded_audio_path or "")
+            )
+            if uploaded_account_path is not None:
+                log.info(
+                    "Using account-wide uploaded audio for SMPP user %s: %s",
+                    smpp_account.username or smpp_account.id,
+                    uploaded_account_path,
+                )
+                return str(uploaded_account_path), True
+
+        template_entries = list(smpp_account.static_default_message_templates or []) if smpp_account else []
+        digit_audio_map = dict((smpp_account.static_message_digit_audio or {}) if smpp_account else {})
+        any_part_audio = any(
+            (entry.static_message_part_audio or {}) for entry in template_entries
+        )
+
+        # Gather segments across all templates so we play English then Arabic
+        # (or whatever order the operator configured) back to back.
+        all_wav_parts: list[bytes] = []
+        all_uploaded_files: list[Path] = []
+        all_tts_segments: list[str] = []
+        any_template_had_spoken_parts = False
+
+        for entry in template_entries:
+            wav_parts, uploaded_files, tts_segments = self._collect_template_audio_segments(
+                template_text=entry.template,
+                part_audio_map=dict(entry.static_message_part_audio or {}),
+                digit_audio_map=digit_audio_map,
+                inbound_text=inbound_text,
+            )
+            if wav_parts:
+                any_template_had_spoken_parts = True
+            all_wav_parts.extend(wav_parts)
+            all_uploaded_files.extend(uploaded_files)
+            all_tts_segments.extend(tts_segments)
+
+        if not any_template_had_spoken_parts:
             return self.tts.get_or_create_audio(rendered_text)
 
-        fingerprint = "|".join(_audio_fingerprint(p) for p in used_uploaded_files)
-        cache_text = f"{rendered_text}␟{fingerprint}␟" + "␟".join(used_tts_segments)
+        # If no uploaded audio anywhere and we ended up with exactly one TTS
+        # segment, just route through the plain TTS cache.
+        if (
+            not any_part_audio
+            and not digit_audio_map
+            and len(all_wav_parts) <= 1
+        ):
+            return self.tts.get_or_create_audio(rendered_text)
+
+        fingerprint = "|".join(_audio_fingerprint(p) for p in all_uploaded_files)
+        template_ids = "|".join(entry.id for entry in template_entries)
+        cache_text = (
+            f"{rendered_text}␟{template_ids}␟{fingerprint}␟" + "␟".join(all_tts_segments)
+        )
         merged_hash = self.tts.hash_for(cache_text)
         cached = self.audio_cache.get_audio_path(merged_hash)
         if cached:
             return cached, True
 
-        if len(wav_parts) == 1 and used_uploaded_files and not used_tts_segments:
-            single = _ensure_wav_format(wav_parts[0])
+        if len(all_wav_parts) == 1 and all_uploaded_files and not all_tts_segments:
+            single = _ensure_wav_format(all_wav_parts[0])
             return self.audio_cache.store_audio(merged_hash, single), False
 
-        merged = _ensure_wav_format(_concat_wavs([_ensure_wav_format(w) for w in wav_parts]))
+        merged = _ensure_wav_format(_concat_wavs([_ensure_wav_format(w) for w in all_wav_parts]))
         return self.audio_cache.store_audio(merged_hash, merged), False
 
     def process(self, sms: IncomingSMS, *, queue_retries: bool = True) -> GatewayResult:
@@ -360,15 +391,21 @@ class SMSGateway:
 
         smpp_account = self._resolve_smpp_account(sms)
         rendered_from_static_template = False
+        static_templates_for_account = (
+            list(smpp_account.static_default_message_templates or []) if smpp_account else []
+        )
         if (
             smpp_account
             and smpp_account.static_default_message_enabled
-            and smpp_account.static_default_message_template
+            and static_templates_for_account
+            and any((entry.template or "").strip() for entry in static_templates_for_account)
         ):
-            spoken_text = render_static_default_message(
-                smpp_account.static_default_message_template,
-                spoken_text,
-            )
+            rendered_segments = [
+                render_static_default_message(entry.template, spoken_text)
+                for entry in static_templates_for_account
+                if (entry.template or "").strip()
+            ]
+            spoken_text = " ".join(seg for seg in rendered_segments if seg).strip() or spoken_text
             rendered_from_static_template = True
 
         if not spoken_text:
@@ -385,9 +422,13 @@ class SMSGateway:
                 if smpp_account is not None
                 else None
             )
+            has_template_part_audio = any(
+                (entry.static_message_part_audio or {})
+                for entry in static_templates_for_account
+            )
             has_part_or_digit_audio = bool(
                 smpp_account
-                and (smpp_account.static_message_part_audio or smpp_account.static_message_digit_audio)
+                and (has_template_part_audio or smpp_account.static_message_digit_audio)
             )
 
             if account_audio_path is not None:
@@ -396,23 +437,25 @@ class SMSGateway:
                 audio_path, was_cached = self._resolve_static_template_audio(
                     inbound_text=extract_destination(sms)[1],
                     rendered_text=spoken_text,
-                    template=smpp_account.static_default_message_template,
                     smpp_account=smpp_account,
                 )
             elif (
                 smpp_account is not None
                 and has_part_or_digit_audio
-                and smpp_account.static_default_message_template
+                and static_templates_for_account
             ):
                 inbound_text_only = extract_destination(sms)[1]
-                rendered_for_audio = render_static_default_message(
-                    smpp_account.static_default_message_template,
-                    inbound_text_only,
-                )
+                rendered_segments_for_audio = [
+                    render_static_default_message(entry.template, inbound_text_only)
+                    for entry in static_templates_for_account
+                    if (entry.template or "").strip()
+                ]
+                rendered_for_audio = " ".join(
+                    seg for seg in rendered_segments_for_audio if seg
+                ).strip()
                 audio_path, was_cached = self._resolve_static_template_audio(
                     inbound_text=inbound_text_only,
                     rendered_text=rendered_for_audio or spoken_text,
-                    template=smpp_account.static_default_message_template,
                     smpp_account=smpp_account,
                 )
             else:
