@@ -995,6 +995,46 @@ def _relative_config_path(path: Path) -> str:
         return str(resolved)
 
 
+def _copy_smpp_audio_for_clone(
+    raw_audio_path: str,
+    dst_account_id: str,
+    stem: str,
+) -> str:
+    """Copy an SMPP audio file from one account directory to another.
+
+    Returns the new relative path (rooted at BASE_DIR) the destination
+    template should reference, or "" if the source file is missing.
+    """
+
+    raw = str(raw_audio_path or "").strip()
+    if not raw:
+        return ""
+
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = (BASE_DIR / candidate).resolve()
+    else:
+        try:
+            candidate = candidate.resolve()
+        except Exception:
+            return ""
+    if not candidate.exists() or not candidate.is_file():
+        log.warning("[smpp-template-copy] source audio missing: %s", candidate)
+        return ""
+
+    dst_dir = _smpp_audio_account_dir(dst_account_id)
+    suffix = candidate.suffix or ".wav"
+    destination = dst_dir / f"{stem}{suffix}"
+    # Remove any pre-existing file at this exact path so the copy is clean.
+    if destination.exists():
+        try:
+            destination.unlink()
+        except Exception:
+            log.warning("[smpp-template-copy] unable to remove existing %s", destination, exc_info=True)
+    destination.write_bytes(candidate.read_bytes())
+    return _relative_config_path(destination)
+
+
 def _delete_file_if_exists(path: str | Path) -> None:
     raw_path = str(path or "").strip()
     if not raw_path:
@@ -3589,6 +3629,154 @@ async def admin_delete_sip_account(
         request,
         "admin.html",
         _admin_context(request, settings, active_section="config", success_message=f"SIP trunk '{account_id}' deleted."),
+    )
+
+
+@app.post("/admin/config/smpp-template-copy")
+async def admin_copy_smpp_template(
+    request: Request,
+    _: None = Depends(dep_admin_credentials),
+):
+    """Copy one SMPP user's static-message template into other SMPP users.
+
+    Form fields:
+      source_account_id    — SMPP account that owns the template
+      source_template_id   — the tpl-N id within that account
+      target_account_ids   — repeated; one entry per SMPP account to receive a copy
+
+    Each target SMPP user receives a *new* tpl-N entry appended to its
+    static_default_message_templates list. Uploaded part and digit audio files
+    are physically copied into the target account's audio directory, so the
+    two accounts can later evolve their audio independently.
+    """
+
+    form = await request.form()
+    source_account_id = str(form.get("source_account_id", "")).strip()
+    source_template_id = str(form.get("source_template_id", "")).strip()
+    target_ids: list[str] = []
+    if hasattr(form, "getlist"):
+        target_ids = [str(value).strip() for value in form.getlist("target_account_ids") if str(value).strip()]
+    if not target_ids:
+        single_target = str(form.get("target_account_ids", "")).strip()
+        if single_target:
+            target_ids = [single_target]
+
+    if not source_account_id or not source_template_id:
+        return JSONResponse(
+            {"success": False, "message": "Missing source_account_id or source_template_id."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not target_ids:
+        return JSONResponse(
+            {"success": False, "message": "Pick at least one target SMPP user."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    current = ensure_default_accounts(load_settings_from_store())
+    source_account = next(
+        (account for account in current.smpp_accounts if account.id == source_account_id),
+        None,
+    )
+    if source_account is None:
+        return JSONResponse(
+            {"success": False, "message": f"Source SMPP user '{source_account_id}' not found."},
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    source_template = next(
+        (entry for entry in (source_account.static_default_message_templates or []) if entry.id == source_template_id),
+        None,
+    )
+    if source_template is None:
+        return JSONResponse(
+            {"success": False, "message": f"Source template '{source_template_id}' not found on '{source_account_id}'."},
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    updated_accounts: list[SMPPAccount] = []
+    target_ids_set = {tid for tid in target_ids if tid != source_account_id}
+    copied_target_ids: list[str] = []
+
+    for account in current.smpp_accounts:
+        if account.id not in target_ids_set:
+            updated_accounts.append(account)
+            continue
+
+        existing_ids = {entry.id for entry in (account.static_default_message_templates or [])}
+        new_index = 1
+        while f"tpl-{new_index}" in existing_ids:
+            new_index += 1
+        new_template_id = f"tpl-{new_index}"
+
+        new_part_audio: dict[str, dict[str, str]] = {}
+        for ord_key, info in (source_template.static_message_part_audio or {}).items():
+            if not isinstance(info, dict):
+                continue
+            new_path = _copy_smpp_audio_for_clone(
+                str(info.get("path", "")),
+                dst_account_id=account.id,
+                stem=f"{new_template_id}-part-{ord_key}",
+            )
+            if new_path:
+                new_part_audio[str(ord_key)] = {
+                    "path": new_path,
+                    "original_name": str(info.get("original_name", "")).strip(),
+                }
+
+        new_digit_audio: dict[str, dict[str, str]] = {}
+        for digit_key, info in (source_template.static_message_digit_audio or {}).items():
+            if not isinstance(info, dict):
+                continue
+            new_path = _copy_smpp_audio_for_clone(
+                str(info.get("path", "")),
+                dst_account_id=account.id,
+                stem=f"{new_template_id}-digit-{digit_key}",
+            )
+            if new_path:
+                new_digit_audio[str(digit_key)] = {
+                    "path": new_path,
+                    "original_name": str(info.get("original_name", "")).strip(),
+                }
+
+        cloned_template = SMPPStaticMessageTemplate(
+            id=new_template_id,
+            template=source_template.template,
+            static_message_part_audio=new_part_audio,
+            static_message_digit_audio=new_digit_audio,
+        )
+        updated_templates = list(account.static_default_message_templates or []) + [cloned_template]
+        updated_accounts.append(
+            account.model_copy(update={"static_default_message_templates": updated_templates})
+        )
+        copied_target_ids.append(account.id)
+
+    if not copied_target_ids:
+        return JSONResponse(
+            {"success": False, "message": "No target SMPP users matched."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    _save_account_collections(smpp_accounts=updated_accounts)
+    _record_admin_audit(
+        action="config.smpp_template.copy",
+        section="config",
+        detail=(
+            f"Copied static template '{source_template_id}' from SMPP user "
+            f"'{source_account_id}' to {len(copied_target_ids)} target(s)."
+        ),
+        target=source_account_id,
+        metadata={
+            "source_account_id": source_account_id,
+            "source_template_id": source_template_id,
+            "target_account_ids": copied_target_ids,
+        },
+    )
+
+    return JSONResponse(
+        {
+            "success": True,
+            "message": f"Template '{source_template_id}' copied to {len(copied_target_ids)} SMPP user(s).",
+            "copied_target_ids": copied_target_ids,
+        }
     )
 
 

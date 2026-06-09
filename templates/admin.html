@@ -2240,15 +2240,69 @@
                     >
                       {% for template_view in account.static_message_template_views %}
                       <div class="smpp-template-card" data-template-index="{{ template_view.index }}" data-template-id="{{ template_view.id }}" style="display:grid; gap:0.55rem; padding:0.95rem; border:1px solid #c5d2e6; border-radius:18px; background:#f7f9fd;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; flex-wrap:wrap;">
                           <strong class="smpp-template-card__title">Template {{ template_view.index }}</strong>
-                          <button
-                            type="button"
-                            class="button button-secondary button-small button-danger"
-                            data-smpp-template-remove="1"
-                            title="Remove this template"
-                            aria-label="Remove this template"
-                          >&#x2715; Remove</button>
+                          <div style="display:flex; gap:0.4rem; flex-wrap:wrap;">
+                            <button
+                              type="button"
+                              class="button button-secondary button-small"
+                              data-smpp-template-move="top"
+                              title="Move this template to the top"
+                              aria-label="Move this template to the top"
+                            >&#8593; Top</button>
+                            <button
+                              type="button"
+                              class="button button-secondary button-small"
+                              data-smpp-template-move="bottom"
+                              title="Move this template to the bottom"
+                              aria-label="Move this template to the bottom"
+                            >&#8595; Bottom</button>
+                            <button
+                              type="button"
+                              class="button button-secondary button-small"
+                              data-smpp-template-copy-toggle="1"
+                              title="Copy this template to other SMPP users"
+                              aria-label="Copy this template to other SMPP users"
+                            >&#128203; Copy to&hellip;</button>
+                            <button
+                              type="button"
+                              class="button button-secondary button-small button-danger"
+                              data-smpp-template-remove="1"
+                              title="Remove this template"
+                              aria-label="Remove this template"
+                            >&#x2715; Remove</button>
+                          </div>
+                        </div>
+                        <div data-smpp-template-copy-panel="1" style="display:none; padding:0.7rem 0.85rem; border:1px dashed #b6c3da; border-radius:14px; background:#fff;">
+                          <div class="muted" style="font-size:0.85rem; margin-bottom:0.45rem;">Select which SMPP users should receive a copy of this template (text plus uploaded part/digit audio).</div>
+                          {% set other_smpp_users = smpp_accounts | rejectattr('id', 'equalto', account.id) | list %}
+                          {% if other_smpp_users %}
+                          <div style="display:grid; gap:0.3rem;">
+                            {% for other in other_smpp_users %}
+                            <label style="display:flex; gap:0.45rem; align-items:center;">
+                              <input type="checkbox" data-smpp-template-copy-target="1" value="{{ other.id }}" />
+                              <span>{{ other.label or other.username or other.id }}<span class="muted mono" style="margin-left:0.4rem;">({{ other.username or other.id }})</span></span>
+                            </label>
+                            {% endfor %}
+                          </div>
+                          <div class="form-actions" style="justify-content:flex-start; margin-top:0.55rem; gap:0.4rem;">
+                            <button
+                              type="button"
+                              class="button button-small"
+                              data-smpp-template-copy-submit="1"
+                              data-source-account-id="{{ account.id }}"
+                              data-source-template-id="{{ template_view.id }}"
+                            >Copy template</button>
+                            <button
+                              type="button"
+                              class="button button-secondary button-small"
+                              data-smpp-template-copy-cancel="1"
+                            >Cancel</button>
+                          </div>
+                          <div data-smpp-template-copy-status="1" class="inline-test-status" aria-live="polite"></div>
+                          {% else %}
+                          <div class="muted">No other SMPP users yet. Add one to enable copying.</div>
+                          {% endif %}
                         </div>
                         <input type="hidden" name="static_message_template_id_{{ template_view.index }}" value="{{ template_view.id }}" />
                         <label class="field-group">
@@ -2747,9 +2801,13 @@
     card.style.borderRadius = "18px";
     card.style.background = "#f7f9fd";
     card.innerHTML =
-      '<div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">' +
+      '<div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; flex-wrap:wrap;">' +
       '<strong class="smpp-template-card__title">Template ?</strong>' +
+      '<div style="display:flex; gap:0.4rem; flex-wrap:wrap;">' +
+      '<button type="button" class="button button-secondary button-small" data-smpp-template-move="top" title="Move this template to the top" aria-label="Move this template to the top">&#8593; Top</button>' +
+      '<button type="button" class="button button-secondary button-small" data-smpp-template-move="bottom" title="Move this template to the bottom" aria-label="Move this template to the bottom">&#8595; Bottom</button>' +
       '<button type="button" class="button button-secondary button-small button-danger" data-smpp-template-remove="1" title="Remove this template" aria-label="Remove this template">&#x2715; Remove</button>' +
+      "</div>" +
       "</div>" +
       '<input type="hidden" data-smpp-template-id-input="1" value="' + safeId + '" />' +
       '<label class="field-group">' +
@@ -2821,6 +2879,102 @@
       removeButton.addEventListener("click", function () {
         card.parentNode && card.parentNode.removeChild(card);
         reindexSmppTemplateList(container);
+      });
+    }
+    card.querySelectorAll('[data-smpp-template-move]').forEach(function (moveBtn) {
+      moveBtn.addEventListener("click", function () {
+        const direction = moveBtn.getAttribute("data-smpp-template-move") || "";
+        if (!container) return;
+        if (direction === "top") {
+          container.insertBefore(card, container.firstChild);
+        } else if (direction === "bottom") {
+          container.appendChild(card);
+        }
+        reindexSmppTemplateList(container);
+      });
+    });
+    attachSmppTemplateCopyHandlers(card, container);
+  }
+
+  function attachSmppTemplateCopyHandlers(card, container) {
+    const toggleBtn = card.querySelector('[data-smpp-template-copy-toggle="1"]');
+    const panel = card.querySelector('[data-smpp-template-copy-panel="1"]');
+    if (toggleBtn && panel) {
+      toggleBtn.addEventListener("click", function () {
+        panel.style.display = panel.style.display === "none" || !panel.style.display ? "block" : "none";
+      });
+    }
+    const cancelBtn = card.querySelector('[data-smpp-template-copy-cancel="1"]');
+    if (cancelBtn && panel) {
+      cancelBtn.addEventListener("click", function () {
+        panel.style.display = "none";
+      });
+    }
+    const submitBtn = card.querySelector('[data-smpp-template-copy-submit="1"]');
+    const statusBox = card.querySelector('[data-smpp-template-copy-status="1"]');
+    if (submitBtn) {
+      submitBtn.addEventListener("click", async function () {
+        const sourceAccountId = submitBtn.getAttribute("data-source-account-id") || "";
+        const sourceTemplateId = submitBtn.getAttribute("data-source-template-id") || "";
+        const targets = Array.from(
+          panel.querySelectorAll('[data-smpp-template-copy-target="1"]:checked')
+        ).map(function (cb) { return cb.value; }).filter(Boolean);
+        if (!sourceAccountId || !sourceTemplateId) {
+          if (statusBox) {
+            statusBox.innerHTML =
+              '<span class="status-badge status-danger">Missing source</span>' +
+              '<div class="inline-test-status__summary">This template has not been saved yet. Save the SMPP user first, then re-open this dialog.</div>';
+          }
+          return;
+        }
+        if (!targets.length) {
+          if (statusBox) {
+            statusBox.innerHTML =
+              '<span class="status-badge status-danger">No target</span>' +
+              '<div class="inline-test-status__summary">Select at least one SMPP user to copy to.</div>';
+          }
+          return;
+        }
+        submitBtn.disabled = true;
+        if (statusBox) {
+          statusBox.innerHTML =
+            '<span class="status-badge status-pending">Copying&hellip;</span>' +
+            '<div class="inline-test-status__summary">Copying template to ' + targets.length + ' SMPP user(s)&hellip;</div>';
+        }
+        try {
+          const formData = new FormData();
+          formData.set("source_account_id", sourceAccountId);
+          formData.set("source_template_id", sourceTemplateId);
+          targets.forEach(function (tid) { formData.append("target_account_ids", tid); });
+          const response = await fetch("/admin/config/smpp-template-copy", {
+            method: "POST",
+            body: formData,
+            credentials: "same-origin",
+          });
+          const result = await response.json();
+          if (!response.ok || !result.success) {
+            throw new Error((result && (result.message || result.error)) || "Copy failed");
+          }
+          if (statusBox) {
+            statusBox.innerHTML =
+              '<span class="status-badge status-success">Copied</span>' +
+              '<div class="inline-test-status__summary">' +
+              escapeHtml(result.message || ("Template copied to " + targets.length + " SMPP user(s).")) +
+              " Reload the page to see the updated targets." +
+              "</div>";
+          }
+          panel.querySelectorAll('[data-smpp-template-copy-target="1"]').forEach(function (cb) { cb.checked = false; });
+        } catch (error) {
+          if (statusBox) {
+            statusBox.innerHTML =
+              '<span class="status-badge status-danger">Failed</span>' +
+              '<div class="inline-test-status__summary">' +
+              escapeHtml((error && error.message) || "Copy failed") +
+              "</div>";
+          }
+        } finally {
+          submitBtn.disabled = false;
+        }
       });
     }
   }
