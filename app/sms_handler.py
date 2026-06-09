@@ -324,13 +324,17 @@ class SMSGateway:
                 return str(uploaded_account_path), True
 
         template_entries = list(smpp_account.static_default_message_templates or []) if smpp_account else []
-        digit_audio_map = dict((smpp_account.static_message_digit_audio or {}) if smpp_account else {})
         any_part_audio = any(
             (entry.static_message_part_audio or {}) for entry in template_entries
         )
+        any_digit_audio = any(
+            (entry.static_message_digit_audio or {}) for entry in template_entries
+        )
 
         # Gather segments across all templates so we play English then Arabic
-        # (or whatever order the operator configured) back to back.
+        # (or whatever order the operator configured) back to back. Each template
+        # carries its own digit-audio map so digit pronunciations can differ per
+        # language.
         all_wav_parts: list[bytes] = []
         all_uploaded_files: list[Path] = []
         all_tts_segments: list[str] = []
@@ -340,7 +344,7 @@ class SMSGateway:
             wav_parts, uploaded_files, tts_segments = self._collect_template_audio_segments(
                 template_text=entry.template,
                 part_audio_map=dict(entry.static_message_part_audio or {}),
-                digit_audio_map=digit_audio_map,
+                digit_audio_map=dict(entry.static_message_digit_audio or {}),
                 inbound_text=inbound_text,
             )
             if wav_parts:
@@ -356,7 +360,7 @@ class SMSGateway:
         # segment, just route through the plain TTS cache.
         if (
             not any_part_audio
-            and not digit_audio_map
+            and not any_digit_audio
             and len(all_wav_parts) <= 1
         ):
             return self.tts.get_or_create_audio(rendered_text)
@@ -426,9 +430,13 @@ class SMSGateway:
                 (entry.static_message_part_audio or {})
                 for entry in static_templates_for_account
             )
+            has_template_digit_audio = any(
+                (entry.static_message_digit_audio or {})
+                for entry in static_templates_for_account
+            )
             has_part_or_digit_audio = bool(
                 smpp_account
-                and (has_template_part_audio or smpp_account.static_message_digit_audio)
+                and (has_template_part_audio or has_template_digit_audio)
             )
 
             if account_audio_path is not None:

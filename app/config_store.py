@@ -132,15 +132,27 @@ def _migrate_smpp_static_templates(account: SMPPAccount) -> SMPPAccount:
     templates = list(account.static_default_message_templates or [])
     legacy_template_text = (account.static_default_message_template or "").strip()
     legacy_part_audio = dict(account.static_message_part_audio or {})
+    legacy_digit_audio = dict(account.static_message_digit_audio or {})
 
-    if not templates and (legacy_template_text or legacy_part_audio):
+    if not templates and (
+        legacy_template_text or legacy_part_audio or legacy_digit_audio
+    ):
         templates = [
             SMPPStaticMessageTemplate(
                 id="tpl-1",
                 template=legacy_template_text,
                 static_message_part_audio=legacy_part_audio,
+                static_message_digit_audio=legacy_digit_audio,
             )
         ]
+        legacy_digit_audio = {}  # absorbed into the new template
+    elif templates and legacy_digit_audio:
+        first = templates[0]
+        if not first.static_message_digit_audio:
+            templates[0] = first.model_copy(
+                update={"static_message_digit_audio": legacy_digit_audio}
+            )
+        legacy_digit_audio = {}
 
     normalized: list[SMPPStaticMessageTemplate] = []
     for index, entry in enumerate(templates, start=1):
@@ -152,9 +164,10 @@ def _migrate_smpp_static_templates(account: SMPPAccount) -> SMPPAccount:
 
     if (
         normalized
-        and normalized == templates
+        and normalized == list(account.static_default_message_templates or [])
         and not legacy_template_text
         and not legacy_part_audio
+        and not (account.static_message_digit_audio or {})
     ):
         return account
 
@@ -163,6 +176,7 @@ def _migrate_smpp_static_templates(account: SMPPAccount) -> SMPPAccount:
             "static_default_message_templates": normalized,
             "static_default_message_template": "",
             "static_message_part_audio": {},
+            "static_message_digit_audio": {},
         }
     )
 

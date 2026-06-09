@@ -153,6 +153,7 @@ class SMPPStaticMessageTemplate(BaseModel):
     id: str = ""
     template: str = ""
     static_message_part_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
+    static_message_digit_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
 
     @field_validator("id", "template", mode="before")
     @classmethod
@@ -173,15 +174,17 @@ class SMPPAccount(BaseModel):
     static_default_message_enabled: bool = False
     # Legacy single-template fields. Retained so existing config.json loads
     # without errors; migrated into static_default_message_templates[0] by
-    # config_store._coerce_smpp_account on load.
+    # config_store._coerce_smpp_account on load. The legacy digit-audio map was
+    # account-wide; it now lives per-template (so English vs. Arabic digit
+    # pronunciations can differ) and is migrated into the first template entry.
     static_default_message_template: str = ""
     static_message_part_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
+    static_message_digit_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
     # Ordered list of message segments. Played back-to-back in order, allowing
     # e.g. an English template followed by an Arabic template.
     static_default_message_templates: list[SMPPStaticMessageTemplate] = Field(default_factory=list)
     uploaded_audio_path: str = ""
     uploaded_audio_original_name: str = ""
-    static_message_digit_audio: dict[str, dict[str, str]] = Field(default_factory=dict)
     extra: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator(
